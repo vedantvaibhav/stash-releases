@@ -1,0 +1,199 @@
+import SwiftUI
+import AppKit
+import Carbon
+import Carbon.HIToolbox
+import CoreServices
+import Sparkle
+
+@main
+struct QuickPanelApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
+    var body: some Scene {
+        // No WindowGroup — menu-bar-only app. Real settings UI (incl. Layout Style) lives here
+        // so Cmd+, / System Settings entry shows the same content as the status-item menu.
+        Settings {
+            SettingsView()
+                .frame(minWidth: 480, minHeight: 620)
+        }
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var statusItem: NSStatusItem?
+    private var panelController: PanelController?
+    private var globalHotKey: GlobalHotKey?
+    private var hotkeyObserver: NSObjectProtocol?
+    private let updaterManager = UpdaterManager()
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Register URL scheme handler before the app finishes launching so
+        // the system delivers any pending quickpanel:// events correctly.
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleURL(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+
+        let bid = Bundle.main.bundleIdentifier
+        let runningInstances = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier == bid
+        }
+        if runningInstances.count > 1 {
+            NSApp.terminate(nil)
+            return
+        }
+    }
+
+    /// Receives the quickpanel://auth/callback redirect after Google OAuth.
+    @objc func handleURL(_ event: NSAppleEventDescriptor,
+                         withReplyEvent: NSAppleEventDescriptor) {
+        guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue else {
+            print("[App] Could not read URL string from Apple Event")
+            return
+        }
+        print("[App] Raw URL string from event: \(urlString)")
+        guard let url = URL(string: urlString) else {
+            print("[App] Could not construct URL from: \(urlString)")
+            return
+        }
+        print("[App] Received URL: \(url.absoluteString)")
+        print("[App] scheme=\(url.scheme ?? "nil")  host=\(url.host ?? "nil")")
+        print("[App] fragment=\(url.fragment ?? "nil")")
+        print("[App] query=\(url.query ?? "nil")")
+        Task { await AuthService.shared.handleAuthCallback(url: url) }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+
+        setupStatusItem()
+
+        panelController = PanelController()
+
+        // Register hotkey immediately (pressing it during onboarding is a no-op since the
+        // panel isn't set up yet, but recording a new hotkey on slide 2 still updates prefs).
+        registerHotkeyFromSettings()
+
+        hotkeyObserver = NotificationCenter.default.addObserver(
+            forName: .quickPanelHotkeyChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.registerHotkeyFromSettings()
+        }
+
+        // Check for a stored Supabase session; if found and onboarding was already
+        // completed, skip onboarding and open the panel directly.
+        Task {
+            await AuthService.shared.checkSession()
+            if AuthService.shared.isSignedIn &&
+               UserDefaults.standard.bool(forKey: "onboardingCompleted") {
+                panelController?.setup()
+            } else {
+                // Show onboarding on first launch; set up the panel only after it
+                // completes so the main QuickPanel never opens during onboarding.
+                OnboardingManager.shared.showIfNeeded { [weak self] in
+                    self?.panelController?.setup()
+                }
+            }
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        globalHotKey?.unregister()
+        if let obs = hotkeyObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+    }
+
+    // MARK: - Hotkey registration
+
+    private func registerHotkeyFromSettings() {
+        globalHotKey?.unregister()
+        let s = AppSettings.shared
+        globalHotKey = GlobalHotKey(keyCode: s.hotKeyCode, modifiers: s.hotKeyModifiers) { [weak self] in
+            self?.panelController?.togglePanel()
+        }
+        _ = globalHotKey?.register()
+    }
+
+    // MARK: - Status item setup
+
+    private func setupStatusItem() {
+        guard statusItem == nil else { return }
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem?.button?.image = NSImage(systemSymbolName: "menubar.dock.rectangle",
+                                            accessibilityDescription: "Quick Panel")
+        statusItem?.button?.imagePosition = .imageLeading
+        statusItem?.button?.target = self
+        statusItem?.button?.action = #selector(statusItemClicked)
+        // Listen for both left- and right-click on the icon.
+        statusItem?.button?.sendAction(on: [.leftMouseUp, .rightMouseDown])
+    }
+
+    @objc private func statusItemClicked() {
+        guard let event = NSApp.currentEvent else { return }
+
+        if event.type == .rightMouseDown {
+            showStatusMenu()
+        } else {
+            panelController?.togglePanel()
+        }
+    }
+
+    // MARK: - Right-click context menu
+
+    private func showStatusMenu() {
+        let menu = NSMenu()
+
+        let toggleItem = NSMenuItem(title: "Open / Close QuickPanel",
+                                    action: #selector(togglePanelFromMenu),
+                                    keyEquivalent: "")
+        toggleItem.target = self
+        menu.addItem(toggleItem)
+
+        menu.addItem(.separator())
+
+        let updatesItem = NSMenuItem(title: "Check for Updates…",
+                                     action: #selector(checkForUpdates),
+                                     keyEquivalent: "")
+        updatesItem.target = self
+        menu.addItem(updatesItem)
+
+        menu.addItem(.separator())
+
+        let settingsItem = NSMenuItem(title: "Settings…",
+                                      action: #selector(openSettings),
+                                      keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(title: "Quit QuickPanel",
+                                  action: #selector(NSApplication.terminate(_:)),
+                                  keyEquivalent: "q")
+        menu.addItem(quitItem)
+
+        // Temporarily assign the menu so the system shows it, then clear so
+        // future left-clicks still toggle the panel.
+        statusItem?.menu = menu
+        statusItem?.button?.performClick(nil)
+        statusItem?.menu = nil
+    }
+
+    @objc private func togglePanelFromMenu() {
+        panelController?.togglePanel()
+    }
+
+    @objc private func checkForUpdates() {
+        updaterManager.checkForUpdates()
+    }
+
+    @objc private func openSettings() {
+        SettingsWindowController.shared.showSettings()
+    }
+}

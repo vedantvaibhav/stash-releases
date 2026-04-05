@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode derived data / build
+.derivedData/
+build/
+DerivedData/
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+*.xcscmblueprint
+
+# User-specific Xcode settings
+xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# SwiftPM
+.build/
+.swiftpm/
+*.resolved
+
+# CocoaPods (not used but just in case)
+Pods/
+
+# Credentials — never commit API keys
+# (TranscriptionService.swift contains groqKey — review before committing)
