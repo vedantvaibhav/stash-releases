@@ -887,58 +887,123 @@ struct FileDropCardRepresentable: NSViewRepresentable {
     }
 }
 
-// MARK: - Drop overlay (returns .move, accepts all files)
+// MARK: - Drop overlay (mouse-event pass-through only; drag handling is on FileDropContainerView)
 
 final class FileDropOverlayView: NSView {
-    var isDragging = false { didSet { needsDisplay = true } }
+    // Pass mouse events through so card tracking areas still work
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+// MARK: - Container (drop target + visual state: black border, upload icon, content fade)
+
+final class FileDropContainerView: NSView {
     var onDrop: (([URL]) -> Void)?
-    var onDragEnter: (() -> Void)?
-    var onDragExit: (() -> Void)?
+    weak var contentHostingView: NSView?
+
+    private let borderLayer   = CALayer()
+    private let uploadIconView = NSImageView()
+    private var showingDragUI  = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        wantsLayer = true
+
+        // Border layer — initially hidden; shown in black 80% on drag
+        borderLayer.frame        = bounds
+        borderLayer.borderWidth  = 0
+        borderLayer.cornerRadius = 12
+        borderLayer.borderColor  = NSColor.clear.cgColor
+        borderLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        layer?.addSublayer(borderLayer)
+
+        // Upload icon — centred, white 60%, hidden until drag enters
+        if let sym = NSImage(systemSymbolName: "tray.and.arrow.down.fill",
+                             accessibilityDescription: nil) {
+            uploadIconView.image = sym
+        }
+        uploadIconView.contentTintColor = NSColor.white.withAlphaComponent(0.60)
+        uploadIconView.imageScaling     = .scaleProportionallyUpOrDown
+        uploadIconView.alphaValue       = 0
+        uploadIconView.wantsLayer       = true
+        // uploadIconView is added last so it sits above the hosting view inserted by makeNSView.
+        // liftOverlay() re-orders it after makeNSView adds the hosting subview.
+
         registerForDraggedTypes([.fileURL])
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    // Pass mouse events through so card tracking areas still work
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    /// Called by makeNSView after the hosting view is added — ensures the icon and
+    /// border layer stay above the content view in both the subview and layer stacks.
+    func liftOverlay() {
+        addSubview(uploadIconView)                      // re-insert → now topmost subview
+        layer?.addSublayer(borderLayer)                 // re-insert → now topmost sublayer
+    }
+
+    // MARK: Drop-state visual
+
+    func showDropState(_ active: Bool) {
+        guard showingDragUI != active else { return }
+        showingDragUI = active
+
+        // Border: instant on / 0.15 s off
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        borderLayer.borderColor = active
+            ? NSColor.black.withAlphaComponent(0.80).cgColor
+            : NSColor.clear.cgColor
+        borderLayer.borderWidth = active ? 2 : 0
+        CATransaction.commit()
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration             = 0.15
+            ctx.allowsImplicitAnimation = true
+            contentHostingView?.animator().alphaValue = active ? 0.25 : 1.0
+            uploadIconView.animator().alphaValue      = active ? 1.0  : 0.0
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        borderLayer.frame = bounds
+        let s: CGFloat = 32
+        uploadIconView.frame = CGRect(
+            x: (bounds.width  - s) / 2,
+            y: (bounds.height - s) / 2,
+            width: s, height: s
+        )
+    }
+
+    // MARK: NSDraggingDestination
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        // Rule 1: ignore drags from our own panel cards
         if sender.draggingSource is DraggableFileView { return [] }
-
-        // Lower level so Finder drags can reach us
+        guard sender.draggingPasteboard.canReadObject(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) else { return [] }
         window?.level = .normal
         window?.orderFrontRegardless()
-
-        isDragging = true
-        onDragEnter?()
-        needsDisplay = true
-        return .move
+        showDropState(true)
+        return .copy
     }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         window?.level = .floating
-        isDragging = false
-        onDragExit?()
-        needsDisplay = true
+        showDropState(false)
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo?) {
         window?.level = .floating
-        isDragging = false
-        onDragExit?()
-        needsDisplay = true
+        showDropState(false)
     }
 
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        // Rule 2: Panel drop zone rejects files already in the panel folder
-        // Reject drags from our own cards
-        if sender.draggingSource is DraggableFileView {
-            return false
-        }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
 
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        showDropState(false)
+        if sender.draggingSource is DraggableFileView { return false }
         guard let urls = sender.draggingPasteboard.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
@@ -948,70 +1013,11 @@ final class FileDropOverlayView: NSView {
             .appendingPathComponent("Documents/QuickPanel")
             .standardizedFileURL
 
-        var accepted = false
-        var urlsToMove: [URL] = []
-        for url in urls {
-            // Skip files already in our folder
-            if url.path.hasPrefix(panelFolder.path) { continue }
-            urlsToMove.append(url)
-            accepted = true
-        }
+        let filtered = urls.filter { !$0.path.hasPrefix(panelFolder.path) }
+        guard !filtered.isEmpty else { return false }
 
-        if accepted {
-            onDrop?(urlsToMove)
-        }
-
-        return accepted
-    }
-}
-
-// MARK: - Container (solid blue border + tint when dragging)
-
-final class FileDropContainerView: NSView {
-    var isDragging = false { didSet { animateDragState(isDragging) } }
-
-    private var borderLayer = CALayer()
-    private var tintLayer   = CALayer()
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-
-        tintLayer.frame = bounds
-        tintLayer.backgroundColor = NSColor.clear.cgColor
-        tintLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        layer?.addSublayer(tintLayer)
-
-        borderLayer.frame        = bounds
-        borderLayer.borderWidth  = 2
-        borderLayer.cornerRadius = 8
-        borderLayer.borderColor  = NSColor.clear.cgColor
-        borderLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
-        layer?.addSublayer(borderLayer)
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    private func animateDragState(_ active: Bool) {
-        let targetBorder = active
-            ? NSColor.controlAccentColor.cgColor
-            : NSColor.clear.cgColor
-        let targetTint = active
-            ? NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor
-            : NSColor.clear.cgColor
-
-        let duration: CFTimeInterval = active ? 0.0 : 0.15
-
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(duration)
-        borderLayer.borderColor    = targetBorder
-        tintLayer.backgroundColor  = targetTint
-        CATransaction.commit()
-    }
-
-    override func layout() {
-        super.layout()
-        borderLayer.frame = bounds
-        tintLayer.frame   = bounds
+        onDrop?(filtered)
+        return true
     }
 }
 
@@ -1027,28 +1033,21 @@ struct FileDropZoneRepresentable: NSViewRepresentable {
         let hosting = NSHostingView(rootView: content)
         hosting.frame = container.bounds
         hosting.autoresizingMask = [.width, .height]
-        container.addSubview(hosting)
+        // Add hosting first, then lift overlay views above it.
+        container.addSubview(hosting, positioned: .below, relativeTo: nil)
+        container.contentHostingView = hosting
+        container.onDrop = onDrop
+        container.liftOverlay()
 
-        let overlay = FileDropOverlayView()
-        overlay.frame = container.bounds
-        overlay.autoresizingMask = [.width, .height]
-        overlay.onDragEnter = { [weak container] in container?.isDragging = true }
-        overlay.onDragExit  = { [weak container] in container?.isDragging = false }
-        overlay.onDrop      = { [weak container] urls in
-            container?.isDragging = false
-            onDrop(urls)
-        }
-        container.addSubview(overlay)
-        context.coordinator.overlay = overlay
         return container
     }
 
     func updateNSView(_ container: FileDropContainerView, context: Context) {
-        context.coordinator.overlay?.onDrop = { urls in onDrop(urls) }
+        container.onDrop = onDrop
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
-    final class Coordinator { var overlay: FileDropOverlayView? }
+    final class Coordinator { }
 }
 
 // MARK: - All-tab top-level drop zone
@@ -1171,5 +1170,99 @@ struct AllTabDropZoneRepresentable: NSViewRepresentable {
         nsView.onDrop   = onDrop
         // Clear lingering drag UI if tab switched away mid-drag
         if !isActive { nsView.draggingExited(nil) }
+    }
+}
+
+// MARK: - File-drag tab redirect (Clipboard / Notes panels)
+//
+// Sits as an invisible overlay over the Clipboard and Notes panels.
+// When a file URL drag enters while one of those panels is active it:
+//   1. Immediately switches the selected tab to Files.
+//   2. Keeps accepting the drag so the user can release and the file is added.
+// Returns [] on the All and Files tabs so those panels handle the drag themselves.
+
+final class FileDragTabRedirectNSView: NSView {
+    var isActive: Bool = false
+    var onFilesDragEntered: (() -> Void)?
+    var onFilesDropped: (([URL]) -> Void)?
+
+    /// Set once we've redirected so draggingUpdated keeps returning .copy
+    /// even after SwiftUI flips isActive to false (tab already switched).
+    private var hasRedirected = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    // Pass all mouse events through — only here for drag reception.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard isActive else { return [] }
+        if sender.draggingSource is DraggableFileView { return [] }
+        guard sender.draggingPasteboard.canReadObject(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) else { return [] }
+        onFilesDragEntered?()
+        hasRedirected = true
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        // Keep accepting after tab switch (isActive is now false)
+        if hasRedirected { return .copy }
+        guard isActive else { return [] }
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        hasRedirected = false
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo?) {
+        hasRedirected = false
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        hasRedirected = false
+        if sender.draggingSource is DraggableFileView { return false }
+        guard let urls = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] else { return false }
+
+        let panelFolder = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/QuickPanel")
+            .standardizedFileURL
+        let filtered = urls.filter { !$0.path.hasPrefix(panelFolder.path) }
+        guard !filtered.isEmpty else { return false }
+
+        onFilesDropped?(filtered)
+        return true
+    }
+}
+
+struct FileDragTabRedirectRepresentable: NSViewRepresentable {
+    var isActive: Bool
+    var onFilesDragEntered: () -> Void
+    var onFilesDropped: ([URL]) -> Void
+
+    func makeNSView(context: Context) -> FileDragTabRedirectNSView {
+        let v = FileDragTabRedirectNSView()
+        v.isActive            = isActive
+        v.onFilesDragEntered  = onFilesDragEntered
+        v.onFilesDropped      = onFilesDropped
+        return v
+    }
+
+    func updateNSView(_ nsView: FileDragTabRedirectNSView, context: Context) {
+        nsView.isActive           = isActive
+        nsView.onFilesDragEntered = onFilesDragEntered
+        nsView.onFilesDropped     = onFilesDropped
     }
 }
