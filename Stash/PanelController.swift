@@ -868,6 +868,16 @@ struct PanelContentView: View {
                     .opacity(selectedTab == .notes ? 1 : 0)
                     .allowsHitTesting(selectedTab == .notes)
 
+                    // Redirects file drags on Clipboard/Notes tabs → switches to Files tab.
+                    // Returns [] on All and Files tabs so those panels handle it themselves.
+                    FileDragTabRedirectRepresentable(
+                        isActive: selectedTab == .clipboard || selectedTab == .notes,
+                        onFilesDragEntered: { selectedTab = .files },
+                        onFilesDropped: { fileDropStorage.addFiles($0) }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .allowsHitTesting(false)
+
                     // Topmost drop zone — intercepts file drags on the All tab.
                     // Returns [] when another tab is active so SharedFilesColumn handles it.
                     AllTabDropZoneRepresentable(

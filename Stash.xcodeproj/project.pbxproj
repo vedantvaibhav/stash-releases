@@ -80,7 +80,6 @@
 		A50000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				FC63C6EA2F8266DB00B67359 /* UpdaterManager.swift */,
 				A50000000000000000000002 /* Stash */,
 				A50000000000000000000003 /* Products */,
 				FC9F49E62F665C130036931E /* Recovered References */,
@@ -90,6 +89,7 @@
 		A50000000000000000000002 /* Stash */ = {
 			isa = PBXGroup;
 			children = (
+				FC63C6EA2F8266DB00B67359 /* UpdaterManager.swift */,
 				A20000000000000000000001 /* StashApp.swift */,
 				A20000000000000000000002 /* PanelController.swift */,
 				A20000000000000000000005 /* GlobalHotKey.swift */,
