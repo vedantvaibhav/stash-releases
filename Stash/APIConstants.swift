@@ -1,25 +1,11 @@
 import Foundation
 
-/// `groqAPIKey` is the **primary** key (chat + speech when a single provider handles both).
-/// The **host** is picked from its shape:
-/// - `gsk_…` → **Groq** (Whisper + Llama)
-/// - `xai-…` → **xAI** for **chat**; speech uses `speechTranscriptionAPIKey` if set, otherwise attempts xAI (may not support file transcription).
-/// - `sk-…` / `sk-proj-…` → **OpenAI** (Whisper + GPT)
+/// OpenAI-compatible inference: host and models are derived from the shape of the **primary** key.
+/// Keys are supplied only via `APIKeys` (env / plist — never commit real values).
 enum APIConstants {
-    /// Set `STASH_INFERENCE_API_KEY` in the Xcode scheme (Run → Arguments → Environment) or your shell. Do not commit keys.
-    static let groqAPIKey: String = {
-        let v = (ProcessInfo.processInfo.environment["STASH_INFERENCE_API_KEY"] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return v
-    }()
+    static var groqAPIKey: String { APIKeys.stashInferenceAPIKey }
 
-    /// Optional separate key for Whisper: **Groq `gsk_…`** or **OpenAI `sk-…`** when the primary key is xAI. Env: `STASH_SPEECH_TRANSCRIPTION_API_KEY`.
-    /// Leave unset to use the same host as the primary key (works for Groq/OpenAI-only setups).
-    static let speechTranscriptionAPIKey: String = {
-        let v = (ProcessInfo.processInfo.environment["STASH_SPEECH_TRANSCRIPTION_API_KEY"] ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return v
-    }()
+    static var speechTranscriptionAPIKey: String { APIKeys.stashSpeechTranscriptionAPIKey }
 
     /// OpenAI-compatible base URL for **chat** (no trailing slash).
     static var inferenceBaseURL: String {
@@ -67,3 +53,4 @@ enum APIConstants {
         if k.hasPrefix("sk-proj-") || k.hasPrefix("sk-") { return "https://api.openai.com/v1" }
         return "https://api.groq.com/openai/v1"
     }
+}

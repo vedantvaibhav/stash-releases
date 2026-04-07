@@ -66,9 +66,13 @@ struct SingleNoteEditorView: NSViewRepresentable {
         context.coordinator.notesStorage = notesStorage
         context.coordinator.textView = textView
         context.coordinator.boundNoteId = noteId
-
-        let initial = notesStorage.loadNoteAttributed(id: noteId)
-        textView.textStorage?.setAttributedString(initial)
+        context.coordinator.didRequestFocus = false
+        context.coordinator.isApplyingBulkChange = true
+        textView.textStorage?.setAttributedString(
+            NSAttributedString(string: "", attributes: Self.defaultTypingAttributes())
+        )
+        context.coordinator.isApplyingBulkChange = false
+        context.coordinator.scheduleLoad(noteId: noteId, storage: notesStorage)
 
         container.addSubview(toolbar)
         container.addSubview(scrollView)
@@ -84,7 +88,6 @@ struct SingleNoteEditorView: NSViewRepresentable {
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
 
-        context.coordinator.requestInitialFocus()
         return container
     }
 
@@ -96,12 +99,12 @@ struct SingleNoteEditorView: NSViewRepresentable {
             context.coordinator.noteId = noteId
             context.coordinator.notesStorage = notesStorage
             context.coordinator.didRequestFocus = false
-            let attr = notesStorage.loadNoteAttributed(id: noteId)
-            textView.textStorage?.setAttributedString(attr)
-        }
-
-        if !context.coordinator.didRequestFocus {
-            context.coordinator.requestInitialFocus()
+            context.coordinator.isApplyingBulkChange = true
+            textView.textStorage?.setAttributedString(
+                NSAttributedString(string: "", attributes: Self.defaultTypingAttributes())
+            )
+            context.coordinator.isApplyingBulkChange = false
+            context.coordinator.scheduleLoad(noteId: noteId, storage: notesStorage)
         }
     }
 
@@ -122,23 +125,39 @@ struct SingleNoteEditorView: NSViewRepresentable {
         weak var textView: NSTextView?
         var boundNoteId: String = ""
         var didRequestFocus = false
+        var isApplyingBulkChange = false
+        private var loadGeneration = 0
+
+        func scheduleLoad(noteId: String, storage: NotesStorage) {
+            loadGeneration += 1
+            let generation = loadGeneration
+            let id = noteId
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let attr = storage.loadNoteAttributed(id: id)
+                DispatchQueue.main.async {
+                    guard let self, let tv = self.textView else { return }
+                    guard generation == self.loadGeneration, self.boundNoteId == id else { return }
+                    self.isApplyingBulkChange = true
+                    tv.textStorage?.setAttributedString(attr)
+                    self.isApplyingBulkChange = false
+                    self.didRequestFocus = false
+                    self.requestInitialFocus()
+                }
+            }
+        }
 
         func requestInitialFocus() {
             guard let textView else { return }
-            _ = textView.becomeFirstResponder()
             DispatchQueue.main.async { [weak self] in
                 guard let self, let textView = self.textView else { return }
                 textView.window?.makeKeyAndOrderFront(nil)
                 textView.window?.makeFirstResponder(textView)
                 self.didRequestFocus = true
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                guard let self, let textView = self.textView else { return }
-                textView.window?.makeFirstResponder(textView)
-            }
         }
 
         func textDidChange(_ notification: Notification) {
+            if isApplyingBulkChange { return }
             guard let textView = textView else { return }
             let attr = textView.attributedString()
             notesStorage.saveNoteAttributed(id: noteId, attributed: attr)
