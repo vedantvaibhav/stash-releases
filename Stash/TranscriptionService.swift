@@ -2,17 +2,11 @@ import AppKit
 import AVFoundation
 import Foundation
 
-/// Groq-only transcription + meeting notes. URLs and models are hardcoded strings (no APIConstants).
+/// Groq-only transcription + meeting notes. API key from `APIKeys` (see `Secrets.example.plist`).
 @MainActor
 final class TranscriptionService: NSObject, ObservableObject {
 
-    /// Set `STASH_GROQ_TRANSCRIPTION_KEY` or `GROQ_API_KEY` in the scheme environment; do not commit keys.
-    private let groqKey: String = {
-        let env = ProcessInfo.processInfo.environment
-        let a = (env["STASH_GROQ_TRANSCRIPTION_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !a.isEmpty { return a }
-        return (env["GROQ_API_KEY"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    }()
+    private var groqKey: String { APIKeys.groqTranscriptionAPIKey }
     private let whisperURL = "https://api.groq.com/openai/v1/audio/transcriptions"
     private let chatURL = "https://api.groq.com/openai/v1/chat/completions"
     private let whisperModel = "whisper-large-v3-turbo"

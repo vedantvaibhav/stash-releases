@@ -824,71 +824,70 @@ struct PanelContentView: View {
                     }
                 )
 
+                /// Only the selected tab is in the hierarchy. Stacking every tab with opacity caused higher
+                /// `NSHostingView`s (Clipboard / Files / Notes) to sit above the All/Files drop containers and
+                /// block `NSDraggingDestination`, so upload chrome never appeared.
                 ZStack {
-                    AllCombinedView(
-                        clipboard: clipboard,
-                        notesStorage: notesStorage,
-                        fileDropStorage: fileDropStorage,
-                        fileToDelete: $fileToDelete,
-                        makePanelKey: makePanelKey,
-                        transcription: transcription,
-                        showTranscriptionPage: $showTranscriptionPage,
-                        editingNoteId: $editingNoteId,
-                        noteToDelete: $noteToDelete,
-                        switchToNotesTab: { selectedTab = .notes }
-                    )
+                    Group {
+                        switch selectedTab {
+                        case .all:
+                            FileDropZoneRepresentable(
+                                content: AnyView(
+                                    AllCombinedView(
+                                        clipboard: clipboard,
+                                        notesStorage: notesStorage,
+                                        fileDropStorage: fileDropStorage,
+                                        fileToDelete: $fileToDelete,
+                                        makePanelKey: makePanelKey,
+                                        transcription: transcription,
+                                        showTranscriptionPage: $showTranscriptionPage,
+                                        editingNoteId: $editingNoteId,
+                                        noteToDelete: $noteToDelete,
+                                        switchToNotesTab: { selectedTab = .notes }
+                                    )
+                                ),
+                                onDrop: { fileDropStorage.addFiles($0) }
+                            )
+                        case .clipboard:
+                            FileDropZoneRepresentable(
+                                content: AnyView(
+                                    SharedClipboardColumn(clipboard: clipboard, forCardsMode: false)
+                                ),
+                                onDrop: { urls in
+                                    fileDropStorage.addFiles(urls)
+                                    selectedTab = .files
+                                }
+                            )
+                        case .files:
+                            SharedFilesColumn(
+                                fileDropStorage: fileDropStorage,
+                                fileToDelete: $fileToDelete,
+                                forCardsMode: false
+                            )
+                        case .notes:
+                            FileDropZoneRepresentable(
+                                content: AnyView(
+                                    SharedNotesColumn(
+                                        makePanelKey: makePanelKey,
+                                        notesStorage: notesStorage,
+                                        transcription: transcription,
+                                        showTranscriptionPage: $showTranscriptionPage,
+                                        editingNoteId: $editingNoteId,
+                                        noteToDelete: $noteToDelete,
+                                        forCardsMode: false
+                                    )
+                                ),
+                                onDrop: { urls in
+                                    fileDropStorage.addFiles(urls)
+                                    selectedTab = .files
+                                }
+                            )
+                        }
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .opacity(selectedTab == .all ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .all)
-
-                    SharedClipboardColumn(clipboard: clipboard, forCardsMode: false)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .opacity(selectedTab == .clipboard ? 1 : 0)
-                        .allowsHitTesting(selectedTab == .clipboard)
-
-                    SharedFilesColumn(
-                        fileDropStorage: fileDropStorage,
-                        fileToDelete: $fileToDelete,
-                        forCardsMode: false
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .opacity(selectedTab == .files ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .files)
-
-                    SharedNotesColumn(
-                        makePanelKey: makePanelKey,
-                        notesStorage: notesStorage,
-                        transcription: transcription,
-                        showTranscriptionPage: $showTranscriptionPage,
-                        editingNoteId: $editingNoteId,
-                        noteToDelete: $noteToDelete,
-                        forCardsMode: false
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .opacity(selectedTab == .notes ? 1 : 0)
-                    .allowsHitTesting(selectedTab == .notes)
-
-                    // Redirects file drags on Clipboard/Notes tabs → switches to Files tab.
-                    // Returns [] on All and Files tabs so those panels handle it themselves.
-                    FileDragTabRedirectRepresentable(
-                        isActive: selectedTab == .clipboard || selectedTab == .notes,
-                        onFilesDragEntered: { selectedTab = .files },
-                        onFilesDropped: { fileDropStorage.addFiles($0) }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .allowsHitTesting(false)
-
-                    // Topmost drop zone — intercepts file drags on the All tab.
-                    // Returns [] when another tab is active so SharedFilesColumn handles it.
-                    AllTabDropZoneRepresentable(
-                        isActive: selectedTab == .all,
-                        onDrop: { fileDropStorage.addFiles($0) }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .allowsHitTesting(false)
+                    .animation(.easeInOut(duration: 0.15), value: selectedTab)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.easeInOut(duration: 0.15), value: selectedTab)
             }
             .padding(20)
             .frame(maxWidth: 700, maxHeight: .infinity, alignment: .top)

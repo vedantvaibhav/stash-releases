@@ -25,5 +25,8 @@ xcuserdata/
 # CocoaPods (not used but just in case)
 Pods/
 
-# Credentials — never commit API keys
-# (TranscriptionService.swift contains groqKey — review before committing)
+# API keys & local secrets (copy `Stash/Secrets.example.plist` → Application Support …/Stash/Secrets.plist)
+Stash/Secrets.plist
+Stash/APIKeys.swift
+.env
+.env.*

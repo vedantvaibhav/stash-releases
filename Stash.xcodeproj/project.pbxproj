@@ -11,13 +11,14 @@
 		A10000000000000000000002 /* PanelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* PanelController.swift */; };
 		A10000000000000000000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* Assets.xcassets */; };
 		A10000000000000000000004 /* GlobalHotKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* GlobalHotKey.swift */; };
-		A10000000000000000000005 /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* Carbon.framework */; };
 		A10000000000000000000006 /* ClipboardManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* ClipboardManager.swift */; };
 		A10000000000000000000007 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* libsqlite3.tbd */; };
 		A10000000000000000000008 /* NotesStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* NotesStorage.swift */; };
 		A10000000000000000000009 /* NotesEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* NotesEditorView.swift */; };
 		A1000000000000000000000B /* FileDropStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* FileDropStorage.swift */; };
 		A1000000000000000000000C /* FileDropZoneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* FileDropZoneView.swift */; };
+		A10000000000000000000022 /* APIKeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000022 /* APIKeys.swift */; };
+		A10000000000000000000023 /* APIConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000023 /* APIConstants.swift */; };
 		A1000000000000000000000D /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* AppSettings.swift */; };
 		A1000000000000000000000E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* SettingsView.swift */; };
 		A1000000000000000000000F /* CardsModeAppKit.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000F /* CardsModeAppKit.swift */; };
@@ -32,6 +33,7 @@
 		A10000000000000000000021 /* TabBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000021 /* TabBarView.swift */; };
 		FC63C6E92F82656000B67359 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = FC63C6E82F82656000B67359 /* Sparkle */; };
 		FC63C6EB2F8266DB00B67359 /* UpdaterManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC63C6EA2F8266DB00B67359 /* UpdaterManager.swift */; };
+		FCA8014F2F8442B600E0215E /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* Carbon.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +49,8 @@
 		A2000000000000000000000A /* NotesEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesEditorView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000B /* FileDropStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDropStorage.swift; sourceTree = "<group>"; };
 		A2000000000000000000000C /* FileDropZoneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDropZoneView.swift; sourceTree = "<group>"; };
+		A20000000000000000000022 /* APIKeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIKeys.swift; sourceTree = "<group>"; };
+		A20000000000000000000023 /* APIConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIConstants.swift; sourceTree = "<group>"; };
 		A2000000000000000000000D /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		A2000000000000000000000E /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000F /* CardsModeAppKit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardsModeAppKit.swift; sourceTree = "<group>"; };
@@ -69,7 +73,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FC63C6E92F82656000B67359 /* Sparkle in Frameworks */,
-				A10000000000000000000005 /* Carbon.framework in Frameworks */,
+				FCA8014F2F8442B600E0215E /* Carbon.framework in Frameworks */,
 				A10000000000000000000007 /* libsqlite3.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -98,6 +102,8 @@
 				A2000000000000000000000A /* NotesEditorView.swift */,
 				A2000000000000000000000B /* FileDropStorage.swift */,
 				A2000000000000000000000C /* FileDropZoneView.swift */,
+				A20000000000000000000023 /* APIConstants.swift */,
+				A20000000000000000000022 /* APIKeys.swift */,
 				A2000000000000000000000D /* AppSettings.swift */,
 				A2000000000000000000000E /* SettingsView.swift */,
 				A2000000000000000000000F /* CardsModeAppKit.swift */,
@@ -214,6 +220,8 @@
 				A10000000000000000000009 /* NotesEditorView.swift in Sources */,
 				A1000000000000000000000B /* FileDropStorage.swift in Sources */,
 				A1000000000000000000000C /* FileDropZoneView.swift in Sources */,
+				A10000000000000000000022 /* APIKeys.swift in Sources */,
+				A10000000000000000000023 /* APIConstants.swift in Sources */,
 				A1000000000000000000000D /* AppSettings.swift in Sources */,
 				A1000000000000000000000E /* SettingsView.swift in Sources */,
 				A1000000000000000000000F /* CardsModeAppKit.swift in Sources */,

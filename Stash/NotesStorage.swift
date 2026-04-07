@@ -32,6 +32,7 @@ final class NotesStorage: ObservableObject {
 
     private let fileManager = FileManager.default
     private let notesDirectory: URL
+    private var listRefreshDebounce: DispatchWorkItem?
 
     init() {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -39,7 +40,7 @@ final class NotesStorage: ObservableObject {
         try? fileManager.createDirectory(at: quickPanelDir, withIntermediateDirectories: true)
         notesDirectory = quickPanelDir.appendingPathComponent("notes")
         try? fileManager.createDirectory(at: notesDirectory, withIntermediateDirectories: true)
-        refreshNotes()
+        refreshNotes(immediate: true)
 
         NotificationCenter.default.addObserver(
             forName: Notification.Name("QuickPanelClearNotes"),
@@ -54,20 +55,42 @@ final class NotesStorage: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.refreshNotes()
+            self?.refreshNotes(immediate: true)
         }
     }
 
-    func refreshNotes() {
-        var items: [NoteItem] = []
+    /// When `immediate` is false, scans the notes folder after a short delay so saves (e.g. every keystroke in RTF) do not stall the UI.
+    /// Safe to call from any thread.
+    func refreshNotes(immediate: Bool = true) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if immediate {
+                self.listRefreshDebounce?.cancel()
+                self.listRefreshDebounce = nil
+                self.kickOffRefresh()
+                return
+            }
+            self.listRefreshDebounce?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.kickOffRefresh() }
+            self.listRefreshDebounce = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        }
+    }
+
+    private func kickOffRefresh() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            let items = self.buildNoteItems()
+            DispatchQueue.main.async { self.notes = items }
+        }
+    }
+
+    private func buildNoteItems() -> [NoteItem] {
         guard let contents = try? fileManager.contentsOfDirectory(
             at: notesDirectory,
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
-        ) else {
-            notes = []
-            return
-        }
+        ) else { return [] }
 
         let noteURLs = contents.filter { url in
             let e = url.pathExtension.lowercased()
@@ -77,19 +100,20 @@ final class NotesStorage: ObservableObject {
         var byId: [String: URL] = [:]
         for url in noteURLs {
             let id = url.deletingPathExtension().lastPathComponent
-            if let existing = byId[id] {
+            if byId[id] != nil {
                 if url.pathExtension.lowercased() == "rtf" { byId[id] = url }
             } else {
                 byId[id] = url
             }
         }
 
+        var items: [NoteItem] = []
         for (id, url) in byId {
             let (title, lastEdited, origin) = titleDateAndOrigin(for: url)
             items.append(NoteItem(id: id, title: title, lastEdited: lastEdited, origin: origin))
         }
         items.sort { $0.lastEdited > $1.lastEdited }
-        notes = items
+        return items
     }
 
     private func titleDateAndOrigin(for url: URL) -> (String, Date, NoteOrigin) {
@@ -101,17 +125,9 @@ final class NotesStorage: ObservableObject {
 
         let plainFirstLine: String
         if url.pathExtension.lowercased() == "rtf",
-           let data = try? Data(contentsOf: url),
-           let attr = try? NSAttributedString(
-            data: data,
-            options: [.documentType: NSAttributedString.DocumentType.rtf],
-            documentAttributes: nil
-           ) {
-            plainFirstLine = attr.string
-                .components(separatedBy: .newlines)
-                .first?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        } else if let data = try? Data(contentsOf: url),
+           let parsed = firstLineFromRTF(url: url) {
+            plainFirstLine = parsed
+        } else if let data = try? readUpToBytes(from: url, maxBytes: 8192),
                   let string = String(data: data, encoding: .utf8) {
             plainFirstLine = string
                 .components(separatedBy: .newlines)
@@ -125,6 +141,37 @@ final class NotesStorage: ObservableObject {
         let title = plainFirstLine.isEmpty ? "Untitled" : String(plainFirstLine.prefix(40))
         let trimmed = plainFirstLine.count > 40 ? title + "..." : title
         return (trimmed, lastEdited, origin)
+    }
+
+    private func readUpToBytes(from url: URL, maxBytes: Int) throws -> Data {
+        let fh = try FileHandle(forReadingFrom: url)
+        defer { try? fh.close() }
+        return (try fh.read(upToCount: maxBytes)) ?? Data()
+    }
+
+    /// Prefer a prefix read when refreshing the list; fall back to a full read if RTF is incomplete.
+    private func firstLineFromRTF(url: URL) -> String? {
+        if let prefix = try? readUpToBytes(from: url, maxBytes: 24_000),
+           let attr = try? NSAttributedString(
+            data: prefix,
+            options: [.documentType: NSAttributedString.DocumentType.rtf],
+            documentAttributes: nil
+           ) {
+            return attr.string
+                .components(separatedBy: .newlines)
+                .first?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard let data = try? Data(contentsOf: url),
+              let attr = try? NSAttributedString(
+                data: data,
+                options: [.documentType: NSAttributedString.DocumentType.rtf],
+                documentAttributes: nil
+              ) else { return nil }
+        return attr.string
+            .components(separatedBy: .newlines)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Plain string for copy/export (loses formatting in pasteboard as plain text).
@@ -169,6 +216,7 @@ final class NotesStorage: ObservableObject {
         let rtfURL = notesDirectory.appendingPathComponent("\(id).rtf")
         let txtURL = notesDirectory.appendingPathComponent("\(id).txt")
         let range = NSRange(location: 0, length: attributed.length)
+        // Encode RTF on the calling thread (main) — NSAttributedString is not thread-safe.
         guard let data = try? attributed.data(
             from: range,
             documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
@@ -176,18 +224,22 @@ final class NotesStorage: ObservableObject {
             print("[NotesStorage] saveNoteAttributed: RTF encode failed id=\(id)")
             return
         }
-        do {
-            try data.write(to: rtfURL, options: .atomic)
-            if fileManager.fileExists(atPath: txtURL.path) {
-                try? fileManager.removeItem(at: txtURL)
+        // Write to disk on a background thread so the main thread is never blocked.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            do {
+                try data.write(to: rtfURL, options: .atomic)
+                if self.fileManager.fileExists(atPath: txtURL.path) {
+                    try? self.fileManager.removeItem(at: txtURL)
+                }
+                self.refreshNotes(immediate: false)
+            } catch {
+                print("[NotesStorage] saveNoteAttributed FAILED id=\(id) error=\(error)")
             }
-            refreshNotes()
-        } catch {
-            print("[NotesStorage] saveNoteAttributed FAILED id=\(id) error=\(error)")
         }
     }
 
-    func saveNote(id: String, text: String) {
+    func saveNote(id: String, text: String, debounceListRefresh: Bool = true) {
         let txtURL = notesDirectory.appendingPathComponent("\(id).txt")
         let rtfURL = notesDirectory.appendingPathComponent("\(id).rtf")
         guard let data = text.data(using: .utf8) else {
@@ -203,7 +255,7 @@ final class NotesStorage: ObservableObject {
         } catch {
             print("[NotesStorage] saveNote FAILED id=\(id) error=\(error)")
         }
-        refreshNotes()
+        refreshNotes(immediate: !debounceListRefresh)
     }
 
     func deleteNote(id: String) {
@@ -211,7 +263,7 @@ final class NotesStorage: ObservableObject {
         let rtfURL = notesDirectory.appendingPathComponent("\(id).rtf")
         try? fileManager.removeItem(at: txtURL)
         try? fileManager.removeItem(at: rtfURL)
-        refreshNotes()
+        refreshNotes(immediate: true)
     }
 
     func clearAllNotes() {
@@ -238,7 +290,7 @@ final class NotesStorage: ObservableObject {
         let rtfURL = notesDirectory.appendingPathComponent("\(id).rtf")
         guard !fileManager.fileExists(atPath: txtURL.path),
               !fileManager.fileExists(atPath: rtfURL.path) else { return }
-        saveNote(id: id, text: "")
+        saveNote(id: id, text: "", debounceListRefresh: false)
     }
 
     @discardableResult
@@ -250,7 +302,7 @@ final class NotesStorage: ObservableObject {
         } else {
             fullText = title + "\n\n" + body
         }
-        saveNote(id: id, text: fullText)
+        saveNote(id: id, text: fullText, debounceListRefresh: false)
         return id
     }
 }
