@@ -1,306 +1,308 @@
 import AppKit
 import Combine
 import QuartzCore
+import SwiftUI
 
-// MARK: - Shimmer label (CAGradientLayer + text mask)
+// MARK: - Waveform icon (SwiftUI) — six live bars bouncing out of phase
 
-private final class ShimmerLabelView: NSView {
+struct PillWaveformIcon: View {
+    @State private var pulse = false
 
-    private let gradient = CAGradientLayer()
-    private let textLayer = CATextLayer()
-    private var lastSize = CGSize.zero
-    private var lastString = ""
+    var body: some View {
+        Image(systemName: "waveform")
+            .font(.system(size: 18, weight: .medium))
+            .foregroundColor(.white)
+            .scaleEffect(pulse ? 1.18 : 0.82)
+            .opacity(pulse ? 1.0 : 0.55)
+            .animation(
+                .easeInOut(duration: 0.55).repeatForever(autoreverses: true),
+                value: pulse
+            )
+            .onAppear { pulse = true }
+    }
+}
+
+// MARK: - 28×28 circle wrapper hosting the SwiftUI bars
+
+private final class PillWaveformCircleView: NSView {
+    private let hosting = NSHostingView(rootView: PillWaveformIcon())
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.masksToBounds = false
+        // 36×36 circle background — same fill as HeaderIconButton rest state
+        layer?.cornerRadius = 18
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
 
-        gradient.colors = [
-            NSColor.white.withAlphaComponent(0.6).cgColor,
-            NSColor.white.cgColor,
-            NSColor.white.withAlphaComponent(0.6).cgColor
-        ]
-        gradient.startPoint = CGPoint(x: 0, y: 0.5)
-        gradient.endPoint = CGPoint(x: 1, y: 0.5)
-        gradient.locations = [-0.3, -0.1, 0.1] as [NSNumber]
-        layer?.addSublayer(gradient)
-
-        textLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
-        textLayer.alignmentMode = .center
-        textLayer.foregroundColor = NSColor.white.cgColor
-        textLayer.font = NSFont.systemFont(ofSize: 13, weight: .medium)
-        textLayer.fontSize = 13
-        gradient.mask = textLayer
-
-        startShimmerAnimation()
+        // 18×18 SwiftUI SF-Symbol waveform, centred
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hosting)
+        NSLayoutConstraint.activate([
+            hosting.widthAnchor.constraint(equalToConstant: 18),
+            hosting.heightAnchor.constraint(equalToConstant: 18),
+            hosting.centerXAnchor.constraint(equalTo: centerXAnchor),
+            hosting.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    private func startShimmerAnimation() {
-        let anim = CABasicAnimation(keyPath: "locations")
-        anim.fromValue = [-0.3, -0.1, 0.1] as [NSNumber]
-        anim.toValue = [0.9, 1.1, 1.3] as [NSNumber]
-        anim.duration = 1.8
-        anim.repeatCount = .greatestFiniteMagnitude
-        anim.isRemovedOnCompletion = false
-        gradient.add(anim, forKey: "shimmer")
-    }
-
-    func setText(_ string: String, shimmerEnabled: Bool) {
-        lastString = string
-        textLayer.string = string
-        if shimmerEnabled {
-            startShimmerAnimation()
-            gradient.isHidden = false
-        } else {
-            gradient.removeAnimation(forKey: "shimmer")
-            gradient.isHidden = true
-        }
-        needsLayout = true
-    }
-
-    override func layout() {
-        super.layout()
-        let w = bounds.width
-        let h = bounds.height
-        guard w > 0, h > 0 else { return }
-        gradient.frame = bounds
-        textLayer.frame = CGRect(x: 0, y: (h - 18) / 2, width: w, height: 20)
-        if lastSize != bounds.size || lastString != (textLayer.string as? String ?? "") {
-            lastSize = bounds.size
-        }
-    }
+    required init?(coder: NSCoder) { fatalError() }
 }
 
-// MARK: - Pulsing dot
+// MARK: - Pill content view
 
-private final class PulsingDotView: NSView {
+private final class PillContentView: NSView {
+    var onStop: (() -> Void)?
 
-    private let dot = CALayer()
-    private var pulseColor: NSColor = .systemRed
+    // Waveform pinned left during recording; a single rightStack on the right
+    // whose arranged subviews swap per mode (timer+stop / spinner+label / check+label).
+    // During processing / completion the waveform is hidden and its positioning
+    // constraints are deactivated so the pill shrinks around the rightStack.
+    private let rightStack = NSStackView()
+    private let waveform = PillWaveformCircleView(frame: .zero)
+    private let timerLabel = NSTextField(labelWithString: "00:00")
+    private let stopButton = NSView()
+    private let statusLabel = NSTextField(labelWithString: "")
+    private let spinner = NSProgressIndicator()
+    private let checkmarkView = NSImageView()
 
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.masksToBounds = false
-        dot.frame = CGRect(x: 0, y: 0, width: 8, height: 8)
-        dot.cornerRadius = 4
-        layer?.addSublayer(dot)
-        applyColor()
-        startPulse()
-    }
+    // Layout constraints that swap between recording vs processing/completion.
+    private var waveformLeading: NSLayoutConstraint!
+    private var rightStackLeadingWithWaveform: NSLayoutConstraint!
+    private var rightStackLeadingNoWaveform: NSLayoutConstraint!
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func setPulseColor(_ color: NSColor) {
-        pulseColor = color
-        applyColor()
-    }
-
-    private func applyColor() {
-        dot.backgroundColor = pulseColor.cgColor
-    }
-
-    private func startPulse() {
-        let anim = CABasicAnimation(keyPath: "opacity")
-        anim.fromValue = 0.4
-        anim.toValue = 1.0
-        anim.duration = 1.0
-        anim.autoreverses = true
-        anim.repeatCount = .greatestFiniteMagnitude
-        anim.isRemovedOnCompletion = false
-        dot.add(anim, forKey: "pulse")
-    }
-
-    override func layout() {
-        super.layout()
-        let h = bounds.height
-        dot.position = CGPoint(x: 4, y: h / 2)
-    }
-}
-
-// MARK: - Widget content (pill)
-
-private final class TranscriptionFloatingWidgetContentView: NSView {
-
-    var onTap: (() -> Void)?
-
-    private let effectView = NSVisualEffectView()
-    private let tintOverlay = NSView()
-    private let shadowContainer = NSView()
-    private let hStack = NSStackView()
-    private let pulsingDot = PulsingDotView(frame: .zero)
-    private let shimmerLabel = ShimmerLabelView(frame: .zero)
-    private let plainCenterLabel = NSTextField(labelWithString: "")
-    private let durationLabel = NSTextField(labelWithString: "0:00")
+    private var dragStart: NSPoint?
+    private var windowOriginAtDragStart: NSPoint?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 18
-        layer?.masksToBounds = false
-        layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = 0.35
-        layer?.shadowRadius = 12
-        layer?.shadowOffset = CGSize(width: 0, height: 4)
+        // Solid black pill — no border, no shadow, no blur. All drawn on the layer.
+        layer?.cornerRadius = 24
+        layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.92).cgColor
+        layer?.borderWidth = 0
+        layer?.shadowOpacity = 0
 
-        shadowContainer.translatesAutoresizingMaskIntoConstraints = false
-        shadowContainer.wantsLayer = true
-        shadowContainer.layer?.cornerRadius = 18
-        shadowContainer.layer?.masksToBounds = true
-
-        effectView.translatesAutoresizingMaskIntoConstraints = false
-        effectView.material = .hudWindow
-        effectView.blendingMode = .withinWindow
-        effectView.state = .active
-
-        tintOverlay.translatesAutoresizingMaskIntoConstraints = false
-        tintOverlay.wantsLayer = true
-        tintOverlay.layer?.backgroundColor = NSColor(white: 0.12, alpha: 0.92).cgColor
-
-        hStack.orientation = .horizontal
-        hStack.alignment = .centerY
-        hStack.spacing = 8
-        hStack.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
-        hStack.translatesAutoresizingMaskIntoConstraints = false
-
-        pulsingDot.translatesAutoresizingMaskIntoConstraints = false
+        // Waveform — 36×36 circle bounding box containing the 18×18 SF-Symbol
+        waveform.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            pulsingDot.widthAnchor.constraint(equalToConstant: 8),
-            pulsingDot.heightAnchor.constraint(equalToConstant: 8)
+            waveform.widthAnchor.constraint(equalToConstant: 36),
+            waveform.heightAnchor.constraint(equalToConstant: 36)
         ])
 
-        shimmerLabel.translatesAutoresizingMaskIntoConstraints = false
-        shimmerLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        shimmerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Timer — SF Pro Regular 20pt with monospaced digits so ticks don't jitter
+        timerLabel.font = .monospacedDigitSystemFont(ofSize: 20, weight: .regular)
+        timerLabel.textColor = NSColor.white.withAlphaComponent(0.64)
+        timerLabel.alignment = .center
+        timerLabel.isBordered = false
+        timerLabel.isEditable = false
+        timerLabel.backgroundColor = .clear
+        timerLabel.translatesAutoresizingMaskIntoConstraints = false
+        timerLabel.setContentHuggingPriority(.required, for: .horizontal)
 
-        plainCenterLabel.translatesAutoresizingMaskIntoConstraints = false
-        plainCenterLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        plainCenterLabel.textColor = NSColor.white.withAlphaComponent(0.6)
-        plainCenterLabel.alignment = .center
-        plainCenterLabel.isEditable = false
-        plainCenterLabel.isBordered = false
-        plainCenterLabel.backgroundColor = .clear
-        plainCenterLabel.isHidden = true
+        // Status label (for "Processing" / "Copied" / "Note saved" / "Failed") — muted gray.
+        statusLabel.font = .systemFont(ofSize: 14, weight: .regular)
+        statusLabel.textColor = NSColor.white.withAlphaComponent(0.64)
+        statusLabel.isBordered = false
+        statusLabel.isEditable = false
+        statusLabel.backgroundColor = .clear
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.setContentHuggingPriority(.required, for: .horizontal)
 
-        durationLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        durationLabel.textColor = NSColor.white.withAlphaComponent(0.5)
-        durationLabel.alignment = .right
-        durationLabel.isEditable = false
-        durationLabel.isBordered = false
-        durationLabel.backgroundColor = .clear
-        durationLabel.setContentHuggingPriority(.required, for: .horizontal)
-
-        hStack.addArrangedSubview(pulsingDot)
-        hStack.addArrangedSubview(shimmerLabel)
-        hStack.addArrangedSubview(plainCenterLabel)
-        hStack.addArrangedSubview(durationLabel)
-
-        // Outer self carries the soft shadow; inner pill clips blur + content.
-        addSubview(shadowContainer)
-        shadowContainer.addSubview(effectView)
-        shadowContainer.addSubview(tintOverlay)
-        shadowContainer.addSubview(hStack)
-
+        // Spinner
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.isDisplayedWhenStopped = false
         NSLayoutConstraint.activate([
-            shadowContainer.leadingAnchor.constraint(equalTo: leadingAnchor),
-            shadowContainer.trailingAnchor.constraint(equalTo: trailingAnchor),
-            shadowContainer.topAnchor.constraint(equalTo: topAnchor),
-            shadowContainer.bottomAnchor.constraint(equalTo: bottomAnchor),
-
-            effectView.leadingAnchor.constraint(equalTo: shadowContainer.leadingAnchor),
-            effectView.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
-            effectView.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
-            effectView.bottomAnchor.constraint(equalTo: shadowContainer.bottomAnchor),
-
-            tintOverlay.leadingAnchor.constraint(equalTo: shadowContainer.leadingAnchor),
-            tintOverlay.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
-            tintOverlay.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
-            tintOverlay.bottomAnchor.constraint(equalTo: shadowContainer.bottomAnchor),
-
-            hStack.leadingAnchor.constraint(equalTo: shadowContainer.leadingAnchor),
-            hStack.trailingAnchor.constraint(equalTo: shadowContainer.trailingAnchor),
-            hStack.topAnchor.constraint(equalTo: shadowContainer.topAnchor),
-            hStack.bottomAnchor.constraint(equalTo: shadowContainer.bottomAnchor)
+            spinner.widthAnchor.constraint(equalToConstant: 14),
+            spinner.heightAnchor.constraint(equalToConstant: 14)
         ])
 
-        let click = NSClickGestureRecognizer(target: self, action: #selector(handleClick))
-        addGestureRecognizer(click)
+        // Checkmark (completion) — SF Symbol, 12pt medium, tinted #A3A3A3.
+        let checkConfig = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        checkmarkView.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)?
+            .withSymbolConfiguration(checkConfig)
+        checkmarkView.contentTintColor = NSColor.white.withAlphaComponent(0.64)
+        checkmarkView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            checkmarkView.widthAnchor.constraint(equalToConstant: 14),
+            checkmarkView.heightAnchor.constraint(equalToConstant: 14)
+        ])
+
+        // Stop button — 14×14 solid red (#DC2626) dot; 4px from pill right edge.
+        stopButton.translatesAutoresizingMaskIntoConstraints = false
+        stopButton.wantsLayer = true
+        stopButton.layer?.cornerRadius = 7
+        stopButton.layer?.backgroundColor = NSColor(red: 220/255, green: 38/255, blue: 38/255, alpha: 1).cgColor
+        NSLayoutConstraint.activate([
+            stopButton.widthAnchor.constraint(equalToConstant: 14),
+            stopButton.heightAnchor.constraint(equalToConstant: 14)
+        ])
+        let click = NSClickGestureRecognizer(target: self, action: #selector(stopTapped))
+        stopButton.addGestureRecognizer(click)
+
+        // Waveform is pinned to the left; stays visible across all modes.
+        addSubview(waveform)
+
+        // rightStack sits at the pill's trailing edge; its arranged subviews
+        // are rebuilt in apply(mode:) so only the right side of the pill
+        // morphs between [timer + stop] / [spinner + label] / [check + label].
+        rightStack.orientation = .horizontal
+        rightStack.alignment = .centerY
+        rightStack.spacing = 6
+        rightStack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(rightStack)
+
+        // Waveform: 6px from left edge, vertically centred.
+        waveformLeading = waveform.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6)
+
+        // rightStack: 12px from right edge, vertically centred.
+        // Leading differs per mode: during recording it sits after the waveform;
+        // during processing/completion there's symmetric 12px padding instead.
+        rightStackLeadingWithWaveform = rightStack.leadingAnchor.constraint(
+            greaterThanOrEqualTo: waveform.trailingAnchor, constant: 8
+        )
+        rightStackLeadingNoWaveform = rightStack.leadingAnchor.constraint(
+            greaterThanOrEqualTo: leadingAnchor, constant: 12
+        )
+
+        NSLayoutConstraint.activate([
+            waveformLeading,
+            waveform.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            rightStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            rightStack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            rightStackLeadingWithWaveform
+        ])
     }
 
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    required init?(coder: NSCoder) { fatalError() }
 
-    @objc private func handleClick() {
-        onTap?()
-    }
+    @objc private func stopTapped() { onStop?() }
 
-    enum DisplayMode {
-        case recording
+    // MARK: - State application
+
+    enum Mode {
+        case recording(durationSeconds: Int, audioLevel: Float)
         case processing
-        case noteReady
+        case completion(message: String)
     }
 
-    func apply(mode: DisplayMode, durationSeconds: Int) {
-        let m = durationSeconds / 60
-        let s = durationSeconds % 60
-        durationLabel.stringValue = String(format: "%d:%02d", m, s)
+    func apply(mode: Mode) {
+        // Tear down the current right-side contents so we can rebuild.
+        for v in rightStack.arrangedSubviews {
+            rightStack.removeArrangedSubview(v)
+            v.removeFromSuperview()
+        }
 
         switch mode {
-        case .recording:
-            pulsingDot.isHidden = false
-            pulsingDot.setPulseColor(.systemRed)
-            shimmerLabel.isHidden = false
-            plainCenterLabel.isHidden = true
-            shimmerLabel.setText("Transcribing...", shimmerEnabled: true)
-            durationLabel.isHidden = false
+        case .recording(let secs, _):
+            // Waveform visible on the left; timer + stop on the right.
+            waveform.isHidden = false
+            waveformLeading.isActive = true
+            rightStackLeadingNoWaveform.isActive = false
+            rightStackLeadingWithWaveform.isActive = true
+
+            spinner.stopAnimation(nil)
+            timerLabel.stringValue = formatDuration(secs)
+            rightStack.addArrangedSubview(timerLabel)
+            rightStack.addArrangedSubview(stopButton)
+
         case .processing:
-            pulsingDot.isHidden = false
-            pulsingDot.setPulseColor(.systemBlue)
-            shimmerLabel.isHidden = true
-            plainCenterLabel.isHidden = false
-            plainCenterLabel.stringValue = "Processing..."
-            plainCenterLabel.textColor = NSColor.white.withAlphaComponent(0.6)
-            durationLabel.isHidden = false
-        case .noteReady:
-            pulsingDot.isHidden = true
-            shimmerLabel.isHidden = true
-            plainCenterLabel.isHidden = false
-            plainCenterLabel.stringValue = "Note ready ✓"
-            plainCenterLabel.textColor = NSColor.systemGreen
-            durationLabel.isHidden = true
+            // No waveform during processing — pill shrinks around the status content.
+            waveform.isHidden = true
+            waveformLeading.isActive = false
+            rightStackLeadingWithWaveform.isActive = false
+            rightStackLeadingNoWaveform.isActive = true
+
+            spinner.startAnimation(nil)
+            statusLabel.stringValue = "Processing"
+            rightStack.addArrangedSubview(spinner)
+            rightStack.addArrangedSubview(statusLabel)
+
+        case .completion(let msg):
+            // No waveform during completion either — just the check + message.
+            waveform.isHidden = true
+            waveformLeading.isActive = false
+            rightStackLeadingWithWaveform.isActive = false
+            rightStackLeadingNoWaveform.isActive = true
+
+            spinner.stopAnimation(nil)
+            statusLabel.stringValue = msg
+            rightStack.addArrangedSubview(checkmarkView)
+            rightStack.addArrangedSubview(statusLabel)
         }
     }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        let s = seconds % 60
+        if h > 0 { return String(format: "%02d:%02d:%02d", h, m, s) }
+        return String(format: "%02d:%02d", m, s)
+    }
+
+    /// Natural width the pill wants to occupy given its current mode — driven by the
+    /// internal stack view's fitting size, clamped to a sensible minimum so brief
+    /// mode labels ("Processing...") still look like a pill and not a circle.
+    func naturalWidth() -> CGFloat {
+        layoutSubtreeIfNeeded()
+        let rightW = rightStack.fittingSize.width
+        let contentW: CGFloat
+        if waveform.isHidden {
+            // Just the rightStack with 12px symmetric padding.
+            contentW = 12 + rightW + 12
+        } else {
+            // Waveform (36) + 6 left pad + 8 gap + rightStack + 12 right pad.
+            contentW = 6 + 36 + 8 + rightW + 12
+        }
+        return max(140, contentW)
+    }
+
+    // MARK: - Dragging
+
+    override func mouseDown(with event: NSEvent) {
+        dragStart = NSEvent.mouseLocation
+        windowOriginAtDragStart = window?.frame.origin
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = dragStart, let origin = windowOriginAtDragStart, let win = window else { return }
+        let loc = NSEvent.mouseLocation
+        win.setFrameOrigin(NSPoint(x: origin.x + loc.x - start.x, y: origin.y + loc.y - start.y))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragStart = nil
+        windowOriginAtDragStart = nil
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 // MARK: - Floating panel
 
-private final class TranscriptionFloatingPanel: NSPanel {
+private final class PillPanel: NSPanel {
     override var canBecomeKey: Bool { false }
 }
 
-/// Granola-style pill when the main QuickPanel is hidden during transcription / processing.
+// MARK: - Controller
+
 @MainActor
 final class TranscriptionFloatingWidgetController: NSObject {
 
     private weak var transcription: TranscriptionService?
-    private var panelOpenForWidget: Bool = false
-    private var lastWidgetMode: WidgetMode = .none
-    private var isShowingNoteReadyBanner = false
-    private var noteReadyWorkItem: DispatchWorkItem?
-
-    private var panel: TranscriptionFloatingPanel?
-    private var contentView: TranscriptionFloatingWidgetContentView?
+    private var panel: PillPanel?
+    private var contentView: PillContentView?
     private var cancellables = Set<AnyCancellable>()
+    private var panelOpenForWidget = false
 
-    private enum WidgetMode {
-        case none
-        case recording
-        case processing
-        case noteReady
-    }
+    private enum Phase { case none, recording, processing, completion }
+    private var phase: Phase = .none
+    private var completionWorkItem: DispatchWorkItem?
 
     var onOpenTranscription: (() -> Void)?
 
@@ -309,7 +311,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
         transcription.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.sync()
+                DispatchQueue.main.async { self?.sync() }
             }
             .store(in: &cancellables)
         sync()
@@ -321,75 +323,84 @@ final class TranscriptionFloatingWidgetController: NSObject {
     }
 
     private func sync() {
-        guard let transcription else { return }
+        guard let ts = transcription else { hidePanel(); return }
 
-        noteReadyWorkItem?.cancel()
-        noteReadyWorkItem = nil
-
+        // While the main panel is open, don't show the pill.
         if panelOpenForWidget {
-            noteReadyWorkItem?.cancel()
-            noteReadyWorkItem = nil
+            completionWorkItem?.cancel()
+            completionWorkItem = nil
             hidePanel()
-            lastWidgetMode = .none
-            isShowingNoteReadyBanner = false
+            phase = .none
             return
         }
 
-        let recording = transcription.isRecording
-        let processing = transcription.isProcessing
-
-        if recording {
-            isShowingNoteReadyBanner = false
-            noteReadyWorkItem?.cancel()
-            noteReadyWorkItem = nil
-            lastWidgetMode = .recording
+        // Completion message (short-lived) takes priority.
+        if let msg = ts.completionMessage {
+            completionWorkItem?.cancel()
+            completionWorkItem = nil
+            phase = .completion
             showPanelIfNeeded()
-            contentView?.apply(mode: .recording, durationSeconds: transcription.duration)
-            return
-        }
+            contentView?.apply(mode: .completion(message: msg))
+            resizePillToFitContent()
 
-        if processing {
-            isShowingNoteReadyBanner = false
-            noteReadyWorkItem?.cancel()
-            noteReadyWorkItem = nil
-            lastWidgetMode = .processing
-            showPanelIfNeeded()
-            contentView?.apply(mode: .processing, durationSeconds: transcription.duration)
-            return
-        }
-
-        if isShowingNoteReadyBanner {
-            return
-        }
-
-        if lastWidgetMode == .processing {
-            lastWidgetMode = .noteReady
-            isShowingNoteReadyBanner = true
-            showPanelIfNeeded()
-            contentView?.apply(mode: .noteReady, durationSeconds: transcription.duration)
             let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self.hidePanel()
-                self.lastWidgetMode = .none
-                self.isShowingNoteReadyBanner = false
-                self.noteReadyWorkItem = nil
+                self?.hidePanel()
+                self?.phase = .none
+                self?.completionWorkItem = nil
             }
-            noteReadyWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+            completionWorkItem = work
+            // Hide after the message disappears (ts.completionMessage clears at 1.5 s)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
             return
         }
 
-        hidePanel()
-        lastWidgetMode = .none
-        isShowingNoteReadyBanner = false
+        if ts.isRecording {
+            completionWorkItem?.cancel()
+            completionWorkItem = nil
+            phase = .recording
+            showPanelIfNeeded()
+            contentView?.apply(mode: .recording(durationSeconds: ts.duration, audioLevel: ts.audioLevel))
+            resizePillToFitContent()
+            return
+        }
+
+        if ts.isProcessing {
+            completionWorkItem?.cancel()
+            completionWorkItem = nil
+            phase = .processing
+            showPanelIfNeeded()
+            contentView?.apply(mode: .processing)
+            resizePillToFitContent()
+            return
+        }
+
+        // Idle — only hide if we weren't waiting on a completion banner.
+        if phase != .completion {
+            hidePanel()
+            phase = .none
+        }
     }
 
     private func showPanelIfNeeded() {
-        if panel == nil {
-            buildPanel()
-        }
-        positionPanel()
+        if panel == nil { buildPanel() }
+        positionIfNeeded()
         panel?.orderFrontRegardless()
+    }
+
+    /// Resize the pill to its content's intrinsic width, keeping the centre x fixed so
+    /// the pill visually "grows out from the middle" as modes swap — no jumpy origin.
+    private func resizePillToFitContent() {
+        guard let p = panel, let cv = contentView else { return }
+        let targetW = cv.naturalWidth()
+        guard targetW > 0 else { return }
+        let current = p.frame
+        let centre = current.midX
+        let newFrame = NSRect(x: centre - targetW / 2,
+                              y: current.minY,
+                              width: targetW,
+                              height: current.height)
+        if newFrame == current { return }
+        p.setFrame(newFrame, display: true)
     }
 
     private func hidePanel() {
@@ -397,11 +408,13 @@ final class TranscriptionFloatingWidgetController: NSObject {
     }
 
     private func buildPanel() {
-        let w: CGFloat = 220
-        let h: CGFloat = 36
+        let h: CGFloat = 48
+        // Start wide enough to measure the content; we'll shrink to the real
+        // intrinsic width immediately after the content view is installed.
+        let w: CGFloat = 400
         let level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 1)
 
-        let p = TranscriptionFloatingPanel(
+        let p = PillPanel(
             contentRect: NSRect(x: 0, y: 0, width: w, height: h),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -414,29 +427,35 @@ final class TranscriptionFloatingWidgetController: NSObject {
         p.hidesOnDeactivate = false
         p.isFloatingPanel = true
         p.becomesKeyOnlyIfNeeded = false
-        p.titleVisibility = .hidden
-        p.titlebarAppearsTransparent = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        let root = TranscriptionFloatingWidgetContentView(frame: NSRect(x: 0, y: 0, width: w, height: h))
-        root.translatesAutoresizingMaskIntoConstraints = true
-        root.autoresizingMask = [.width, .height]
-        root.onTap = { [weak self] in
-            self?.onOpenTranscription?()
+        let cv = PillContentView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        cv.autoresizingMask = [.width, .height]
+        cv.onStop = { [weak self] in
+            self?.transcription?.stopRecording()
         }
-
-        p.contentView = root
-        contentView = root
+        p.contentView = cv
+        contentView = cv
         panel = p
+
+        // Position: centred, 8px below menu bar
+        positionAtMenuBar()
     }
 
-    private func positionPanel() {
-        guard let panel, let screen = NSScreen.main else { return }
+    private func positionAtMenuBar() {
+        guard let p = panel, let screen = NSScreen.main else { return }
         let vf = screen.visibleFrame
-        let w: CGFloat = 220
-        let h: CGFloat = 36
-        let x = vf.midX - w / 2
-        let y = vf.maxY - 12 - h
-        panel.setFrame(NSRect(x: x, y: y, width: w, height: h), display: true)
+        let sf = screen.frame
+        let w = p.frame.width
+        let h = p.frame.height
+        let menuBarHeight = sf.height - vf.maxY
+        let x = sf.midX - w / 2
+        let y = sf.maxY - menuBarHeight - 8 - h
+        p.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    private func positionIfNeeded() {
+        // Only snap to menu bar on first show; after that let user drag freely.
+        if panel?.frame.origin == .zero { positionAtMenuBar() }
     }
 }

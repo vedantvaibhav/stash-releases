@@ -3,16 +3,16 @@ import SwiftUI
 
 // MARK: - Panel UI tokens (All tab, Clipboard, Notes — one visual language)
 
-/// Section labels: “Pinned”, “Recent Files”, “Recent Notes”, and date groups in the Notes list.
+/// Section labels: "Pinned", "Recent Files", "Recent Notes", and date groups in the Notes list.
 enum PanelSectionHeaderStyle {
-    static let font = Font.system(size: 12, weight: .regular)
-    static let foreground = Color(red: 82 / 255, green: 82 / 255, blue: 82 / 255) // #525252
+    static let font = DesignTokens.Typography.sectionFont
+    static let foreground = DesignTokens.Typography.sectionColor
 }
 
 /// Inline list rows (notes list, clipboard list): same hover wash, radius, and timing.
 enum PanelListRowHoverStyle {
     static let highlightOpacity: Double = 0.10
-    static let cornerRadius: CGFloat = 10
+    static let cornerRadius: CGFloat = 6
     static let duration: Double = 0.12
 
     static var animation: Animation { .easeInOut(duration: duration) }
@@ -119,7 +119,6 @@ struct TranscriptionPageView: View {
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.bottom, 6)
             }
 
             Divider()
@@ -177,7 +176,6 @@ struct TranscriptionPageView: View {
                 .background(Color.primary.opacity(0.04))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .padding(.horizontal, 8)
-                .padding(.bottom, 8)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -344,12 +342,12 @@ private struct ClipboardPinnedCard: View {
     @State private var isHovered = false
     @State private var copied = false
 
-    private let textColor = Color(red: 163/255, green: 163/255, blue: 163/255)
+    private let textColor = DesignTokens.Typography.itemColor
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Text(entry.text)
-                .font(.system(size: 11.6, weight: .regular))
+                .font(DesignTokens.Typography.itemFont)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -369,7 +367,7 @@ private struct ClipboardPinnedCard: View {
             .animation(PanelListRowHoverStyle.animation, value: isHovered)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 9)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: PanelCardChromeStyle.cornerRadius, style: .continuous)
@@ -395,14 +393,14 @@ private struct ClipboardListRow: View {
     @State private var isHovered = false
     @State private var copied = false
 
-    private let textColor = Color(red: 163/255, green: 163/255, blue: 163/255) // #A3A3A3
+    private let textColor = DesignTokens.Typography.itemColor
     private let iconColor = Color(red: 102/255, green: 102/255, blue: 102/255) // #666666
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Text(clipboard.preview(for: entry.text))
-                .font(.system(size: 11.6, weight: .regular))
-                .lineLimit(2)
+                .font(DesignTokens.Typography.itemFont)
+                .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .modifier(CopyShimmerModifier(isActive: copied, baseColor: textColor))
@@ -418,18 +416,22 @@ private struct ClipboardListRow: View {
 
                 Button(action: copyRow) {
                     Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 13))
-                        .foregroundColor(iconColor)
+                        .font(.system(size: 12))
+                        .foregroundColor(copied
+                            ? Color(hex: "#22C55E")
+                            : Color.white.opacity(0.4)
+                        )
+                        .scaleEffect(copied ? 1.2 : 1.0)
                 }
                 .buttonStyle(.plain)
+                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: copied)
             }
             .opacity(isHovered || copied ? 1 : 0)
             .animation(PanelListRowHoverStyle.animation, value: isHovered)
             .animation(PanelListRowHoverStyle.animation, value: copied)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .frame(minHeight: 40)
+        .padding(.horizontal, 8)
+        .frame(height: 34)
         .background(
             RoundedRectangle(cornerRadius: PanelListRowHoverStyle.cornerRadius, style: .continuous)
                 .fill(isHovered ? PanelListRowHoverStyle.hoverFill : Color.clear)
@@ -442,8 +444,10 @@ private struct ClipboardListRow: View {
 
     private func copyRow() {
         clipboard.copyToPasteboard(entry: entry)
-        copied = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { copied = false }
+        withAnimation(.easeInOut(duration: 0.2)) { copied = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            withAnimation(.easeInOut(duration: 0.3)) { copied = false }
+        }
     }
 }
 
@@ -461,7 +465,6 @@ struct SharedNotesColumn: View {
 
     @State private var showNewNoteChoiceMenu = false
     @State private var noteCopyFeedback = false
-    @State private var hoveredNoteId: String? = nil
     @State private var deleteConfirmNote: NoteItem? = nil
     @State private var quickNoteHovered = false
 
@@ -498,10 +501,6 @@ struct SharedNotesColumn: View {
         }
         .onAppear {
             notesStorage.refreshNotes()
-            transcription.onNoteCreated = { id in
-                editingNoteId = id
-                showTranscriptionPage = false
-            }
         }
     }
 
@@ -512,11 +511,6 @@ struct SharedNotesColumn: View {
 
         return ZStack(alignment: .topTrailing) {
             VStack(alignment: .leading, spacing: 0) {
-                quickNoteTouchpoint
-                    .padding(.horizontal, 8)
-                    .padding(.top, 8)
-                    .padding(.bottom, 6)
-
                 // List or empty state
                 if notesStorage.notes.isEmpty {
                     VStack(spacing: 8) {
@@ -532,28 +526,11 @@ struct SharedNotesColumn: View {
                         guard let cap = maxListNotes else { return notesStorage.notes }
                         return Array(notesStorage.notes.prefix(cap))
                     }()
-                    let groups = Self.groupedNotes(listed)
-                    ScrollView(.vertical, showsIndicators: false) {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(groups, id: \.0) { dateStr, notesInGroup in
-                                Text(dateStr)
-                                    .font(PanelSectionHeaderStyle.font)
-                                    .foregroundStyle(PanelSectionHeaderStyle.foreground)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 4)
-                                    .padding(.top, 12)
-                                    .padding(.bottom, 6)
-
-                                VStack(spacing: 4) {
-                                    ForEach(notesInGroup) { note in
-                                        notesRow(note: note)
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 4)
-                        .padding(.bottom, 8)
-                    }
+                    NotesListView(
+                        notes: listed,
+                        onTap: { note in editingNoteId = note.id },
+                        onDelete: { note in deleteConfirmNote = note }
+                    )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
@@ -690,54 +667,6 @@ struct SharedNotesColumn: View {
         )
     }
 
-    private func notesRow(note: NoteItem) -> some View {
-        let isHovered = hoveredNoteId == note.id
-
-        return HStack(alignment: .center, spacing: 10) {
-            Image(systemName: note.origin.listIconSystemName)
-                .font(.system(size: 13))
-                .foregroundColor(Color(white: 0.55))
-                .frame(width: 30, height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color(white: 0.14))
-                )
-
-            Text(note.title)
-                .font(.system(size: 13))
-                .foregroundColor(Color.white.opacity(0.85))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if isHovered {
-                Button {
-                    deleteConfirmNote = note
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
-                .transition(.opacity.animation(PanelListRowHoverStyle.animation))
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: PanelListRowHoverStyle.cornerRadius, style: .continuous)
-                .fill(isHovered ? PanelListRowHoverStyle.hoverFill : Color.clear)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture { editingNoteId = note.id }
-        .animation(PanelListRowHoverStyle.animation, value: isHovered)
-        .onHover { hovered in
-            withAnimation(PanelListRowHoverStyle.animation) {
-                hoveredNoteId = hovered ? note.id : nil
-            }
-        }
-    }
-
     // MARK: Note editor
 
     private func noteEditorView(noteId: String) -> some View {
@@ -780,32 +709,117 @@ struct SharedNotesColumn: View {
         .onChange(of: noteId) { _ in noteCopyFeedback = false }
     }
 
-    private static func groupedNotes(_ notes: [NoteItem]) -> [(String, [NoteItem])] {
+}
+
+// MARK: - Notes list row (rebuilt from scratch — Button-wrapped, no hover-blocking-tap)
+
+private struct NoteListRow: View {
+    let note: NoteItem
+    let onTap: () -> Void
+    let onDelete: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Icon with boxed background
+            ZStack {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.white.opacity(0.07))
+                    .frame(width: 22, height: 22)
+                Image(systemName: noteIcon)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.40))
+            }
+
+            Text(note.title)
+                .font(DesignTokens.Typography.itemFont)
+                .foregroundColor(DesignTokens.Typography.itemColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer()
+
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.40))
+            }
+            .buttonStyle(.plain)
+            .opacity(isHovered ? 1 : 0)
+            .allowsHitTesting(isHovered)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 34)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: PanelListRowHoverStyle.cornerRadius, style: .continuous)
+                .fill(isHovered ? PanelListRowHoverStyle.hoverFill : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+        .animation(PanelListRowHoverStyle.animation, value: isHovered)
+        .onHover { isHovered = $0 }
+    }
+
+    /// Written notes get the document icon; anything produced from transcription
+    /// (meeting / quick / legacy transcribed) gets the waveform icon.
+    private var noteIcon: String {
+        note.origin == .written ? "doc.text" : "waveform"
+    }
+}
+
+// MARK: - Notes list view (date-grouped, first group has no top margin)
+
+private struct NotesListView: View {
+    let notes: [NoteItem]
+    let onTap: (NoteItem) -> Void
+    let onDelete: (NoteItem) -> Void
+
+    private var grouped: [(String, [NoteItem])] {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE, d MMM"
         var groups: [(String, [NoteItem])] = []
-        var seenKeys: [String: Int] = [:]
+        var seen: [String: Int] = [:]
         for note in notes {
             let key = formatter.string(from: note.lastEdited)
-            if let idx = seenKeys[key] {
+            if let idx = seen[key] {
                 groups[idx].1.append(note)
             } else {
-                seenKeys[key] = groups.count
+                seen[key] = groups.count
                 groups.append((key, [note]))
             }
         }
         return groups
     }
 
-    private static func formatDate(_ date: Date) -> String {
-        let f = DateFormatter()
-        f.dateStyle = .short
-        f.timeStyle = .short
-        return f.string(from: date)
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(grouped.enumerated()), id: \.offset) { index, entry in
+                    let (dateLabel, items) = entry
+
+                    Text(dateLabel)
+                        .font(PanelSectionHeaderStyle.font)
+                        .foregroundStyle(PanelSectionHeaderStyle.foreground)
+                        .frame(height: 16)
+                        .padding(.top, index == 0 ? 0 : 20)
+                        .padding(.bottom, 8)
+                        .padding(.horizontal, 8)
+
+                    ForEach(items) { note in
+                        NoteListRow(
+                            note: note,
+                            onTap: { onTap(note) },
+                            onDelete: { onDelete(note) }
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
-// MARK: - Files column (unchanged)
+// MARK: - Files column
 
 struct SharedFilesColumn: View {
     @ObservedObject var fileDropStorage: FileDropStorage
@@ -824,7 +838,7 @@ struct SharedFilesColumn: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, forCardsMode ? 4 : 0)
-        .padding(.bottom, forCardsMode ? 4 : 0)
+        .padding(.bottom, 0)
     }
 }
 
@@ -960,7 +974,6 @@ struct AllCombinedView: View {
                     .padding(.top, 60)
                 }
             }
-            .padding(.bottom, 8)
         }
     }
 }
@@ -973,12 +986,12 @@ private struct AllPinnedCard: View {
     @State private var isHovered = false
     @State private var copied = false
 
-    private let textColor = Color(red: 163/255, green: 163/255, blue: 163/255)
+    private let textColor = DesignTokens.Typography.itemColor
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Text(entry.text)
-                .font(.system(size: 11.6, weight: .regular))
+                .font(DesignTokens.Typography.itemFont)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .foregroundColor(textColor)
@@ -1001,7 +1014,7 @@ private struct AllPinnedCard: View {
             .animation(PanelListRowHoverStyle.animation, value: isHovered)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 9)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: PanelCardChromeStyle.cornerRadius, style: .continuous)

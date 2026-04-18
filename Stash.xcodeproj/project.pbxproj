@@ -29,8 +29,9 @@
 		A10000000000000000000016 /* SupabaseConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* SupabaseConfig.swift */; };
 		A10000000000000000000017 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* AuthService.swift */; };
 		A10000000000000000000018 /* AppUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* AppUser.swift */; };
-		A10000000000000000000019 /* AuthPresentationContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000019 /* AuthPresentationContext.swift */; };
 		A10000000000000000000021 /* TabBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000021 /* TabBarView.swift */; };
+		A10000000000000000000024 /* HeaderIconButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000024 /* HeaderIconButton.swift */; };
+		A10000000000000000000025 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000025 /* DesignTokens.swift */; };
 		FC63C6E92F82656000B67359 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = FC63C6E82F82656000B67359 /* Sparkle */; };
 		FC63C6EB2F8266DB00B67359 /* UpdaterManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC63C6EA2F8266DB00B67359 /* UpdaterManager.swift */; };
 		FCA8014F2F8442B600E0215E /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* Carbon.framework */; };
@@ -61,8 +62,9 @@
 		A20000000000000000000016 /* SupabaseConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseConfig.swift; sourceTree = "<group>"; };
 		A20000000000000000000017 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* AppUser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUser.swift; sourceTree = "<group>"; };
-		A20000000000000000000019 /* AuthPresentationContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthPresentationContext.swift; sourceTree = "<group>"; };
 		A20000000000000000000021 /* TabBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabBarView.swift; sourceTree = "<group>"; };
+		A20000000000000000000024 /* HeaderIconButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeaderIconButton.swift; sourceTree = "<group>"; };
+		A20000000000000000000025 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		A30000000000000000000001 /* Stash.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Stash.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC63C6EA2F8266DB00B67359 /* UpdaterManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -109,13 +111,14 @@
 				A2000000000000000000000F /* CardsModeAppKit.swift */,
 				A20000000000000000000010 /* PanelSharedSections.swift */,
 				A20000000000000000000021 /* TabBarView.swift */,
+				A20000000000000000000024 /* HeaderIconButton.swift */,
+				A20000000000000000000025 /* DesignTokens.swift */,
 				A20000000000000000000013 /* TranscriptionService.swift */,
 				A20000000000000000000014 /* TranscriptionFloatingWidget.swift */,
 				A20000000000000000000015 /* Onboarding.swift */,
 				A20000000000000000000016 /* SupabaseConfig.swift */,
 				A20000000000000000000017 /* AuthService.swift */,
 				A20000000000000000000018 /* AppUser.swift */,
-				A20000000000000000000019 /* AuthPresentationContext.swift */,
 				A20000000000000000000004 /* Info.plist */,
 				A20000000000000000000003 /* Assets.xcassets */,
 			);
@@ -232,8 +235,9 @@
 				A10000000000000000000016 /* SupabaseConfig.swift in Sources */,
 				A10000000000000000000017 /* AuthService.swift in Sources */,
 				A10000000000000000000018 /* AppUser.swift in Sources */,
-				A10000000000000000000019 /* AuthPresentationContext.swift in Sources */,
 				A10000000000000000000021 /* TabBarView.swift in Sources */,
+				A10000000000000000000024 /* HeaderIconButton.swift in Sources */,
+				A10000000000000000000025 /* DesignTokens.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -34,17 +34,11 @@ enum PanelMainTab: Int, CaseIterable, Identifiable, Hashable {
 
 struct TabBarView: View {
     @Binding var selectedTab: PanelMainTab
-    /// Same behaviour as notes “Transcribe” — caller sets showTranscription + startRecording if needed.
+    /// Same behaviour as notes "Transcribe" — caller sets showTranscription + startRecording if needed.
     var onMicTap: () -> Void
+    var onAddNote: () -> Void
 
     @State private var hoveredTab: PanelMainTab?
-
-    private let micDiameter: CGFloat = 32
-    private let micFill = Color(red: 26 / 255, green: 26 / 255, blue: 26 / 255)
-    private let micFillHover = Color(red: 42 / 255, green: 42 / 255, blue: 42 / 255)
-    private let micIconRed = Color(red: 220 / 255, green: 38 / 255, blue: 38 / 255)
-
-    @State private var micHovered = false
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -56,19 +50,23 @@ struct TabBarView: View {
 
             Spacer(minLength: 0)
 
-            Button(action: onMicTap) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(micIconRed)
-                    .frame(width: micDiameter, height: micDiameter)
-                    .background(Circle().fill(micHovered ? micFillHover : micFill))
+            HStack(spacing: 4) {
+                HeaderIconButton(
+                    icon: .asset("plus-icon"),
+                    iconColor: DesignTokens.Icon.tintPlusButton,
+                    action: onAddNote
+                )
+
+                HeaderIconButton(
+                    icon: .system("waveform"),
+                    iconColor: DesignTokens.Icon.tintRecording,
+                    action: onMicTap,
+                    activeBackgroundColor: DesignTokens.Icon.backgroundActive
+                )
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Start transcription")
-            .animation(.easeInOut(duration: 0.12), value: micHovered)
-            .onHover { micHovered = $0 }
         }
         .frame(maxWidth: .infinity)
+        .frame(height: 44)
     }
 
     private func tabPill(_ tab: PanelMainTab) -> some View {

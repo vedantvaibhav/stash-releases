@@ -35,12 +35,13 @@ struct SingleNoteEditorView: NSViewRepresentable {
         toolbar.addArrangedSubview(NSView()) // spacer
 
         let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = false
+        scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.scrollerStyle = .overlay
 
         let textView = NSTextView()
         textView.isRichText = true
@@ -55,10 +56,12 @@ struct SingleNoteEditorView: NSViewRepresentable {
         textView.autoresizingMask = [.width]
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
+        textView.textContainerInset = NSSize(width: 20, height: 16)
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.delegate = context.coordinator
         textView.typingAttributes = Self.defaultTypingAttributes()
+        textView.insertionPointColor = .white
 
         scrollView.documentView = textView
 
@@ -77,6 +80,8 @@ struct SingleNoteEditorView: NSViewRepresentable {
         container.addSubview(toolbar)
         container.addSubview(scrollView)
 
+        context.coordinator.setupPlaceholder(in: container)
+
         NSLayoutConstraint.activate([
             toolbar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             toolbar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -87,6 +92,8 @@ struct SingleNoteEditorView: NSViewRepresentable {
             scrollView.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 2),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
         ])
+
+        context.coordinator.constrainPlaceholder(in: container, below: toolbar)
 
         return container
     }
@@ -113,9 +120,12 @@ struct SingleNoteEditorView: NSViewRepresentable {
     }
 
     private static func defaultTypingAttributes() -> [NSAttributedString.Key: Any] {
-        [
-            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
-            .foregroundColor: NSColor.labelColor
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineHeightMultiple = 1.7
+        return [
+            .font: NSFont.systemFont(ofSize: 14),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.9),
+            .paragraphStyle: paragraphStyle
         ]
     }
 
@@ -127,6 +137,7 @@ struct SingleNoteEditorView: NSViewRepresentable {
         var didRequestFocus = false
         var isApplyingBulkChange = false
         private var loadGeneration = 0
+        private weak var placeholderField: NSTextField?
 
         func scheduleLoad(noteId: String, storage: NotesStorage) {
             loadGeneration += 1
@@ -140,6 +151,7 @@ struct SingleNoteEditorView: NSViewRepresentable {
                     self.isApplyingBulkChange = true
                     tv.textStorage?.setAttributedString(attr)
                     self.isApplyingBulkChange = false
+                    self.updatePlaceholderVisibility()
                     self.didRequestFocus = false
                     self.requestInitialFocus()
                 }
@@ -161,6 +173,33 @@ struct SingleNoteEditorView: NSViewRepresentable {
             guard let textView = textView else { return }
             let attr = textView.attributedString()
             notesStorage.saveNoteAttributed(id: noteId, attributed: attr)
+            updatePlaceholderVisibility()
+        }
+
+        func setupPlaceholder(in container: NSView) {
+            let label = NSTextField(labelWithString: "Start writing...")
+            label.font = NSFont.systemFont(ofSize: 14)
+            label.textColor = NSColor.white.withAlphaComponent(0.3)
+            label.backgroundColor = .clear
+            label.isBezeled = false
+            label.isEditable = false
+            label.isSelectable = false
+            label.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(label)
+            placeholderField = label
+        }
+
+        func constrainPlaceholder(in container: NSView, below toolbar: NSView) {
+            guard let label = placeholderField else { return }
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 25),
+                label.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 18)
+            ])
+        }
+
+        func updatePlaceholderVisibility() {
+            guard let tv = textView else { return }
+            placeholderField?.isHidden = tv.string.isEmpty == false
         }
 
         // MARK: Formatting (selection or typing attributes)

@@ -34,6 +34,9 @@ final class PanelInteractionState: ObservableObject {
     @Published var fileToDelete: DroppedFileItem?
     /// When true, notes column shows the live transcription page (shared between panel + cards + floating widget).
     @Published var showTranscriptionPage: Bool = false
+    /// Set externally (e.g. after transcription completes) to switch the panel to a specific tab.
+    /// `PanelContentView` consumes this via `.onChange` and clears it back to nil.
+    @Published var requestedTab: PanelMainTab? = nil
 }
 
 // MARK: - SwiftUI roots (ObservedObject so NSHostingView refreshes on model changes)

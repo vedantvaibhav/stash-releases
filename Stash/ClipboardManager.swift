@@ -23,7 +23,7 @@ final class ClipboardManager: ObservableObject {
     private let dbPath: String
     private let interval: TimeInterval = 0.5
     private let maxEntries = 50
-    private let maxPinnedEntries = 10
+    private let maxPinnedEntries = 6
     private let previewLength = 60
 
     init() {
@@ -37,7 +37,7 @@ final class ClipboardManager: ObservableObject {
 
         // Settings danger-zone: clear all entries when requested.
         NotificationCenter.default.addObserver(
-            forName: Notification.Name("QuickPanelClearClipboard"),
+            forName: .quickPanelClearClipboard,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -186,9 +186,9 @@ final class ClipboardManager: ObservableObject {
         guard countPinnedInDB() < maxPinnedEntries else {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.transientMessage = "Unpin an item to pin more"
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
-                    if self?.transientMessage == "Unpin an item to pin more" {
+                self.transientMessage = "Max 6 pinned items"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    if self?.transientMessage == "Max 6 pinned items" {
                         self?.transientMessage = nil
                     }
                 }

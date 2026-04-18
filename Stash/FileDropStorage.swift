@@ -34,18 +34,9 @@ final class FileDropStorage: ObservableObject {
         reconcileWithDisk()
 
         NotificationCenter.default.addObserver(
-            forName: Notification.Name("QuickPanelClearDroppedFiles"),
+            forName: .quickPanelClearDroppedFiles,
             object: nil, queue: .main
         ) { [weak self] _ in self?.clearAll() }
-
-        NotificationCenter.default.addObserver(
-            forName: Notification.Name("FileRemovedFromPanel"),
-            object: nil, queue: .main
-        ) { [weak self] note in
-            guard let url = note.object as? URL else { return }
-            self?.files.removeAll { $0.fileName == url.lastPathComponent }
-            self?.saveToJSON()
-        }
     }
 
     // MARK: - Persistence
@@ -133,26 +124,22 @@ final class FileDropStorage: ObservableObject {
         // Priority 1 — File URLs (⌘C on a file in Finder)
         let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: options) as? [URL], !urls.isEmpty {
-            print("[Files] Pasting \(urls.count) file(s) from clipboard")
             addFiles(urls)
             return true
         }
 
         // Priority 2 — NSImage (screenshot, copied from browser/Figma)
         if let image = NSImage(pasteboard: pb) {
-            print("[Files] Pasting image from clipboard")
             return savePastedImageAsPNG(image)
         }
 
         // Priority 3 — Raw PNG / TIFF data
         for type in [NSPasteboard.PasteboardType.png, NSPasteboard.PasteboardType.tiff] {
             if let data = pb.data(forType: type), let image = NSImage(data: data) {
-                print("[Files] Pasting raw \(type.rawValue) data")
                 return savePastedImageAsPNG(image)
             }
         }
 
-        print("[Files] Nothing pasteable found in clipboard")
         return false
     }
 
@@ -226,28 +213,21 @@ final class FileDropStorage: ObservableObject {
             do {
                 try fileManager.moveItem(at: src, to: dest)
                 moveSucceeded = true
-                print("[Files] Moved: \(originalName) → \(dest.path)")
             } catch {
-                print("[Files] Move failed (\(error.localizedDescription)) — trying copy")
+                // Move failed — fall through to copy attempt below.
             }
 
             // Attempt 2: copy, then best-effort delete source
             if !moveSucceeded {
                 do {
                     try fileManager.copyItem(at: src, to: dest)
-                    print("[Files] Copied: \(originalName) → \(dest.path)")
                     let srcStd = src.standardizedFileURL
                     if !srcStd.path.hasPrefix(dropFolder.standardizedFileURL.path) {
-                        do {
-                            try fileManager.removeItem(at: srcStd)
-                            print("[Files] Source removed after copy: \(srcStd.path)")
-                        } catch {
-                            print("[Files] Source delete skipped (TCC or in-use): \(error.localizedDescription)")
-                        }
+                        // Best-effort — source delete may be blocked by TCC.
+                        try? fileManager.removeItem(at: srcStd)
                     }
                 } catch {
                     lastDropErrorMessage = "Could not add \"\(originalName)\" to Quick Panel."
-                    print("[Files] Copy also failed: \(error)")
                     continue
                 }
             }
@@ -273,10 +253,7 @@ final class FileDropStorage: ObservableObject {
     /// Removes grid entry immediately; after 0.3 s checks disk — if file is still there the
     /// destination made a copy so we delete our shelf copy; if it's gone the destination moved it.
     func handleDragOutSessionEnded(item: DroppedFileItem, operation: NSDragOperation) {
-        guard !operation.isEmpty else {
-            print("[Files] Drag cancelled — keeping \(item.fileName)")
-            return
-        }
+        guard !operation.isEmpty else { return }
 
         files.removeAll { $0.id == item.id }
         saveToJSON()
@@ -287,10 +264,8 @@ final class FileDropStorage: ObservableObject {
             if self.files.contains(where: { $0.fileName == item.fileName }) { return }
 
             if self.fileManager.fileExists(atPath: target.path) {
-                print("[Files] Destination copied — removing shelf copy: \(item.fileName)")
+                // Destination copied the file — remove our shelf copy.
                 self.safeRemove(at: target)
-            } else {
-                print("[Files] File was moved by destination — already gone: \(item.fileName)")
             }
         }
     }
@@ -329,17 +304,10 @@ final class FileDropStorage: ObservableObject {
     // MARK: - Safety wall: only removes paths inside dropFolder
 
     private func safeRemove(at url: URL) {
+        // Safety wall — refuse to remove anything outside the QuickPanel folder.
         let allowed  = dropFolder.standardizedFileURL.path
         let resolved = url.standardizedFileURL
-        guard resolved.path.hasPrefix(allowed) else {
-            print("[Files] BLOCKED: Attempted removeItem outside QuickPanel folder: \(url.path)")
-            return
-        }
-        do {
-            try fileManager.removeItem(at: resolved)
-            print("[Files] Removed: \(resolved.path)")
-        } catch {
-            print("[Files] removeItem failed: \(resolved.path) — \(error)")
-        }
+        guard resolved.path.hasPrefix(allowed) else { return }
+        try? fileManager.removeItem(at: resolved)
     }
 }

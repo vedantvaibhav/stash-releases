@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var panelController: PanelController?
     private var globalHotKey: GlobalHotKey?
+    private var quickRecordHotKey: GlobalHotKey?
     private var hotkeyObserver: NSObjectProtocol?
     private let updaterManager = UpdaterManager()
 
@@ -47,27 +48,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Primary URL-scheme entry point — macOS delivers auth callbacks here when
+    /// the app is already running. `.onOpenURL` is unreliable for LSUIElement apps,
+    /// so the callback is handled at the NSApplication level.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard url.scheme == "stash" || url.scheme == "quickpanel" else { continue }
+            Task { @MainActor in
+                await AuthService.shared.handleOAuthCallback(url: url)
+            }
+        }
+    }
+
     /// Receives the quickpanel://auth/callback redirect after Google OAuth.
     @objc func handleURL(_ event: NSAppleEventDescriptor,
                          withReplyEvent: NSAppleEventDescriptor) {
-        guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue else {
-            print("[App] Could not read URL string from Apple Event")
-            return
-        }
-        print("[App] Raw URL string from event: \(urlString)")
-        guard let url = URL(string: urlString) else {
-            print("[App] Could not construct URL from: \(urlString)")
-            return
-        }
-        print("[App] Received URL: \(url.absoluteString)")
-        print("[App] scheme=\(url.scheme ?? "nil")  host=\(url.host ?? "nil")")
-        print("[App] fragment=\(url.fragment ?? "nil")")
-        print("[App] query=\(url.query ?? "nil")")
-        Task { await AuthService.shared.handleAuthCallback(url: url) }
+        guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: urlString) else { return }
+        Task { await AuthService.shared.handleOAuthCallback(url: url) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        APIKeys.validateKeys()
 
         setupStatusItem()
 
@@ -104,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         globalHotKey?.unregister()
+        quickRecordHotKey?.unregister()
         if let obs = hotkeyObserver {
             NotificationCenter.default.removeObserver(obs)
         }
@@ -114,10 +119,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func registerHotkeyFromSettings() {
         globalHotKey?.unregister()
         let s = AppSettings.shared
-        globalHotKey = GlobalHotKey(keyCode: s.hotKeyCode, modifiers: s.hotKeyModifiers) { [weak self] in
+        // Main panel toggle — signature 'QPHK'
+        globalHotKey = GlobalHotKey(keyCode: s.hotKeyCode, modifiers: s.hotKeyModifiers,
+                                    signature: 0x51_50_48_4B) { [weak self] in
             self?.panelController?.togglePanel()
         }
         _ = globalHotKey?.register()
+
+        // ⌘⇧R — quick record without opening the panel — signature 'QPRK'
+        quickRecordHotKey?.unregister()
+        quickRecordHotKey = GlobalHotKey(keyCode: UInt32(kVK_ANSI_R),
+                                         modifiers: UInt32(cmdKey | shiftKey),
+                                         signature: 0x51_50_52_4B) { [weak self] in
+            guard let ts = self?.panelController?.transcriptionService else { return }
+            if ts.isRecording {
+                ts.stopRecording()
+            } else {
+                ts.startRecording()
+                // Panel stays hidden — pill appears automatically
+            }
+        }
+        _ = quickRecordHotKey?.register()
     }
 
     // MARK: - Status item setup

@@ -27,6 +27,7 @@ Pods/
 
 # API keys & local secrets (copy `Stash/Secrets.example.plist` → Application Support …/Stash/Secrets.plist)
 Stash/Secrets.plist
+**/Secrets.plist
 Stash/APIKeys.swift
 .env
 .env.*

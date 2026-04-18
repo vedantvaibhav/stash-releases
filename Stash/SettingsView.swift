@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 import Carbon.HIToolbox
-import ServiceManagement
 
 // MARK: - Window controller
 
@@ -23,9 +22,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let win = NSWindow(contentViewController: hosting)
         win.title = "Stash Settings"
         win.styleMask = [.titled, .closable, .miniaturizable]
-        win.setContentSize(NSSize(width: 480, height: 620))
-        win.minSize = NSSize(width: 480, height: 620)
-        win.maxSize = NSSize(width: 480, height: 620)
+        win.setContentSize(NSSize(width: 480, height: 400))
+        win.minSize = NSSize(width: 480, height: 400)
         win.center()
         win.delegate = self
         win.isReleasedWhenClosed = false
@@ -55,9 +53,13 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 // MARK: - Hotkey recorder
 
 /// Manages key-event monitoring during hotkey recording.
+/// Takes a save callback so the same class can record for any hotkey slot.
 private final class HotkeyRecorder: ObservableObject {
     @Published var isRecording = false
     private var monitor: Any?
+
+    /// Called with (keyCode, carbonModifiers) when a valid combo is pressed.
+    var onSave: ((UInt32, UInt32) -> Void)?
 
     func start() {
         guard !isRecording else { return }
@@ -72,12 +74,10 @@ private final class HotkeyRecorder: ObservableObject {
             }
 
             let carbonMods = nsToCarbonModifiers(event.modifierFlags)
-            // Require at least one modifier — bare keys can't be hotkeys.
+            // Require at least one modifier -- bare keys can't be hotkeys.
             guard carbonMods != 0 else { return event }
 
-            AppSettings.shared.hotKeyCode      = UInt32(event.keyCode)
-            AppSettings.shared.hotKeyModifiers = carbonMods
-            NotificationCenter.default.post(name: .quickPanelHotkeyChanged, object: nil)
+            self.onSave?(UInt32(event.keyCode), carbonMods)
             self.stop()
             return nil
         }
@@ -96,9 +96,10 @@ private final class HotkeyRecorder: ObservableObject {
 struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var auth     = AuthService.shared
-    @StateObject private var recorder   = HotkeyRecorder()
+    @StateObject private var recorder      = HotkeyRecorder()
+    @StateObject private var quickRecorder = HotkeyRecorder()
 
-    // Danger-zone alert state
+    // Data section alert state
     @State private var showClearClipboardAlert = false
     @State private var showClearNotesAlert     = false
     @State private var showClearFilesAlert     = false
@@ -108,235 +109,48 @@ struct SettingsView: View {
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Pinned at top — never inside ScrollView so it can’t scroll off-screen or clip.
-            layoutStyleSection
-            sectionDivider
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    accountSection
-                    sectionDivider
-                    hotkeySection
-                    sectionDivider
-                    autoHideSection
-                    sectionDivider
-                    panelSizeSection
-                    sectionDivider
-                    launchAtLoginSection
-                    sectionDivider
-                    dangerZoneSection
-                    sectionDivider
-                    developerSection
-                }
-                .padding(.vertical, 12)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(width: 480, height: 620)
-        .background(Color(NSColor.windowBackgroundColor))
-    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                accountSection
+                sectionDivider
+                hotkeySection
+                sectionDivider
+                autoHideSection
+                sectionDivider
+                dataSection
 
-    // MARK: - Layout style (top of settings)
-
-    private var layoutStyleSection: some View {
-        SettingsSection(title: "LAYOUT STYLE") {
-            HStack(alignment: .top, spacing: 8) {
-                LayoutStyleOptionCard(
-                    title: "Panel",
-                    isSelected: settings.layoutStyle == .panel,
-                    action: { settings.layoutStyle = .panel }
-                ) {
-                    PanelLayoutThumbnailView()
-                }
-                LayoutStyleOptionCard(
-                    title: "Cards",
-                    isSelected: settings.layoutStyle == .cards,
-                    action: { settings.layoutStyle = .cards }
-                ) {
-                    CardsLayoutThumbnailView()
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity)
-        }
-        .padding(.top, 8)
-    }
-
-    // MARK: - Section 1: Hotkey
-
-    private var hotkeySection: some View {
-        SettingsSection(title: "OPEN / CLOSE HOTKEY") {
-            HStack(spacing: 12) {
-                Text("Hotkey")
-                    .frame(width: 110, alignment: .leading)
-
-                // Badge showing current hotkey
-                Text(hotkeyBadgeString(keyCode: settings.hotKeyCode,
-                                       carbonModifiers: settings.hotKeyModifiers))
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color(NSColor.controlBackgroundColor))
-                    .cornerRadius(6)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(NSColor.separatorColor), lineWidth: 1))
-
-                Spacer()
-
-                if recorder.isRecording {
-                    HStack(spacing: 6) {
-                        PulsingDot()
-                        Text("Recording…")
-                            .foregroundColor(.secondary)
-                            .font(.callout)
-                    }
-                    Button("Cancel") { recorder.stop() }
-                        .buttonStyle(.bordered)
-                } else {
-                    Button("Record") { recorder.start() }
-                        .buttonStyle(.bordered)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-        }
-    }
-
-    // MARK: - Section 2: Auto-hide timer
-
-    private var autoHideSection: some View {
-        SettingsSection(title: "AUTO HIDE") {
-            HStack(spacing: 12) {
-                Text("Auto hide after")
-                    .frame(width: 110, alignment: .leading)
-                Spacer()
-                Picker("", selection: $settings.autoHideSeconds) {
-                    ForEach(autoHideOptions, id: \.value) { opt in
-                        Text(opt.label).tag(opt.value)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 300)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-        }
-    }
-
-    // MARK: - Section 3: Panel size
-
-    private var panelSizeSection: some View {
-        SettingsSection(title: "PANEL SIZE") {
-            VStack(spacing: 6) {
-                HStack(spacing: 12) {
-                    Text("Panel width")
-                        .frame(width: 110, alignment: .leading)
-                    Slider(value: $settings.panelWidth, in: 500...900, step: 10)
-                    Text("\(Int(settings.panelWidth)) pt")
-                        .frame(width: 52, alignment: .trailing)
-                        .foregroundColor(.secondary)
-                        .font(.callout)
-                }
-                HStack(spacing: 12) {
-                    Text("Panel height")
-                        .frame(width: 110, alignment: .leading)
-                    Slider(value: $settings.panelHeight, in: 300...600, step: 10)
-                    Text("\(Int(settings.panelHeight)) pt")
-                        .frame(width: 52, alignment: .trailing)
-                        .foregroundColor(.secondary)
-                        .font(.callout)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-        }
-    }
-
-    // MARK: - Section 4: Launch at login + Replay onboarding
-
-    private var launchAtLoginSection: some View {
-        SettingsSection(title: "GENERAL") {
-            VStack(spacing: 0) {
+                // Replay onboarding link — outside any section
                 HStack {
-                    Text("Launch at login")
                     Spacer()
-                    Toggle("", isOn: $settings.launchAtLogin)
-                        .toggleStyle(.switch)
-                        .onChange(of: settings.launchAtLogin) { newValue in
-                            if newValue {
-                                try? SMAppService.mainApp.register()
-                            } else {
-                                try? SMAppService.mainApp.unregister()
-                            }
-                        }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-
-                Divider().padding(.horizontal, 16)
-
-                Button(action: {
-                    OnboardingManager.shared.resetAndReplay()
-                }) {
-                    HStack {
-                        Image(systemName: "arrow.counterclockwise")
+                    Button {
+                        OnboardingManager.shared.resetAndReplay()
+                    } label: {
                         Text("Replay onboarding")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.white.opacity(0.30))
                     }
-                    .foregroundColor(.accentColor)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
                 .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .padding(.top, 16)
+                .padding(.bottom, 12)
             }
+            .padding(.vertical, 12)
         }
-    }
-
-    // MARK: - Section 5: Danger zone
-
-    private var dangerZoneSection: some View {
-        SettingsSection(title: "DANGER ZONE") {
-            VStack(spacing: 8) {
-                DangerButton(title: "Clear all clipboard history") {
-                    showClearClipboardAlert = true
-                }
-                DangerButton(title: "Clear all notes") {
-                    showClearNotesAlert = true
-                }
-                DangerButton(title: "Clear all dropped files") {
-                    showClearFilesAlert = true
-                }
+        .frame(width: 480)
+        .frame(minHeight: 400)
+        .background(Color(NSColor.windowBackgroundColor))
+        .onAppear {
+            recorder.onSave = { code, mods in
+                AppSettings.shared.hotKeyCode      = code
+                AppSettings.shared.hotKeyModifiers = mods
+                NotificationCenter.default.post(name: .quickPanelHotkeyChanged, object: nil)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-        }
-        .background(Color.red.opacity(0.04))
-        // Clipboard alert
-        .alert("Clear all clipboard history?", isPresented: $showClearClipboardAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Clear", role: .destructive) {
-                NotificationCenter.default.post(name: .quickPanelClearClipboard, object: nil)
+            quickRecorder.onSave = { code, mods in
+                AppSettings.shared.quickRecordHotKeyCode      = code
+                AppSettings.shared.quickRecordHotKeyModifiers = mods
+                NotificationCenter.default.post(name: .quickRecordHotkeyChanged, object: nil)
             }
-        } message: {
-            Text("All clipboard entries will be permanently deleted.")
-        }
-        // Notes alert
-        .alert("Clear all notes?", isPresented: $showClearNotesAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Clear", role: .destructive) {
-                NotificationCenter.default.post(name: .quickPanelClearNotes, object: nil)
-            }
-        } message: {
-            Text("All notes will be permanently deleted.")
-        }
-        // Files alert
-        .alert("Clear all dropped files?", isPresented: $showClearFilesAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Clear", role: .destructive) {
-                NotificationCenter.default.post(name: .quickPanelClearDroppedFiles, object: nil)
-            }
-        } message: {
-            Text("All files will be removed from the Stash shelf and deleted from ~/Documents/QuickPanel/.")
         }
     }
 
@@ -427,40 +241,131 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Section 6: Developer
+    // MARK: - Hotkeys section
 
-    private var developerSection: some View {
-        SettingsSection(title: "DEVELOPER") {
-            VStack(alignment: .leading, spacing: 6) {
-                Button(action: resetOnboarding) {
-                    Text("Reset onboarding")
-                        .font(.system(size: 13))
-                        .foregroundColor(.primary)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Color(NSColor.separatorColor), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 20)
+    private var hotkeySection: some View {
+        SettingsSection(title: "HOTKEYS") {
+            VStack(spacing: 0) {
+                hotkeyRow(
+                    label: "Open / Close panel",
+                    badgeString: hotkeyBadgeString(keyCode: settings.hotKeyCode,
+                                                    carbonModifiers: settings.hotKeyModifiers),
+                    recorder: recorder
+                )
 
-                Text("Replays the first launch onboarding flow")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 20)
+                Divider().padding(.horizontal, 16)
+
+                hotkeyRow(
+                    label: "Quick record",
+                    badgeString: settings.quickRecordHotKeyCode == 0
+                        ? "Not set"
+                        : hotkeyBadgeString(keyCode: settings.quickRecordHotKeyCode,
+                                            carbonModifiers: settings.quickRecordHotKeyModifiers),
+                    recorder: quickRecorder
+                )
             }
+        }
+    }
+
+    private func hotkeyRow(label: String, badgeString: String, recorder: HotkeyRecorder) -> some View {
+        HStack(spacing: 12) {
+            Text(label)
+                .frame(width: 140, alignment: .leading)
+
+            Text(badgeString)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(6)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(NSColor.separatorColor), lineWidth: 1))
+
+            Spacer()
+
+            if recorder.isRecording {
+                HStack(spacing: 6) {
+                    PulsingDot()
+                    Text("Recording...")
+                        .foregroundColor(.secondary)
+                        .font(.callout)
+                }
+                Button("Cancel") { recorder.stop() }
+                    .buttonStyle(.bordered)
+            } else {
+                Button("Record") { recorder.start() }
+                    .buttonStyle(.bordered)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    // MARK: - Auto-hide section
+
+    private var autoHideSection: some View {
+        SettingsSection(title: "AUTO HIDE") {
+            HStack(spacing: 12) {
+                Text("Auto hide after")
+                    .frame(width: 110, alignment: .leading)
+                Spacer()
+                Picker("", selection: $settings.autoHideSeconds) {
+                    ForEach(autoHideOptions, id: \.value) { opt in
+                        Text(opt.label).tag(opt.value)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 300)
+            }
+            .padding(.horizontal, 16)
             .padding(.vertical, 10)
         }
     }
 
-    private func resetOnboarding() {
-        let ud = UserDefaults.standard
-        ud.removeObject(forKey: "onboardingCompleted")
-        ud.removeObject(forKey: "userName")
-        ud.removeObject(forKey: "userEmail")
-        SettingsWindowController.shared.closeAndRunOnboarding()
+    // MARK: - Data section (was Danger Zone)
+
+    private var dataSection: some View {
+        SettingsSection(title: "DATA") {
+            VStack(spacing: 8) {
+                DangerButton(title: "Clear all clipboard history") {
+                    showClearClipboardAlert = true
+                }
+                DangerButton(title: "Clear all notes") {
+                    showClearNotesAlert = true
+                }
+                DangerButton(title: "Clear all dropped files") {
+                    showClearFilesAlert = true
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+        // Clipboard alert
+        .alert("Clear all clipboard history?", isPresented: $showClearClipboardAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                NotificationCenter.default.post(name: .quickPanelClearClipboard, object: nil)
+            }
+        } message: {
+            Text("All clipboard entries will be permanently deleted.")
+        }
+        // Notes alert
+        .alert("Clear all notes?", isPresented: $showClearNotesAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                NotificationCenter.default.post(name: .quickPanelClearNotes, object: nil)
+            }
+        } message: {
+            Text("All notes will be permanently deleted.")
+        }
+        // Files alert
+        .alert("Clear all dropped files?", isPresented: $showClearFilesAlert) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                NotificationCenter.default.post(name: .quickPanelClearDroppedFiles, object: nil)
+            }
+        } message: {
+            Text("All files will be removed from the Stash shelf and deleted from ~/Documents/QuickPanel/.")
+        }
     }
 
     // MARK: - Helpers
@@ -501,72 +406,6 @@ private struct DangerButton: View {
         .controlSize(.regular)
         .foregroundColor(.red)
         .frame(maxWidth: .infinity)
-    }
-}
-
-// MARK: - Layout style radio cards
-
-private struct LayoutStyleOptionCard<Thumbnail: View>: View {
-    let title: String
-    let isSelected: Bool
-    let action: () -> Void
-    @ViewBuilder let thumbnail: () -> Thumbnail
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                thumbnail()
-                    .frame(width: 158, height: 64)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(isSelected ? Color.accentColor : Color(NSColor.separatorColor), lineWidth: isSelected ? 2 : 1)
-                    )
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.primary)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(NSColor.controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(isSelected ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 2)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct PanelLayoutThumbnailView: View {
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<3, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.25))
-            }
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(NSColor.windowBackgroundColor))
-    }
-}
-
-private struct CardsLayoutThumbnailView: View {
-    var body: some View {
-        VStack(spacing: 5) {
-            ForEach(0..<3, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.22))
-                    .frame(height: 16)
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(NSColor.windowBackgroundColor))
     }
 }
 
