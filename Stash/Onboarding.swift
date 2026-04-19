@@ -780,22 +780,6 @@ private struct OnboardingSlide5: View {
                     .onTapGesture { AuthService.shared.errorMessage = nil }
             }
 
-            Spacer().frame(height: 20)
-
-            // Skip link
-            Button(action: completeOnboarding) {
-                Text("Skip for now →")
-                    .font(.system(size: 13))
-                    .foregroundColor(.white.opacity(0.4))
-            }
-            .buttonStyle(.plain)
-
-            Spacer().frame(height: 12)
-
-            Text("Sign in will be required after your trial ends")
-                .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.3))
-
             Spacer()
         }
     }

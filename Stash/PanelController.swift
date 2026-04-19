@@ -564,9 +564,10 @@ final class PanelController: NSObject {
     }
 
     private func updateCardsVsPanelHostingVisibility() {
-        let cards = isCardsLayout
+        let showAuthGate = !AuthService.shared.isSignedIn
+        let cards = isCardsLayout && !showAuthGate
         panelHostingController?.view.isHidden = cards
-        cardsModeContainer?.isHidden = !cards
+        cardsModeContainer?.isHidden = !cards || showAuthGate
     }
 
     /// Recompute cards stack height and resize the panel (top fixed, grows downward only).
@@ -797,6 +798,78 @@ final class PanelController: NSObject {
 
 // MARK: - Root SwiftUI view (switches layout style)
 
+struct AuthGateView: View {
+    @ObservedObject private var auth = AuthService.shared
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.85).ignoresSafeArea()
+            VStack(spacing: 0) {
+                Spacer()
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.system(size: 56))
+                    .foregroundColor(.white)
+                Spacer().frame(height: 20)
+                Text("Sign in to Stash")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundColor(.white)
+                Spacer().frame(height: 10)
+                Text("A Stash account is required to use the app.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 48)
+                Spacer().frame(height: 32)
+                Button {
+                    Task { await AuthService.shared.signInWithGoogle() }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.black)
+                        Text("Continue with Google")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.black)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                    .background(Color.white)
+                    .cornerRadius(12)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 20)
+                .disabled(auth.isLoading)
+                if let error = auth.errorMessage {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 8)
+                        .onTapGesture { AuthService.shared.errorMessage = nil }
+                }
+                if auth.isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(.white)
+                            .scaleEffect(0.8)
+                        Text("Opening Google sign in...")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.6))
+                        Button("Cancel") { AuthService.shared.isLoading = false }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                    .padding(.top, 16)
+                }
+                Spacer()
+            }
+        }
+    }
+}
+
 struct QuickPanelRootView: View {
     var makePanelKey: () -> Void
     @ObservedObject var fileDropStorage: FileDropStorage
@@ -806,8 +879,14 @@ struct QuickPanelRootView: View {
     @ObservedObject var panelInteraction: PanelInteractionState
 
     @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var auth = AuthService.shared
 
     var body: some View {
+        if !auth.isSignedIn {
+            AuthGateView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .preferredColorScheme(.dark)
+        } else {
         Group {
             if settings.layoutStyle == .panel {
                 PanelContentView(
@@ -846,6 +925,7 @@ struct QuickPanelRootView: View {
             }
         }
         .id(settings.layoutStyle)
+        } // end auth else
     }
 }
 

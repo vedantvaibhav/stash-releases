@@ -135,6 +135,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if ts.isRecording {
                 ts.stopRecording()
             } else {
+                guard AuthService.shared.isSignedIn else {
+                    self?.panelController?.showPanel()
+                    return
+                }
                 ts.startRecording()
                 // Panel stays hidden — pill appears automatically
             }
@@ -147,8 +151,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         guard statusItem == nil else { return }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem?.button?.image = NSImage(systemSymbolName: "menubar.dock.rectangle",
-                                            accessibilityDescription: "Quick Panel")
+        let icon = NSImage(named: "menu-bar-icon")
+        icon?.isTemplate = true
+        icon?.size = NSSize(width: 16, height: 16)
+        statusItem?.button?.image = icon
         statusItem?.button?.imagePosition = .imageLeading
         statusItem?.button?.target = self
         statusItem?.button?.action = #selector(statusItemClicked)
