@@ -5,7 +5,6 @@ import CoreGraphics
 
 extension Notification.Name {
     static let quickPanelUserInteraction = Notification.Name("QuickPanelUserInteraction")
-    static let quickPanelShouldShow = Notification.Name("QuickPanelShouldShow")
 }
 
 /// NSPanel subclass that can become key window so the notes text view accepts keyboard input.
@@ -223,11 +222,11 @@ final class PanelController: NSObject {
     private var userInteractionObserver: NSObjectProtocol?
     private var cancellables = Set<AnyCancellable>()
 
-    // Double-click-outside to close + drag-state monitoring (idle timer pauses while dragging)
+    // Click-outside-to-close + drag-state monitoring (idle timer pauses while dragging)
     private var globalClickMonitor: Any?
-    private var lastClickTime: Date?
-    private var lastClickLocation: NSPoint?
     private var isDragInProgress = false
+    var isDraggingIntoPanel = false
+    private var closeWorkItem: DispatchWorkItem?
     private var dragMonitor: Any?
     private var localDragMonitor: Any?
     private var mouseUpMonitor: Any?
@@ -241,14 +240,6 @@ final class PanelController: NSObject {
             queue: .main
         ) { [weak self] _ in
             self?.resetPanelIdleTimer()
-        }
-        NotificationCenter.default.addObserver(
-            forName: .quickPanelShouldShow,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self, !(self.contentPanel?.isVisible ?? false) else { return }
-            self.showPanel()
         }
     }
 
@@ -298,43 +289,15 @@ final class PanelController: NSObject {
         resetPanelIdleTimer()
     }
 
-    // MARK: - Double-click outside + drag monitoring
+    // MARK: - Click-outside-to-close + drag monitoring
 
     private func startClickOutsideMonitor() {
         stopClickOutsideMonitor()
 
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown]
-        ) { [weak self] _ in
-            guard let self = self,
-                  let panel = self.contentPanel,
-                  panel.isVisible else { return }
-
-            if self.isDragInProgress { return }
-
-            let clickLocation = NSEvent.mouseLocation
-
-            if panel.frame.insetBy(dx: -5, dy: -5).contains(clickLocation) {
-                self.lastClickTime = nil
-                self.lastClickLocation = nil
-                return
-            }
-
-            let now = Date()
-
-            if let lastTime = self.lastClickTime,
-               let lastLoc = self.lastClickLocation,
-               now.timeIntervalSince(lastTime) < 0.4,
-               hypot(clickLocation.x - lastLoc.x, clickLocation.y - lastLoc.y) < 20 {
-                self.lastClickTime = nil
-                self.lastClickLocation = nil
-                print("[Panel] Double click outside — hiding")
-                DispatchQueue.main.async { self.hidePanel() }
-            } else {
-                self.lastClickTime = now
-                self.lastClickLocation = clickLocation
-                print("[Panel] Single click outside — ignoring")
-            }
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] event in
+            self?.handleGlobalClick(event: event)
         }
 
         dragMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDragged]) { [weak self] _ in
@@ -380,9 +343,80 @@ final class PanelController: NSObject {
         if let m = localDragMonitor { NSEvent.removeMonitor(m); localDragMonitor = nil }
         if let m = mouseUpMonitor { NSEvent.removeMonitor(m); mouseUpMonitor = nil }
         if let m = localMouseUpMonitor { NSEvent.removeMonitor(m); localMouseUpMonitor = nil }
-        lastClickTime = nil
-        lastClickLocation = nil
         isDragInProgress = false
+        isDraggingIntoPanel = false
+    }
+
+    func scheduleDeferredClose() {
+        cancelDeferredClose()
+        let item = DispatchWorkItem { [weak self] in
+            DispatchQueue.main.async { self?.hidePanel() }
+        }
+        closeWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
+    }
+
+    func cancelDeferredClose() {
+        closeWorkItem?.cancel()
+        closeWorkItem = nil
+    }
+
+    private func handleGlobalClick(event: NSEvent) {
+        guard let panel = contentPanel, panel.isVisible else { return }
+        guard !isDraggingIntoPanel else { return }
+        guard !isDragInProgress else { return }
+
+        let screenPoint = NSEvent.mouseLocation
+
+        // Ignore clicks inside the panel
+        if panel.frame.contains(screenPoint) { return }
+
+        // Convert to CGWindowList coordinate system
+        // CGWindowList uses top-left origin of the menu bar screen
+        let menuBarScreenHeight = NSScreen.screens.first?.frame.height
+            ?? NSScreen.main?.frame.height ?? 0
+        let cgY = menuBarScreenHeight - screenPoint.y
+        let cgPoint = CGPoint(x: screenPoint.x, y: cgY)
+
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            // Can't determine — use safe deferred path
+            scheduleDeferredClose()
+            return
+        }
+
+        for window in windowList {
+            guard
+                let boundsDict = window[kCGWindowBounds as String] as? [String: CGFloat],
+                let owner = window[kCGWindowOwnerName as String] as? String
+            else { continue }
+
+            let rect = CGRect(
+                x: boundsDict["X"] ?? 0,
+                y: boundsDict["Y"] ?? 0,
+                width: boundsDict["Width"] ?? 0,
+                height: boundsDict["Height"] ?? 0
+            )
+
+            guard rect.contains(cgPoint) else { continue }
+
+            if owner == "Finder" {
+                // Finder browser window — user may drag from it, stay open
+                return
+            } else {
+                // Any other app (browser, Slack, Terminal etc) — close immediately
+                DispatchQueue.main.async { [weak self] in self?.hidePanel() }
+                return
+            }
+        }
+
+        // No regular window found at click point = DESKTOP AREA
+        // The user may be clicking a desktop file to drag it in.
+        // Wait 500ms — if a drag arrives into the panel, cancelDeferredClose()
+        // will be called from draggingEntered. If nothing arrives, we close.
+        scheduleDeferredClose()
     }
 
     // MARK: - Screen geometry
@@ -429,9 +463,26 @@ final class PanelController: NSObject {
         transcriptionFloatingWidget.attach(transcription: transcriptionService)
         transcriptionFloatingWidget.onOpenTranscription = { [weak self] in
             guard let self else { return }
-            self.panelInteractionState.showTranscriptionPage = true
             self.showPanel()
         }
+
+        // Auto-hide the panel when recording starts so the pill takes over.
+        transcriptionService.$isRecording
+            .filter { $0 }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.hidePanel() }
+            .store(in: &cancellables)
+
+        // Long (>= 5 min) meeting recordings are the only ones that fire
+        // onNoteCreated now — short recordings only copy to clipboard and flash
+        // the pill, so when this fires we always open the new note in the editor.
+        transcriptionService.onNoteCreated = { [weak self] id in
+            guard let self else { return }
+            self.panelInteractionState.requestedTab = .notes
+            self.panelInteractionState.editingNoteId = id
+            self.showPanel()
+        }
+
         createContentPanel()
         observeSettings()
     }
@@ -513,9 +564,10 @@ final class PanelController: NSObject {
     }
 
     private func updateCardsVsPanelHostingVisibility() {
-        let cards = isCardsLayout
+        let showAuthGate = !AuthService.shared.isSignedIn
+        let cards = isCardsLayout && !showAuthGate
         panelHostingController?.view.isHidden = cards
-        cardsModeContainer?.isHidden = !cards
+        cardsModeContainer?.isHidden = !cards || showAuthGate
     }
 
     /// Recompute cards stack height and resize the panel (top fixed, grows downward only).
@@ -662,6 +714,7 @@ final class PanelController: NSObject {
 
     func showPanel() {
         guard let panel = contentPanel else { return }
+        cancelDeferredClose()
 
         transcriptionFloatingWidget.setPanelOpenForWidget(true)
         applyPanelChromeForLayoutStyle()
@@ -745,6 +798,78 @@ final class PanelController: NSObject {
 
 // MARK: - Root SwiftUI view (switches layout style)
 
+struct AuthGateView: View {
+    @ObservedObject private var auth = AuthService.shared
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.85).ignoresSafeArea()
+            VStack(spacing: 0) {
+                Spacer()
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.system(size: 56))
+                    .foregroundColor(.white)
+                Spacer().frame(height: 20)
+                Text("Sign in to Stash")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundColor(.white)
+                Spacer().frame(height: 10)
+                Text("A Stash account is required to use the app.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 48)
+                Spacer().frame(height: 32)
+                Button {
+                    Task { await AuthService.shared.signInWithGoogle() }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.black)
+                        Text("Continue with Google")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.black)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                    .background(Color.white)
+                    .cornerRadius(12)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 20)
+                .disabled(auth.isLoading)
+                if let error = auth.errorMessage {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 8)
+                        .onTapGesture { AuthService.shared.errorMessage = nil }
+                }
+                if auth.isLoading {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                            .tint(.white)
+                            .scaleEffect(0.8)
+                        Text("Opening Google sign in...")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.6))
+                        Button("Cancel") { AuthService.shared.isLoading = false }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                    .padding(.top, 16)
+                }
+                Spacer()
+            }
+        }
+    }
+}
+
 struct QuickPanelRootView: View {
     var makePanelKey: () -> Void
     @ObservedObject var fileDropStorage: FileDropStorage
@@ -754,8 +879,14 @@ struct QuickPanelRootView: View {
     @ObservedObject var panelInteraction: PanelInteractionState
 
     @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var auth = AuthService.shared
 
     var body: some View {
+        if !auth.isSignedIn {
+            AuthGateView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .preferredColorScheme(.dark)
+        } else {
         Group {
             if settings.layoutStyle == .panel {
                 PanelContentView(
@@ -764,6 +895,7 @@ struct QuickPanelRootView: View {
                     clipboard: clipboard,
                     notesStorage: notesStorage,
                     transcription: transcription,
+                    panelInteraction: panelInteraction,
                     showTranscriptionPage: Binding(
                         get: { panelInteraction.showTranscriptionPage },
                         set: { panelInteraction.showTranscriptionPage = $0 }
@@ -793,6 +925,7 @@ struct QuickPanelRootView: View {
             }
         }
         .id(settings.layoutStyle)
+        } // end auth else
     }
 }
 
@@ -804,6 +937,7 @@ struct PanelContentView: View {
     @ObservedObject var clipboard: ClipboardManager
     @ObservedObject var notesStorage: NotesStorage
     @ObservedObject var transcription: TranscriptionService
+    @ObservedObject var panelInteraction: PanelInteractionState
     @Binding var showTranscriptionPage: Bool
     @Binding var editingNoteId: String?
     @Binding var noteToDelete: NoteItem?
@@ -815,14 +949,34 @@ struct PanelContentView: View {
     var body: some View {
         ZStack {
             Color.black
-            VStack(spacing: 16) {
+            VStack(spacing: 0) {
                 TabBarView(
                     selectedTab: $selectedTab,
                     onMicTap: {
-                        showTranscriptionPage = true
                         transcription.startRecording()
+                        // Panel auto-hides via PanelController.$isRecording observer
+                    },
+                    onAddNote: {
+                        let id = notesStorage.createNewNote()
+                        notesStorage.createEmptyNoteFile(id: id)
+                        editingNoteId = id
+                        selectedTab = .notes
+                        makePanelKey()
                     }
                 )
+                .padding(.bottom, DesignTokens.Spacing.cardGap)
+
+                if transcription.isRecording || transcription.isProcessing || transcription.lastErrorForBanner != nil {
+                    RecordingBanner(
+                        isProcessing: transcription.isProcessing,
+                        errorMessage: transcription.lastErrorForBanner,
+                        onStop: { transcription.stopRecording() }
+                    )
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .top).combined(with: .opacity),
+                        removal: .move(edge: .top).combined(with: .opacity)
+                    ))
+                }
 
                 /// Only the selected tab is in the hierarchy. Stacking every tab with opacity caused higher
                 /// `NSHostingView`s (Clipboard / Files / Notes) to sit above the All/Files drop containers and
@@ -889,11 +1043,22 @@ struct PanelContentView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(20)
+            .padding(.top, 20)
+            .padding(.horizontal, 20)
             .frame(maxWidth: 700, maxHeight: .infinity, alignment: .top)
             .frame(maxWidth: .infinity)
+            .animation(.easeOut(duration: 0.25), value: transcription.isRecording)
+            .animation(.easeOut(duration: 0.25), value: transcription.isProcessing)
+            .onChange(of: panelInteraction.requestedTab) { tab in
+                guard let tab else { return }
+                selectedTab = tab
+                panelInteraction.requestedTab = nil
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) {
+            PanelToastOverlay(message: $clipboard.transientMessage)
+        }
         .compositingGroup()
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .alert("Delete note?", isPresented: Binding(
@@ -924,5 +1089,107 @@ struct PanelContentView: View {
         } message: {
             Text("The file will be removed from the list and deleted from your Mac.")
         }
+    }
+}
+
+// MARK: - Reusable panel toast overlay
+
+struct PanelToastOverlay: View {
+    @Binding var message: String?
+    @State private var isVisible = false
+    @State private var hideTask: DispatchWorkItem?
+
+    var body: some View {
+        ZStack {
+            if isVisible, let text = message {
+                Text(text)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.white.opacity(0.85))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(DesignTokens.Icon.backgroundActive)
+                    )
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .padding(.bottom, 20)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: isVisible)
+        .onChange(of: message) { newValue in
+            hideTask?.cancel()
+            if newValue != nil {
+                withAnimation(.easeOut(duration: 0.2)) { isVisible = true }
+                let task = DispatchWorkItem { [self] in
+                    withAnimation(.easeOut(duration: 0.2)) { isVisible = false }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        if self.message == newValue { self.message = nil }
+                    }
+                }
+                hideTask = task
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: task)
+            } else {
+                withAnimation(.easeOut(duration: 0.2)) { isVisible = false }
+            }
+        }
+    }
+}
+
+// MARK: - Recording banner
+
+struct RecordingBanner: View {
+    let isProcessing: Bool
+    var errorMessage: String? = nil
+    let onStop: () -> Void
+
+    @State private var pulse = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let err = errorMessage {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(.orange)
+                Text(err)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.orange.opacity(0.90))
+                    .lineLimit(2)
+            } else {
+                Circle()
+                    .fill(DesignTokens.Icon.tintRecording)
+                    .frame(width: 7, height: 7)
+                    .scaleEffect(pulse ? 1.3 : 1.0)
+                    .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse)
+                    .onAppear { pulse = true }
+
+                Text(isProcessing ? "Creating notes..." : "Recording in progress")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.80))
+            }
+
+            Spacer()
+
+            if !isProcessing && errorMessage == nil {
+                Button(action: onStop) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Color.white.opacity(0.12)))
+                        .overlay(Circle().stroke(Color.white.opacity(0.20), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(errorMessage != nil
+                    ? Color.orange.opacity(0.12)
+                    : DesignTokens.Icon.tintRecording.opacity(0.15))
+        )
+        .padding(.bottom, 8)
     }
 }

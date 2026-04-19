@@ -188,8 +188,9 @@ struct FileDropListContent: View {
                         .frame(width: cardW, height: 88)
                     }
                 }
-                // Padding lives inside the scroll content so top/bottom rows have breathing room.
-                .padding(outerPadding)
+                // Top + horizontal padding only — last row scrolls flush to panel bottom.
+                .padding(.top, outerPadding)
+                .padding(.horizontal, outerPadding)
             }
         }
     }
@@ -470,10 +471,10 @@ final class DraggableFileView: NSView, NSDraggingSource {
     private var usedModifierClickForSelection = false
 
     init(item: DroppedFileItem, fileURL: URL, exists: Bool, relativeTime: String) {
-        self.item       = item
-        self.fileURL    = fileURL
-        self.fileExists = exists
-        self.cardContent = FileDropCardContentView(
+        self.item         = item
+        self.fileURL      = fileURL
+        self.fileExists   = exists
+        self.cardContent  = FileDropCardContentView(
             item: item, fileURL: fileURL, exists: exists, relativeTime: relativeTime)
         super.init(frame: .zero)
         cardContent.translatesAutoresizingMaskIntoConstraints = false
@@ -778,10 +779,18 @@ final class DraggableFileView: NSView, NSDraggingSource {
     }
 
     func draggingSession(_ session: NSDraggingSession,
+                         willBeginAt screenPoint: NSPoint) {
+        (window as? KeyablePanel)?.panelController?.isDraggingIntoPanel = true
+    }
+
+    func draggingSession(_ session: NSDraggingSession,
                          endedAt screenPoint: NSPoint,
                          operation: NSDragOperation) {
         alphaValue = 1.0
-        defer { multiDragItems = [] }
+        defer {
+            multiDragItems = []
+            (window as? KeyablePanel)?.panelController?.isDraggingIntoPanel = false
+        }
 
         // Cancelled or dropped inside our own panel — keep file.
         if operation.isEmpty { return }
@@ -934,6 +943,7 @@ final class FileDropContainerView: NSView {
         t.textColor = NSColor.white
         t.alignment = .center
         t.alphaValue = 0
+        t.isHidden = true
         t.drawsBackground = false
         t.isBordered = false
         t.maximumNumberOfLines = 2
@@ -964,6 +974,7 @@ final class FileDropContainerView: NSView {
             .withAlphaComponent(ProminentExternalFileDragChrome.iconTintAlpha)
         uploadIconView.imageScaling     = .scaleProportionallyUpOrDown
         uploadIconView.alphaValue       = 0
+        uploadIconView.isHidden         = true
         uploadIconView.wantsLayer       = true
 
         registerForDraggedTypes(StashFileDragPasteboard.types)
@@ -991,13 +1002,31 @@ final class FileDropContainerView: NSView {
         borderLayer.borderWidth = active ? ProminentExternalFileDragChrome.borderWidth : 0
         CATransaction.commit()
 
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration             = 0.15
-            ctx.allowsImplicitAnimation = true
-            contentHostingView?.animator().alphaValue =
-                active ? ProminentExternalFileDragChrome.filesColumnContentFade : 1.0
-            uploadIconView.animator().alphaValue = active ? 1.0 : 0.0
-            hintLabel.animator().alphaValue      = active ? 1.0 : 0.0
+        if active {
+            // Unhide before fade-in so the animation is visible
+            uploadIconView.isHidden = false
+            hintLabel.isHidden = false
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                ctx.allowsImplicitAnimation = true
+                contentHostingView?.animator().alphaValue =
+                    ProminentExternalFileDragChrome.filesColumnContentFade
+                uploadIconView.animator().alphaValue = 1.0
+                hintLabel.animator().alphaValue      = 1.0
+            }
+        } else {
+            // Fade out, then set isHidden so they are fully removed from hit testing
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.15
+                ctx.allowsImplicitAnimation = true
+                contentHostingView?.animator().alphaValue = 1.0
+                uploadIconView.animator().alphaValue = 0.0
+                hintLabel.animator().alphaValue      = 0.0
+            }, completionHandler: { [weak self] in
+                guard let self else { return }
+                self.uploadIconView.isHidden = true
+                self.hintLabel.isHidden = true
+            })
         }
     }
 
@@ -1032,6 +1061,8 @@ final class FileDropContainerView: NSView {
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
         ) else { return [] }
+        (window as? KeyablePanel)?.panelController?.cancelDeferredClose()
+        (window as? KeyablePanel)?.panelController?.isDraggingIntoPanel = true
         window?.level = .normal
         window?.orderFrontRegardless()
         showDropState(true)
@@ -1041,11 +1072,13 @@ final class FileDropContainerView: NSView {
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
+        (window as? KeyablePanel)?.panelController?.isDraggingIntoPanel = false
         window?.level = .floating
         showDropState(false)
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo?) {
+        (window as? KeyablePanel)?.panelController?.isDraggingIntoPanel = false
         window?.level = .floating
         showDropState(false)
     }
@@ -1053,6 +1086,7 @@ final class FileDropContainerView: NSView {
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        (window as? KeyablePanel)?.panelController?.isDraggingIntoPanel = false
         showDropState(false)
         if sender.draggingSource is DraggableFileView { return false }
         guard let urls = sender.draggingPasteboard.readObjects(
@@ -1095,6 +1129,12 @@ struct FileDropZoneRepresentable: NSViewRepresentable {
 
     func updateNSView(_ container: FileDropContainerView, context: Context) {
         container.onDrop = onDrop
+        // Push fresh bindings into the hosted SwiftUI view every time the parent re-renders.
+        // Without this, @Binding changes (editingNoteId, showTranscriptionPage, etc.) never
+        // reach SharedNotesColumn — the NSHostingView stays frozen on its initial state.
+        if let hosting = container.contentHostingView as? NSHostingView<AnyView> {
+            hosting.rootView = content
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }

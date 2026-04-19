@@ -9,6 +9,8 @@ extension Notification.Name {
     static let quickPanelClearClipboard     = Notification.Name("QuickPanelClearClipboard")
     static let quickPanelClearNotes         = Notification.Name("QuickPanelClearNotes")
     static let quickPanelClearDroppedFiles  = Notification.Name("QuickPanelClearDroppedFiles")
+    static let quickRecordHotkeyChanged    = Notification.Name("quickRecordHotkeyChanged")
+    static let authCompleted                = Notification.Name("AuthCompleted")
 }
 
 // MARK: - Layout style
@@ -45,6 +47,15 @@ final class AppSettings: ObservableObject {
         didSet { ud.set(Int(hotKeyModifiers), forKey: Keys.hotKeyModifiers) }
     }
 
+    // MARK: Quick record hotkey
+
+    @Published var quickRecordHotKeyCode: UInt32 {
+        didSet { ud.set(Int(quickRecordHotKeyCode), forKey: Keys.quickRecordHotKeyCode) }
+    }
+    @Published var quickRecordHotKeyModifiers: UInt32 {
+        didSet { ud.set(Int(quickRecordHotKeyModifiers), forKey: Keys.quickRecordHotKeyModifiers) }
+    }
+
     // MARK: Auto-hide timer (0 = Never)
 
     @Published var autoHideSeconds: Double {
@@ -75,6 +86,12 @@ final class AppSettings: ObservableObject {
         let savedMods = ud.object(forKey: Keys.hotKeyModifiers) as? Int
         hotKeyModifiers = UInt32(savedMods ?? (cmdKey | shiftKey))
 
+        let savedQRCode = ud.object(forKey: Keys.quickRecordHotKeyCode) as? Int
+        quickRecordHotKeyCode = UInt32(savedQRCode ?? 0)
+
+        let savedQRMods = ud.object(forKey: Keys.quickRecordHotKeyModifiers) as? Int
+        quickRecordHotKeyModifiers = UInt32(savedQRMods ?? 0)
+
         let savedHide = ud.object(forKey: Keys.autoHideSeconds) as? Double
         autoHideSeconds = savedHide ?? 7.0
 
@@ -102,7 +119,9 @@ final class AppSettings: ObservableObject {
         static let autoHideSeconds  = "qp.autoHideSeconds"
         static let panelWidth       = "qp.panelWidth"
         static let panelHeight      = "qp.panelHeight"
-        static let launchAtLogin    = "qp.launchAtLogin"
+        static let launchAtLogin              = "qp.launchAtLogin"
+        static let quickRecordHotKeyCode      = "qp.quickRecordHotKeyCode"
+        static let quickRecordHotKeyModifiers = "qp.quickRecordHotKeyModifiers"
     }
 }
 

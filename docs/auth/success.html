@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Signed in to Stash</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #000;
+           color: #fff; display: flex; align-items: center;
+           justify-content: center; height: 100vh; margin: 0;
+           flex-direction: column; gap: 16px; }
+    h1 { font-weight: 500; }
+    p { color: #888; }
+  </style>
+</head>
+<body>
+  <h1>Signed in ✓</h1>
+  <p>Redirecting back to Stash...</p>
+  <script>
+    // Merge query params and hash params, then redirect to the app
+    const params = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(window.location.hash.slice(1));
+    const finalParams = new URLSearchParams();
+    for (const [k, v] of params) finalParams.set(k, v);
+    for (const [k, v] of hashParams) finalParams.set(k, v);
+    window.location.href = "quickpanel://auth/callback?" + finalParams.toString();
+    // Close tab 1.5 s later as a fallback if the app redirect opened successfully
+    setTimeout(() => window.close(), 1500);
+  </script>
+</body>
+</html>

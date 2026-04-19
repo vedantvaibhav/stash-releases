@@ -1,10 +1,17 @@
 import Foundation
 import AppKit
-import AuthenticationServices
 import CryptoKit
 
 // MARK: - Auth service
 // Uses Supabase REST + Auth APIs directly via URLSession — no external SDK required.
+// Opens the Google OAuth flow in the user's default browser via NSWorkspace.
+// The callback (quickpanel://auth/callback?code=...) is delivered through
+// `handleOAuthCallback(url:)` — wired up in the AppDelegate via
+// `application(_:open:)` and the NSAppleEventManager handler.
+//
+// ⚠️ Manual step — Supabase dashboard:
+// In Supabase → Authentication → URL Configuration → Redirect URLs, ensure
+// "quickpanel://auth/callback" is listed. This cannot be changed from code.
 @MainActor
 final class AuthService: ObservableObject {
 
@@ -26,15 +33,18 @@ final class AuthService: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "sb.refreshToken") }
     }
 
+    private static let pkceVerifierKey = "pkce_code_verifier"
+
+    /// Guards against macOS delivering the same callback URL twice
+    /// (once via `application(_:open:)` and once via the Apple Event handler).
+    private var isExchangingCode = false
+
     private init() {}
 
     // MARK: - Check session on launch
 
     func checkSession() async {
-        guard let token = accessToken else {
-            print("[Auth] No stored access token")
-            return
-        }
+        guard let token = accessToken else { return }
         do {
             let su      = try await fetchSupabaseUser(accessToken: token)
             let appUser = try await createOrFetchUser(supabaseID: su.id, googleId: su.id,
@@ -42,197 +52,90 @@ final class AuthService: ObservableObject {
                                                       avatarURL: su.avatarURL, accessToken: token)
             self.currentUser = appUser
             self.isSignedIn  = true
-            print("[Auth] Session restored: \(appUser.email)")
         } catch {
-            print("[Auth] Stored session invalid, clearing: \(error)")
             clearTokens()
         }
     }
 
-    // MARK: - Sign in with Google (ASWebAuthenticationSession + PKCE)
+    // MARK: - Sign in with Google (NSWorkspace — opens in user's default browser)
 
     func signInWithGoogle() async {
-        print("[Auth] ====== signInWithGoogle() called ======")
         isLoading    = true
         errorMessage = nil
 
-        // Build OAuth URL with explicit PKCE parameters so Supabase returns ?code=
-        // and can exchange it reliably for a session.
-        let verifier = pkceVerifier()
-        let challenge = pkceChallenge(for: verifier)
-
-        guard var components = URLComponents(string:
-                "\(SupabaseConfig.projectURL)/auth/v1/authorize") else {
-            print("[Auth] ERROR: Could not create URL components")
+        guard let oauthURL = buildGoogleOAuthURL() else {
             isLoading    = false
             errorMessage = "Bad URL"
             return
         }
+
+        // Open in existing browser — no new window
+        NSWorkspace.shared.open(oauthURL)
+    }
+
+    private func buildGoogleOAuthURL() -> URL? {
+        let verifier  = pkceVerifier()
+        let challenge = pkceChallenge(for: verifier)
+
+        // Persist verifier so it is available when the callback arrives in a
+        // separate app activation.
+        UserDefaults.standard.set(verifier, forKey: Self.pkceVerifierKey)
+
+        guard var components = URLComponents(string:
+                "\(SupabaseConfig.projectURL)/auth/v1/authorize") else {
+            return nil
+        }
         components.queryItems = [
-            URLQueryItem(name: "provider", value: "google"),
-            URLQueryItem(name: "redirect_to", value: "quickpanel://auth/callback"),
-            URLQueryItem(name: "flow_type", value: "pkce"),
-            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "provider",              value: "google"),
+            URLQueryItem(name: "redirect_to",           value: "https://vedantvaibhav.github.io/stash-releases/auth/success"),
+            URLQueryItem(name: "flow_type",             value: "pkce"),
+            URLQueryItem(name: "code_challenge",        value: challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(
                 name: "scopes",
                 value: "openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
             ),
         ]
-        guard let oauthURL = components.url else {
-            print("[Auth] ERROR: Could not build OAuth URL")
-            isLoading    = false
-            errorMessage = "Bad URL"
+        return components.url
+    }
+
+    // MARK: - Handle OAuth callback (called from AppDelegate URL handlers)
+
+    func handleOAuthCallback(url: URL) async {
+        // macOS occasionally delivers the callback twice (application(_:open:)
+        // AND the Apple Event handler). Without this guard, the second exchange
+        // reuses the consumed code and overwrites the successful state.
+        if isSignedIn || isExchangingCode { return }
+
+        // Merge query params and URL fragment — Supabase sometimes returns tokens in the hash.
+        var params: [String: String] = [:]
+        if let query = url.query       { params.merge(parseQuery(query))    { _, new in new } }
+        if let fragment = url.fragment { params.merge(parseQuery(fragment)) { _, new in new } }
+
+        if let err = params["error"] {
+            let desc = params["error_description"]?.replacingOccurrences(of: "+", with: " ") ?? err
+            await MainActor.run {
+                self.isLoading    = false
+                self.errorMessage = "Google sign in failed: \(desc)"
+            }
             return
         }
-        print("[Auth] OAuth URL: \(oauthURL.absoluteString)")
 
-        // Log available windows
-        print("[Auth] Visible windows: \(NSApp.windows.filter { $0.isVisible }.count)")
-        print("[Auth] All windows: \(NSApp.windows.count)")
-        for (i, w) in NSApp.windows.enumerated() {
-            print("[Auth] Window \(i): \(type(of: w)) visible=\(w.isVisible) key=\(w.isKeyWindow)")
+        guard let code = params["code"] else {
+            await MainActor.run {
+                self.isLoading    = false
+                self.errorMessage = "No authorization code received"
+            }
+            return
         }
 
-        print("[Auth] Creating ASWebAuthenticationSession")
-        let session = ASWebAuthenticationSession(
-            url: oauthURL,
-            callbackURLScheme: "quickpanel"
-        ) { [weak self] callbackURL, error in
-            print("[Auth] ====== ASWebAuthenticationSession callback fired ======")
-
-            if let error = error {
-                print("[Auth] Session error type: \(type(of: error))")
-                print("[Auth] Session error: \(error)")
-                print("[Auth] Session error localised: \(error.localizedDescription)")
-                if let authError = error as? ASWebAuthenticationSessionError {
-                    print("[Auth] ASWebAuthenticationSessionError code: \(authError.code.rawValue)")
-                }
-                let cancelled = (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin
-                Task { @MainActor in
-                    self?.isLoading = false
-                    if !cancelled { self?.errorMessage = "Sign in error: \(error.localizedDescription)" }
-                }
-                return
-            }
-
-            guard let url = callbackURL else {
-                print("[Auth] ERROR: callbackURL is nil with no error")
-                Task { @MainActor in
-                    self?.isLoading  = false
-                    self?.errorMessage = "No callback URL received"
-                }
-                return
-            }
-
-            print("[Auth] SUCCESS — callback URL: \(url.absoluteString)")
-            print("[Auth] Query:    \(url.query    ?? "NIL")")
-            print("[Auth] Fragment: \(url.fragment ?? "NIL")")
-
-            Task {
-                await self?.finishWithCallbackURL(url, codeVerifier: verifier)
-            }
+        await MainActor.run {
+            self.isLoading    = true
+            self.errorMessage = nil
         }
-
-        print("[Auth] Setting presentation context provider")
-        session.presentationContextProvider = AuthPresentationContext.shared
-        session.prefersEphemeralWebBrowserSession = false
-
-        print("[Auth] Calling session.start()")
-        let started = session.start()
-        print("[Auth] session.start() returned: \(started)")
-
-        // Store strongly so it isn't released before the callback fires
-        AuthPresentationContext.shared.activeSession = session
-
-        if !started {
-            print("[Auth] ERROR: session.start() returned false")
-            isLoading    = false
-            errorMessage = "Could not start sign in"
-        }
-    }
-
-    // MARK: - Handle external URL callback (Apple Event fallback path)
-
-    func handleAuthCallback(url: URL) async {
-        print("[Auth] External callback: \(url.absoluteString)")
-        isLoading    = true
-        errorMessage = nil
-        await finishWithCallbackURL(url, codeVerifier: nil)
-    }
-
-    // MARK: - Private: extract code/token from callback and finish sign-in
-
-    private func finishWithCallbackURL(_ url: URL, codeVerifier: String?) async {
-        let raw = url.absoluteString
-        print("[Auth] Processing callback: \(raw)")
-        print("[Auth] query=\(url.query ?? "nil")  fragment=\(url.fragment ?? "nil")")
-
-        // 0. Provider/Supabase returned an explicit OAuth error.
-        // Example from logs:
-        // quickpanel://auth/callback?error=server_error&error_description=Unable+to+exchange+external+code...
-        if let query = url.query {
-            let q = parseQuery(query)
-            if let err = q["error"] {
-                let desc = q["error_description"]?.replacingOccurrences(of: "+", with: " ") ?? err
-                print("[Auth] OAuth error from callback query: \(err) — \(desc)")
-                isLoading = false
-                errorMessage = "Google sign in failed: \(desc)"
-                return
-            }
-        }
-        if let fragment = url.fragment {
-            let f = parseQuery(fragment)
-            if let err = f["error"] {
-                let desc = f["error_description"]?.replacingOccurrences(of: "+", with: " ") ?? err
-                print("[Auth] OAuth error from callback fragment: \(err) — \(desc)")
-                isLoading = false
-                errorMessage = "Google sign in failed: \(desc)"
-                return
-            }
-        }
-
-        // 1. PKCE code in query params (?code=...) — preferred, always preserved
-        if let query = url.query {
-            let params = parseQuery(query)
-            if let code = params["code"] {
-                print("[Auth] Got PKCE code — exchanging for tokens")
-                await exchangeCodeForSession(code: code, verifier: codeVerifier ?? "")
-                return
-            }
-        }
-
-        // 2. Implicit flow — access_token in fragment or query
-        var tokenString: String? = nil
-        if let frag = url.fragment, !frag.isEmpty {
-            tokenString = frag
-            print("[Auth] Token source: URL.fragment")
-        } else if let query = url.query, query.contains("access_token") {
-            tokenString = query
-            print("[Auth] Token source: query string")
-        } else if raw.contains("#") {
-            tokenString = raw.components(separatedBy: "#").last
-            print("[Auth] Token source: raw '#' split")
-        }
-
-        if let tokenString = tokenString {
-            var params: [String: String] = [:]
-            for pair in tokenString.components(separatedBy: "&") {
-                let kv = pair.components(separatedBy: "=")
-                guard kv.count == 2 else { continue }
-                params[kv[0]] = kv[1].removingPercentEncoding ?? kv[1]
-            }
-            print("[Auth] Params found: \(params.keys.sorted().joined(separator: ", "))")
-            if let token = params["access_token"] {
-                print("[Auth] Got implicit access_token")
-                await finishWithToken(token, refresh: params["refresh_token"])
-                return
-            }
-        }
-
-        isLoading    = false
-        errorMessage = "No token received — please try again."
-        print("[Auth] No code or token found in: \(raw)")
+        isExchangingCode = true
+        await exchangeCodeForSession(code)
+        isExchangingCode = false
     }
 
     // MARK: - Sign out
@@ -241,7 +144,6 @@ final class AuthService: ObservableObject {
         clearTokens()
         currentUser = nil
         isSignedIn  = false
-        print("[Auth] Signed out")
     }
 
     // MARK: - Helpers
@@ -262,47 +164,62 @@ final class AuthService: ObservableObject {
             let appUser = try await createOrFetchUser(supabaseID: su.id, googleId: su.id,
                                                       email: su.email, name: su.fullName,
                                                       avatarURL: su.avatarURL, accessToken: token)
-            self.currentUser = appUser
-            self.isSignedIn  = true
-            self.isLoading   = false
+            // Explicit main-actor hop so @Published updates always trigger SwiftUI redraw
+            // — even if this runs from a non-isolated await resumption point.
+            await MainActor.run {
+                self.currentUser = appUser
+                self.isSignedIn  = true
+                self.isLoading   = false
+            }
             NotificationCenter.default.post(name: .authCompleted, object: nil)
-            print("[Auth] Sign in complete: \(appUser.email)")
         } catch {
-            isLoading    = false
-            errorMessage = "Sign in failed: \(error.localizedDescription)"
+            await MainActor.run {
+                self.isLoading    = false
+                self.errorMessage = "Sign in failed: \(error.localizedDescription)"
+            }
             clearTokens()
-            print("[Auth] finishWithToken error: \(error)")
         }
     }
 
     // MARK: - Private: PKCE code exchange
 
-    private func exchangeCodeForSession(code: String, verifier: String) async {
+    private func exchangeCodeForSession(_ code: String) async {
         guard let url = URL(string:
             "\(SupabaseConfig.projectURL)/auth/v1/token?grant_type=pkce") else {
-            isLoading = false; return
+            await MainActor.run { self.isLoading = false }
+            return
         }
+
+        let verifier = retrieveCodeVerifier()
+
         do {
-            var req = URLRequest(url: url)
-            req.httpMethod = "POST"
-            req.setValue("application/json",     forHTTPHeaderField: "Content-Type")
-            req.setValue(SupabaseConfig.anonKey, forHTTPHeaderField: "apikey")
-            req.httpBody = try JSONSerialization.data(withJSONObject:
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json",     forHTTPHeaderField: "Content-Type")
+            request.setValue(SupabaseConfig.anonKey, forHTTPHeaderField: "apikey")
+            request.httpBody = try JSONSerialization.data(withJSONObject:
                 ["auth_code": code, "code_verifier": verifier])
 
-            let (data, resp) = try await URLSession.shared.data(for: req)
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            print("[Auth] Token exchange HTTP \(status): \(String(data: data, encoding: .utf8) ?? "")")
+            let (data, _) = try await URLSession.shared.data(for: request)
 
             guard let json  = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let token = json["access_token"] as? String else {
-                throw URLError(.badServerResponse)
+                await MainActor.run {
+                    self.isLoading    = false
+                    self.errorMessage = "Authentication failed — please try again."
+                }
+                return
             }
+
+            // Clean up the verifier only after a successful exchange.
+            UserDefaults.standard.removeObject(forKey: Self.pkceVerifierKey)
+
             await finishWithToken(token, refresh: json["refresh_token"] as? String)
         } catch {
-            isLoading    = false
-            errorMessage = "Authentication failed — please try again."
-            print("[Auth] Code exchange error: \(error)")
+            await MainActor.run {
+                self.isLoading    = false
+                self.errorMessage = "Authentication failed — please try again."
+            }
         }
     }
 
@@ -323,6 +240,10 @@ final class AuthService: ObservableObject {
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+
+    private func retrieveCodeVerifier() -> String {
+        UserDefaults.standard.string(forKey: Self.pkceVerifierKey) ?? ""
     }
 
     // MARK: - Private: fetch auth/v1/user
@@ -366,7 +287,6 @@ final class AuthService: ObservableObject {
         if let existing = try? decoder.decode([AppUser].self, from: getData),
            let user = existing.first {
             try? await patchLastSeen(googleId: googleId, accessToken: accessToken)
-            print("[Auth] Existing user: \(user.email)")
             return user
         }
 
@@ -392,9 +312,7 @@ final class AuthService: ObservableObject {
         encoder.dateEncodingStrategy = .iso8601
         postReq.httpBody = try encoder.encode(newUser)
 
-        let (_, postResponse) = try await URLSession.shared.data(for: postReq)
-        let postStatus = (postResponse as? HTTPURLResponse)?.statusCode ?? 0
-        print("[Auth] Created user row, HTTP \(postStatus)")
+        _ = try await URLSession.shared.data(for: postReq)
         return newUser
     }
 
@@ -439,12 +357,6 @@ final class AuthService: ObservableObject {
         if let d = f2.date(from: str) { return d }
         throw DecodingError.dataCorruptedError(in: c, debugDescription: "Cannot parse date: \(str)")
     }
-}
-
-// MARK: - Notification name
-
-extension NSNotification.Name {
-    static let authCompleted = NSNotification.Name("AuthCompleted")
 }
 
 // MARK: - Private: Supabase auth/v1/user response model
