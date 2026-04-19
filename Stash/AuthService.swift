@@ -87,7 +87,7 @@ final class AuthService: ObservableObject {
         }
         components.queryItems = [
             URLQueryItem(name: "provider",              value: "google"),
-            URLQueryItem(name: "redirect_to",           value: "quickpanel://auth/callback"),
+            URLQueryItem(name: "redirect_to",           value: "https://vedantvaibhav.github.io/stash-releases/auth/success"),
             URLQueryItem(name: "flow_type",             value: "pkce"),
             URLQueryItem(name: "code_challenge",        value: challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
@@ -107,22 +107,21 @@ final class AuthService: ObservableObject {
         // reuses the consumed code and overwrites the successful state.
         if isSignedIn || isExchangingCode { return }
 
-        // Surface any OAuth error Supabase appended to the redirect.
-        if let query = url.query {
-            let q = parseQuery(query)
-            if let err = q["error"] {
-                let desc = q["error_description"]?.replacingOccurrences(of: "+", with: " ") ?? err
-                await MainActor.run {
-                    self.isLoading    = false
-                    self.errorMessage = "Google sign in failed: \(desc)"
-                }
-                return
+        // Merge query params and URL fragment — Supabase sometimes returns tokens in the hash.
+        var params: [String: String] = [:]
+        if let query = url.query       { params.merge(parseQuery(query))    { _, new in new } }
+        if let fragment = url.fragment { params.merge(parseQuery(fragment)) { _, new in new } }
+
+        if let err = params["error"] {
+            let desc = params["error_description"]?.replacingOccurrences(of: "+", with: " ") ?? err
+            await MainActor.run {
+                self.isLoading    = false
+                self.errorMessage = "Google sign in failed: \(desc)"
             }
+            return
         }
 
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let code = components.queryItems?.first(where: { $0.name == "code" })?.value
-        else {
+        guard let code = params["code"] else {
             await MainActor.run {
                 self.isLoading    = false
                 self.errorMessage = "No authorization code received"
