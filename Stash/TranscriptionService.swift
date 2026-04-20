@@ -47,7 +47,9 @@ final class TranscriptionService: NSObject, ObservableObject {
     func startRecording() {
         errorMessage = nil
         completionMessage = nil
+        #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
+        #endif
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
             Task { @MainActor in
                 guard let self else { return }
@@ -158,8 +160,10 @@ final class TranscriptionService: NSObject, ObservableObject {
         guard let url = recordingURL,
               let audioData = try? Data(contentsOf: url),
               audioData.count > 1000 else {
+            #if DEBUG
             let fileSize = (try? Data(contentsOf: recordingURL ?? URL(fileURLWithPath: ""))).map { "\($0.count) bytes" } ?? "no file"
             print("[Transcription] Audio guard failed — \(fileSize)")
+            #endif
             errorMessage = "Recording failed — no audio captured"
             isProcessing = false
             showCompletion("Failed")
@@ -353,8 +357,10 @@ final class TranscriptionService: NSObject, ObservableObject {
             isProcessing = false
             let desc = error.localizedDescription
             errorMessage = desc
+            #if DEBUG
             print("[Transcription] FAILED — \(desc)")
             print("[Transcription] Full error: \(error)")
+            #endif
             showCompletion("Failed")
             lastErrorForBanner = desc
             DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
