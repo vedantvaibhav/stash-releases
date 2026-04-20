@@ -116,4 +116,6 @@ final class FileQuickLookController: NSObject, ObservableObject {
     func toggleQuickLook() { /* filled in Task 9 */ }
     func closeQuickLookIfVisible() { /* filled in Task 9 */ }
     func reloadQuickLookIfVisible() { /* filled in Task 9 */ }
+    // Stub: real implementation added in Task 9
+    func removeKeyMonitor() { }
 }

@@ -210,6 +210,13 @@ final class PanelController: NSObject {
     let clipboardManager = ClipboardManager()
     let notesStorage = NotesStorage()
     let panelInteractionState = PanelInteractionState()
+    /// Shared across Files tab and All-tab Recent Files row so selection is
+    /// a single source of truth (multi-select for drag).
+    let fileSelection = FileSelectionState()
+    /// Shared grid hover state — keeps only one card hovered at a time across surfaces.
+    let fileGridHover = FileGridHoverState()
+    /// Owns QL-focused file id, arrow navigation, local key monitor, QL lifecycle.
+    let fileQuickLook = FileQuickLookController()
     /// Single instance for panel layout, cards layout, and the floating transcription pill.
     let transcriptionService = TranscriptionService()
     private let transcriptionFloatingWidget = TranscriptionFloatingWidgetController()
@@ -517,7 +524,10 @@ final class PanelController: NSObject {
             clipboard: clipboardManager,
             notesStorage: notesStorage,
             transcription: transcriptionService,
-            panelInteraction: panelInteractionState
+            panelInteraction: panelInteractionState,
+            fileSelection: fileSelection,
+            fileGridHover: fileGridHover,
+            fileQuickLook: fileQuickLook
         )
         let hosting = NSHostingController(rootView: root)
 
@@ -763,6 +773,12 @@ final class PanelController: NSObject {
     func hidePanel() {
         guard let panel = contentPanel, panel.isVisible else { return }
 
+        // Quick Look and the key monitor must go BEFORE the animation — otherwise
+        // QL lingers on-screen for ~250ms after the slide-out starts, and a
+        // spacebar press during that window can retrigger the monitor.
+        fileQuickLook.closeQuickLookIfVisible()
+        fileQuickLook.removeKeyMonitor()
+
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.25
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0.0, 1.0, 1.0)
@@ -776,6 +792,8 @@ final class PanelController: NSObject {
             self.stopClickOutsideMonitor()
             self.idleTimer?.invalidate()
             self.idleTimer = nil
+            // State wipe comes last: UI is already gone, nothing else to see.
+            self.fileQuickLook.clearSelection()
         })
     }
 
@@ -881,6 +899,9 @@ struct QuickPanelRootView: View {
     @ObservedObject var notesStorage: NotesStorage
     @ObservedObject var transcription: TranscriptionService
     @ObservedObject var panelInteraction: PanelInteractionState
+    @ObservedObject var fileSelection: FileSelectionState
+    @ObservedObject var fileGridHover: FileGridHoverState
+    @ObservedObject var fileQuickLook: FileQuickLookController
 
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var auth = AuthService.shared
@@ -900,6 +921,9 @@ struct QuickPanelRootView: View {
                     notesStorage: notesStorage,
                     transcription: transcription,
                     panelInteraction: panelInteraction,
+                    fileSelection: fileSelection,
+                    fileGridHover: fileGridHover,
+                    fileQuickLook: fileQuickLook,
                     showTranscriptionPage: Binding(
                         get: { panelInteraction.showTranscriptionPage },
                         set: { panelInteraction.showTranscriptionPage = $0 }
@@ -942,6 +966,9 @@ struct PanelContentView: View {
     @ObservedObject var notesStorage: NotesStorage
     @ObservedObject var transcription: TranscriptionService
     @ObservedObject var panelInteraction: PanelInteractionState
+    @ObservedObject var fileSelection: FileSelectionState
+    @ObservedObject var fileGridHover: FileGridHoverState
+    @ObservedObject var fileQuickLook: FileQuickLookController
     @Binding var showTranscriptionPage: Bool
     @Binding var editingNoteId: String?
     @Binding var noteToDelete: NoteItem?
