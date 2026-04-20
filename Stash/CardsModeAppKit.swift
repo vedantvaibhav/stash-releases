@@ -99,6 +99,9 @@ private struct CardsNotesRoot: View {
 private struct CardsFilesRoot: View {
     @ObservedObject var fileStorage: FileDropStorage
     @ObservedObject var interaction: PanelInteractionState
+    @ObservedObject var fileSelection: FileSelectionState
+    @ObservedObject var fileGridHover: FileGridHoverState
+    @ObservedObject var fileQuickLook: FileQuickLookController
 
     var body: some View {
         SharedFilesColumn(
@@ -108,7 +111,10 @@ private struct CardsFilesRoot: View {
                 set: { interaction.fileToDelete = $0 }
             ),
             forCardsMode: true,
-            maxFileItems: 4
+            maxFileItems: 4,
+            fileSelection: fileSelection,
+            fileGridHover: fileGridHover,
+            fileQuickLook: fileQuickLook
         )
         .frame(width: ExpandableCardView.innerWidth)
         .fixedSize(horizontal: false, vertical: true)
@@ -605,7 +611,10 @@ final class CardsModeContainerView: NSView {
         interaction: PanelInteractionState,
         transcription: TranscriptionService,
         makePanelKey: @escaping () -> Void,
-        panelController: PanelController
+        panelController: PanelController,
+        fileSelection: FileSelectionState,
+        fileGridHover: FileGridHoverState,
+        fileQuickLook: FileQuickLookController
     ) {
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
@@ -616,7 +625,13 @@ final class CardsModeContainerView: NSView {
 
         let clipRoot = AnyView(CardsClipboardRoot(clipboard: clipboard))
         let notesRoot = AnyView(CardsNotesRoot(makePanelKey: makePanelKey, notes: notes, interaction: interaction, transcription: transcription))
-        let filesRoot = AnyView(CardsFilesRoot(fileStorage: fileStorage, interaction: interaction))
+        let filesRoot = AnyView(CardsFilesRoot(
+            fileStorage: fileStorage,
+            interaction: interaction,
+            fileSelection: fileSelection,
+            fileGridHover: fileGridHover,
+            fileQuickLook: fileQuickLook
+        ))
 
         let c0 = ExpandableCardView(kind: .clipboard, rootView: clipRoot)
         let c1 = ExpandableCardView(kind: .notes, rootView: notesRoot)

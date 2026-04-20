@@ -869,13 +869,19 @@ struct SharedFilesColumn: View {
     @Binding var fileToDelete: DroppedFileItem?
     var forCardsMode: Bool
     var maxFileItems: Int? = nil
+    @ObservedObject var fileSelection: FileSelectionState
+    @ObservedObject var fileGridHover: FileGridHoverState
+    @ObservedObject var fileQuickLook: FileQuickLookController
 
     var body: some View {
         FileDropZoneRepresentable(
             content: AnyView(FileDropListContent(
                 storage: fileDropStorage,
                 onRequestDelete: { fileToDelete = $0 },
-                maxItems: maxFileItems
+                maxItems: maxFileItems,
+                selection: fileSelection,
+                gridHover: fileGridHover,
+                fileQuickLook: fileQuickLook
             )),
             onDrop: { fileDropStorage.addFiles($0) }
         )
@@ -899,8 +905,9 @@ struct AllCombinedView: View {
     @Binding var noteToDelete: NoteItem?
     var switchToNotesTab: () -> Void = {}
 
-    @StateObject private var fileSelection = FileSelectionState()
-    @StateObject private var fileGridHover = FileGridHoverState()
+    @ObservedObject var fileSelection: FileSelectionState
+    @ObservedObject var fileGridHover: FileGridHoverState
+    @ObservedObject var fileQuickLook: FileQuickLookController
 
     private let fileCardWidth: CGFloat = 100
     private let fileCardHeight: CGFloat = 88
@@ -962,10 +969,21 @@ struct AllCombinedView: View {
                                         relativeTime: fileDropRelativeTime(since: file.dateDropped),
                                         isNewlyAdded: fileDropStorage.newlyAddedIDs.contains(file.id),
                                         isSelected: fileSelection.isSelected(file.id),
+                                        isQuickLookSelected: fileQuickLook.selectedFileID == file.id,
                                         selection: fileSelection,
                                         hoverState: fileGridHover,
                                         onTap: {
                                             if fileDropStorage.fileExists(file) { fileDropStorage.openFile(file) }
+                                        },
+                                        onPlainSelect: { [weak fileQuickLook, fileDropStorage] in
+                                            guard let fileQuickLook else { return }
+                                            let source = FileSelectionSource(
+                                                id: "allTabRecent",
+                                                storage: fileDropStorage,
+                                                itemsProvider: { Array(fileDropStorage.files.prefix(12)) },
+                                                layout: .horizontalRow
+                                            )
+                                            fileQuickLook.select(file.id, from: source)
                                         },
                                         onRequestDelete: { fileToDelete = file },
                                         onDragSessionEnded: {

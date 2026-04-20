@@ -104,9 +104,9 @@ struct FileDropListContent: View {
     @ObservedObject var storage: FileDropStorage
     var onRequestDelete: (DroppedFileItem) -> Void
     var maxItems: Int? = nil
-
-    @StateObject private var selection = FileSelectionState()
-    @StateObject private var gridHover = FileGridHoverState()
+    @ObservedObject var selection: FileSelectionState
+    @ObservedObject var gridHover: FileGridHoverState
+    @ObservedObject var fileQuickLook: FileQuickLookController
 
     private let rowSpacing: CGFloat = 8
     private let columnSpacing: CGFloat = 8
@@ -133,9 +133,16 @@ struct FileDropListContent: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(8)
             } else {
-                // Fix 2: GeometryReader measures real available width for dynamic columns.
                 GeometryReader { geo in
                     fileGrid(availableWidth: geo.size.width)
+                        .onAppear {
+                            fileQuickLook.currentColumns =
+                                numColumns(for: geo.size.width - outerPadding * 2)
+                        }
+                        .onChange(of: geo.size.width) { newWidth in
+                            fileQuickLook.currentColumns =
+                                numColumns(for: newWidth - outerPadding * 2)
+                        }
                 }
             }
         }
@@ -175,10 +182,21 @@ struct FileDropListContent: View {
                             relativeTime: fileDropRelativeTime(since: item.dateDropped),
                             isNewlyAdded: storage.newlyAddedIDs.contains(item.id),
                             isSelected: selection.isSelected(item.id),
+                            isQuickLookSelected: fileQuickLook.selectedFileID == item.id,
                             selection: selection,
                             hoverState: gridHover,
                             onTap: {
                                 if storage.fileExists(item) { storage.openFile(item) }
+                            },
+                            onPlainSelect: { [weak fileQuickLook, storage] in
+                                guard let fileQuickLook else { return }
+                                let source = FileSelectionSource(
+                                    id: "filesTab",
+                                    storage: storage,
+                                    itemsProvider: { storage.files },
+                                    layout: .grid
+                                )
+                                fileQuickLook.select(item.id, from: source)
                             },
                             onRequestDelete: { onRequestDelete(item) },
                             onDragSessionEnded: {
@@ -206,6 +224,7 @@ final class FileDropCardContentView: NSView {
     private var fileExists = true
     private var isHovering = false
     private var isSelected = false
+    private var isQuickLookSelected = false
     private var thumbnailRequestID = UUID()
     /// Skips redundant thumbnail reloads when SwiftUI re-renders (e.g. selection changes only).
     private var appliedContentSignature: String = ""
@@ -312,6 +331,16 @@ final class FileDropCardContentView: NSView {
     func setSelected(_ selected: Bool) {
         guard isSelected != selected else { return }
         isSelected = selected
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            ctx.allowsImplicitAnimation = true
+            updateHoverAppearance()
+        }
+    }
+
+    func setQuickLookSelected(_ active: Bool) {
+        guard isQuickLookSelected != active else { return }
+        isQuickLookSelected = active
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
             ctx.allowsImplicitAnimation = true
@@ -430,6 +459,15 @@ final class FileDropCardContentView: NSView {
         } else {
             layer.backgroundColor = NSColor.clear.cgColor
         }
+
+        // Blue ring overlays the fill when this is the Quick-Look-focused file.
+        if isQuickLookSelected {
+            layer.borderWidth = 1.5
+            layer.borderColor = NSColor.systemBlue.cgColor
+        } else {
+            layer.borderWidth = 0
+            layer.borderColor = NSColor.clear.cgColor
+        }
     }
 
     override var intrinsicContentSize: NSSize {
@@ -458,6 +496,8 @@ final class DraggableFileView: NSView, NSDraggingSource {
     weak var gridHoverState: FileGridHoverState?
 
     var onTap: (() -> Void)?
+    /// Fired on a plain click (no shift/cmd). Used to set the Quick-Look-focused file.
+    var onPlainSelect: (() -> Void)?
     var onRequestDelete: (() -> Void)?
     var onDragSessionEnded: ((NSDragOperation) -> Void)?
 
@@ -531,13 +571,8 @@ final class DraggableFileView: NSView, NSDraggingSource {
         if gridHoverState?.hoveredFileID == item.id {
             gridHoverState?.hoveredFileID = nil
         }
-        // Clear selected appearance when the pointer leaves, unless Shift is held (multi-select).
-        // Skip while a drag is active so selection isn't wiped mid–drag session.
-        guard !dragSessionStarted else { return }
-        guard !event.modifierFlags.contains(.shift) else { return }
-        if selection?.isSelected(item.id) == true {
-            selection?.removeFromSelection(item.id)
-        }
+        // Selection is now sticky (spec: clears only on outside-click, tab switch, or panel hide).
+        // Do not wipe on mouse exit.
     }
     override func mouseMoved(with event: NSEvent) {
         NotificationCenter.default.post(name: .quickPanelUserInteraction, object: nil)
@@ -611,6 +646,7 @@ final class DraggableFileView: NSView, NSDraggingSource {
         // Plain click: single selection only. Shift/Cmd already toggled in `mouseDown`.
         if !wasModifierSelect {
             selection?.selectOnly(item.id)
+            onPlainSelect?()
         }
     }
 
@@ -859,9 +895,11 @@ struct FileDropCardRepresentable: NSViewRepresentable {
     let relativeTime: String
     let isNewlyAdded: Bool
     var isSelected: Bool
+    var isQuickLookSelected: Bool
     var selection: FileSelectionState
     @ObservedObject var hoverState: FileGridHoverState
     var onTap: () -> Void
+    var onPlainSelect: () -> Void
     var onRequestDelete: () -> Void
     var onDragSessionEnded: (NSDragOperation) -> Void
 
@@ -881,6 +919,7 @@ struct FileDropCardRepresentable: NSViewRepresentable {
         v.selection          = selection
         v.gridHoverState     = hoverState
         v.onTap              = onTap
+        v.onPlainSelect      = onPlainSelect
         v.onRequestDelete    = onRequestDelete
         v.onDragSessionEnded = onDragSessionEnded
         v.cardContent.onDelete = { [weak v] in v?.onRequestDelete?() }
@@ -899,6 +938,7 @@ struct FileDropCardRepresentable: NSViewRepresentable {
         nsView.selection          = selection
         nsView.gridHoverState     = hoverState
         nsView.onTap              = onTap
+        nsView.onPlainSelect      = onPlainSelect
         nsView.onRequestDelete    = onRequestDelete
         nsView.onDragSessionEnded = onDragSessionEnded
         nsView.cardContent.onDelete = { [weak nsView] in nsView?.onRequestDelete?() }
@@ -916,11 +956,13 @@ struct FileDropCardRepresentable: NSViewRepresentable {
         }
 
         nsView.cardContent.setSelected(isSelected)
+        nsView.cardContent.setQuickLookSelected(isQuickLookSelected)
         nsView.cardContent.setCardHover(hoverState.hoveredFileID == item.id)
     }
 
     static func dismantleNSView(_ nsView: DraggableFileView, coordinator: FileDropCardCoordinator) {
         nsView.onTap = nil
+        nsView.onPlainSelect = nil
         nsView.selection = nil
         nsView.gridHoverState = nil
         nsView.onRequestDelete = nil

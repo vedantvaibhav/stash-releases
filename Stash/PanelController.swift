@@ -540,7 +540,10 @@ final class PanelController: NSObject {
             makePanelKey: { [weak self] in
                 self?.contentPanel?.makeKeyAndOrderFront(nil)
             },
-            panelController: self
+            panelController: self,
+            fileSelection: fileSelection,
+            fileGridHover: fileGridHover,
+            fileQuickLook: fileQuickLook
         )
         cardsModeContainer = cardsView
 
@@ -1028,7 +1031,10 @@ struct PanelContentView: View {
                                         showTranscriptionPage: $showTranscriptionPage,
                                         editingNoteId: $editingNoteId,
                                         noteToDelete: $noteToDelete,
-                                        switchToNotesTab: { selectedTab = .notes }
+                                        switchToNotesTab: { selectedTab = .notes },
+                                        fileSelection: fileSelection,
+                                        fileGridHover: fileGridHover,
+                                        fileQuickLook: fileQuickLook
                                     )
                                 ),
                                 onDrop: { fileDropStorage.addFiles($0) }
@@ -1047,7 +1053,10 @@ struct PanelContentView: View {
                             SharedFilesColumn(
                                 fileDropStorage: fileDropStorage,
                                 fileToDelete: $fileToDelete,
-                                forCardsMode: false
+                                forCardsMode: false,
+                                fileSelection: fileSelection,
+                                fileGridHover: fileGridHover,
+                                fileQuickLook: fileQuickLook
                             )
                         case .notes:
                             FileDropZoneRepresentable(
