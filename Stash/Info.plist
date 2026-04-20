@@ -47,5 +47,7 @@
 	<string>https://raw.githubusercontent.com/vedantvaibhav/stash-releases/main/appcast.xml</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
+	<key>SUPublicEDKey</key>
+	<string>xW6bXf8RFvvySBdik51w3NdiL9IXv5jqhI1gjeu+I60=</string>
 </dict>
 </plist>
