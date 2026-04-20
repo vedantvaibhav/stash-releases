@@ -69,6 +69,7 @@ final class AuthService: ObservableObject {
             return
         }
 
+        PanelController.shared?.hidePanel()
         // Open in existing browser — no new window
         NSWorkspace.shared.open(oauthURL)
     }
@@ -170,6 +171,7 @@ final class AuthService: ObservableObject {
                 self.currentUser = appUser
                 self.isSignedIn  = true
                 self.isLoading   = false
+                PanelController.shared?.showPanel()
             }
             NotificationCenter.default.post(name: .authCompleted, object: nil)
         } catch {

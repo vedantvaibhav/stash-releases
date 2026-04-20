@@ -178,49 +178,174 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - LLM prompts
+
+    private static let promptModeA = """
+    You are cleaning a short voice note (under 3 minutes).
+
+    Your job:
+    - Clean up grammar and remove filler words (um, uh, like, you know)
+    - Keep the tone CASUAL and conversational — the way a person actually talks
+    - Use simple punctuation: periods and commas only
+    - DO NOT use semicolons (;)
+    - DO NOT use ellipses (...)
+    - DO NOT use em-dashes (—) unless absolutely necessary
+    - Short sentences are better than long ones
+    - Keep original phrasing as much as possible — paste-ready
+
+    Output format (exactly):
+
+    [cleaned transcript in casual natural tone]
+
+    ---
+
+    [2-3 short casual sentences summarizing what was said]
+
+    Rules:
+    - No headers, no bullets (unless content is clearly a list)
+    - No metadata, no timestamps
+    - Never invent information
+    - If unclear, keep it vague rather than guessing
+    - Preserve original intent strictly
+    - Do not over-summarize
+    """
+
+    private static let promptModeB = """
+    You are processing a medium-length voice note (3–5 minutes).
+
+    Your job:
+    - Clean up and lightly structure the content
+    - Convert to bullet points ONLY if:
+      - the content clearly contains lists, steps, or multiple ideas
+      - there are 3+ distinct ideas or named entities being introduced
+
+    Output: a single clean Overview of the content.
+
+    Style:
+    - Conversational tone
+    - Slightly structured for readability
+    - Not overly formal
+
+    Rules:
+    - No metadata
+    - No sections like "Transcript", "Duration", "Summary", etc.
+    - No rigid headers
+    - Avoid over-formatting
+    - Keep it intuitive and easy to scan
+    - Never invent information
+    - Never add interpretations not present in the input
+    - If something is unclear, keep it vague rather than guessing
+    - Preserve original intent strictly
+    - Do not over-summarize. Retain density of information.
+    """
+
+    private static let promptModeC_transcript = """
+    You are cleaning a long meeting transcript.
+
+    Your job:
+    - Fix grammar
+    - Remove filler words (um, uh, like, you know)
+    - Keep speaker labels if identifiable in the raw transcript (Speaker 1, Speaker 2, or actual names if mentioned). Otherwise leave the text flowing.
+    - Preserve ALL content — do not summarize, do not cut
+
+    Punctuation: use only periods and commas. No semicolons. No ellipses. No em-dashes.
+
+    Rules:
+    - Output only the cleaned transcript, nothing else
+    - Never invent content
+    - Preserve original intent strictly
+    """
+
+    private static let promptModeC_overview = """
+    You are taking notes from a long recording (over 5 minutes).
+
+    Your job: produce a bullet-point Overview covering all points discussed.
+
+    Format:
+    - Every point as a bullet (start with "- ")
+    - One idea per bullet
+    - Short, scannable bullets — not paragraphs
+    - Group related bullets together naturally but NO section headers
+    - No "Summary", "Decisions", "Action Items", "Key Points" headers anywhere
+
+    Style:
+    - Neutral tone
+    - Casual language, not corporate
+    - Simple punctuation — periods and commas only
+    - No semicolons, no ellipses, no em-dashes
+    - Short sentences
+
+    Rules:
+    - Every bullet must come from the transcript
+    - Never invent information or add interpretation
+    - If something is unclear, keep it vague rather than guessing
+    - Capture everything important — do not over-summarize
+    - Preserve the original density of information
+    """
+
     // MARK: - Unified pipeline
 
     private func processRecording(audioData: Data, durationSeconds: Int) async {
-        lastRecordingWasShort = durationSeconds < 300
+        // Mode A: < 180s. Modes B and C open panel — not short.
+        lastRecordingWasShort = durationSeconds < 180
         do {
-            // Step 1 — Always transcribe with Whisper (userInitiated priority)
             let rawTranscript = try await Task(priority: .userInitiated) {
                 try await self.callWhisper(audioData: audioData)
             }.value
 
-            if durationSeconds < 300 {
-                // SHORT — under 5 minutes: clean (fast model) and copy
-                let cleanedText = try await Task(priority: .userInitiated) {
-                    try await self.callCleanTranscript(rawTranscript)
-                }.value
-
-                // Copy to clipboard
+            if durationSeconds < 180 {
+                // Mode A: < 3 min — clean + summary, copy to clipboard, silent save
+                let output = try await callChat(
+                    systemPrompt: Self.promptModeA,
+                    userMessage: rawTranscript,
+                    maxTokens: 700,
+                    model: APIConstants.chatModelForShortClean
+                )
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(cleanedText, forType: .string)
-
-                // Silent save — the Quick Transcript is kept in history, but the
-                // pill's "Copied ✓" is the only feedback. Panel does NOT open for
-                // short recordings; clipboard already has the text.
+                NSPasteboard.general.setString(output, forType: .string)
                 if let storage = notesStorage {
-                    _ = storage.saveQuickNote(text: cleanedText, durationSeconds: durationSeconds)
+                    _ = storage.saveQuickNote(text: output, durationSeconds: durationSeconds)
                     storage.refreshNotes()
                 }
-
                 isProcessing = false
                 showCompletion("Copied")
 
-            } else {
-                // LONG — 5+ minutes: format as meeting notes (userInitiated priority)
-                let overview = try await Task(priority: .userInitiated) {
-                    try await self.callMeetingNotes(transcript: rawTranscript, durationSeconds: durationSeconds)
-                }.value
-
+            } else if durationSeconds < 300 {
+                // Mode B: 3–5 min — LLM overview, save as voice note, open panel
+                let overview = try await callChat(
+                    systemPrompt: Self.promptModeB,
+                    userMessage: rawTranscript,
+                    maxTokens: 800,
+                    model: APIConstants.chatModelForShortClean
+                )
                 if let storage = notesStorage {
-                    let id = storage.saveMeetingNote(transcript: rawTranscript, overview: overview, durationSeconds: durationSeconds)
+                    let id = storage.saveVoiceNote(overview: overview, durationSeconds: durationSeconds)
                     storage.refreshNotes()
                     onNoteCreated?(id)
                 }
+                isProcessing = false
+                showCompletion("Note saved")
 
+            } else {
+                // Mode C: > 5 min — two parallel LLM calls (clean transcript + overview)
+                async let cleanedTranscriptCall = callChat(
+                    systemPrompt: Self.promptModeC_transcript,
+                    userMessage: rawTranscript,
+                    maxTokens: 3000,
+                    model: APIConstants.chatModel
+                )
+                async let overviewCall = callChat(
+                    systemPrompt: Self.promptModeC_overview,
+                    userMessage: rawTranscript,
+                    maxTokens: 1500,
+                    model: APIConstants.chatModel
+                )
+                let (cleanedTranscript, overview) = try await (cleanedTranscriptCall, overviewCall)
+                if let storage = notesStorage {
+                    let id = storage.saveMeetingNote(transcript: cleanedTranscript, overview: overview, durationSeconds: durationSeconds)
+                    storage.refreshNotes()
+                    onNoteCreated?(id)
+                }
                 isProcessing = false
                 showCompletion("Note saved")
             }
@@ -301,104 +426,6 @@ final class TranscriptionService: NSObject, ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: responseText])
         }
         return responseText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: - Short transcript cleaning
-
-    private func callCleanTranscript(_ rawTranscript: String) async throws -> String {
-        let prompt = """
-        You are a precise transcription cleaner. The input is a raw English voice transcript.
-
-        Your job:
-        - Fix grammar and punctuation
-        - Remove filler words: um, uh, like, you know, sort of, kind of, right
-        - Fix self-corrections: if someone says "at 5, no wait, 7" write "at 7"
-        - Fix run-on sentences by adding punctuation
-        - Preserve the speaker's actual meaning — do not rephrase or summarise
-        - Keep technical terms, names, and numbers exactly as spoken
-        - Output plain text only — no headers, no bullets, no markdown
-        - If it is a question, keep it as a question
-        - If it is a list of items, format as a simple comma-separated list
-
-        Output only the cleaned text. Nothing else.
-
-        Transcript: \(rawTranscript)
-        """
-        return try await callChat(
-            systemPrompt: nil,
-            userMessage: prompt,
-            maxTokens: 500,
-            model: APIConstants.chatModelForShortClean
-        )
-    }
-
-    // MARK: - Meeting notes formatting
-
-    private func callMeetingNotes(transcript: String, durationSeconds: Int) async throws -> String {
-        let prompt = meetingPrompt(transcript: transcript, durationSeconds: durationSeconds)
-        return try await callChat(systemPrompt: nil, userMessage: prompt, maxTokens: 2000)
-    }
-
-    private func meetingPrompt(transcript: String, durationSeconds: Int) -> String {
-        if durationSeconds < 600 {
-            // 5–10 minutes — medium format
-            return """
-            You are a meeting notes assistant. The input is an English meeting transcript.
-
-            Rules:
-            - Only use information actually said in the transcript
-            - Never invent names, numbers, or decisions not mentioned
-            - If something is unclear write [unclear] — never guess
-            - Use the speaker's actual words where possible
-
-            Output this exact structure — no extra sections:
-
-            ## Summary
-            2–3 sentences. What was discussed and what was decided.
-
-            ## Key Points
-            - Bullet each main topic discussed
-            - One clear sentence per bullet
-            - Maximum 6 bullets
-
-            Transcript: \(transcript)
-            """
-        } else {
-            // Over 10 minutes — full format
-            return """
-            You are a meeting notes assistant. The input is an English meeting transcript.
-
-            Rules:
-            - Only use information actually said in the transcript
-            - Never invent names, numbers, or decisions not mentioned
-            - If something is unclear write [unclear] — never guess
-            - Use real names if mentioned; otherwise use "Speaker"
-            - Action items need an owner — if not mentioned write [owner TBD]
-
-            Output this exact structure:
-
-            ## Summary
-            2–3 sentences capturing the meeting purpose and outcome.
-
-            ## Key Points
-            - Important topics discussed
-            - One idea per bullet, max 8 bullets
-
-            ## Decisions
-            - Firm decisions made during the meeting
-            - If none: "No decisions recorded"
-
-            ## Action Items
-            - [ ] What needs to be done — Owner — Due date if mentioned
-            - If none: "No action items recorded"
-
-            ## Open Questions
-            - Unresolved questions needing follow-up
-            - If none: "None"
-
-            Transcript: \(transcript)
-            """
-        }
     }
 
     // MARK: - Generic chat call

@@ -467,6 +467,9 @@ struct SharedNotesColumn: View {
     @State private var noteCopyFeedback = false
     @State private var deleteConfirmNote: NoteItem? = nil
     @State private var quickNoteHovered = false
+    @State private var selectedNoteTab: NoteEditorTab = .overview
+
+    private enum NoteEditorTab { case transcript, overview }
 
     var body: some View {
         Group {
@@ -670,7 +673,10 @@ struct SharedNotesColumn: View {
     // MARK: Note editor
 
     private func noteEditorView(noteId: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let parsed = notesStorage.parseNote(id: noteId)
+        let showTabs = parsed.type == .meeting && !parsed.transcript.isEmpty && !parsed.overview.isEmpty
+
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 8) {
                 Button("← Back") {
                     notesStorage.refreshNotes()
@@ -681,15 +687,19 @@ struct SharedNotesColumn: View {
 
                 Spacer()
 
-                // Copy button
+                if showTabs {
+                    HStack(spacing: 2) {
+                        noteTabButton("Overview", tab: .overview)
+                        noteTabButton("Transcript", tab: .transcript)
+                    }
+                }
+
                 Button {
                     let text = notesStorage.loadNote(id: noteId)
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
                     noteCopyFeedback = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        noteCopyFeedback = false
-                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { noteCopyFeedback = false }
                 } label: {
                     Image(systemName: noteCopyFeedback ? "checkmark" : "doc.on.doc")
                         .font(.system(size: 15))
@@ -701,12 +711,45 @@ struct SharedNotesColumn: View {
             .padding(.horizontal, 8)
             .padding(.top, forCardsMode ? 4 : 6)
 
-            SingleNoteEditorView(noteId: noteId, notesStorage: notesStorage)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if showTabs {
+                let content = selectedNoteTab == .overview ? parsed.overview : parsed.transcript
+                noteSectionScrollView(content)
+            } else {
+                SingleNoteEditorView(noteId: noteId, notesStorage: notesStorage)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { makePanelKey() }
-        .onChange(of: noteId) { _ in noteCopyFeedback = false }
+        .onChange(of: noteId) { _ in
+            noteCopyFeedback = false
+            selectedNoteTab = .overview
+        }
+    }
+
+    private func noteTabButton(_ label: String, tab: NoteEditorTab) -> some View {
+        Button(label) { selectedNoteTab = tab }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: selectedNoteTab == tab ? .semibold : .regular))
+            .foregroundColor(selectedNoteTab == tab ? .white : .white.opacity(0.35))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(selectedNoteTab == tab ? Color.white.opacity(0.10) : Color.clear)
+            .cornerRadius(5)
+    }
+
+    private func noteSectionScrollView(_ text: String) -> some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            Text(text)
+                .font(.system(size: 14))
+                .foregroundColor(.white.opacity(0.9))
+                .lineSpacing(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
 }

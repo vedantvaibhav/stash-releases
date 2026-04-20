@@ -190,6 +190,8 @@ final class PanelMouseTrackingView: NSView {
 @MainActor
 final class PanelController: NSObject {
 
+    static weak var shared: PanelController?
+
     private var panelWidth: CGFloat { AppSettings.shared.panelWidth }
     private var panelHeight: CGFloat { AppSettings.shared.panelHeight }
 
@@ -456,6 +458,7 @@ final class PanelController: NSObject {
     // MARK: - Setup
 
     func setup() {
+        PanelController.shared = self
         transcriptionService.notesStorage = notesStorage
         transcriptionService.makePanelKey = { [weak self] in
             self?.contentPanel?.makeKeyAndOrderFront(nil)
@@ -714,6 +717,7 @@ final class PanelController: NSObject {
 
     func showPanel() {
         guard let panel = contentPanel else { return }
+        NSApp.activate(ignoringOtherApps: true)
         cancelDeferredClose()
 
         transcriptionFloatingWidget.setPanelOpenForWidget(true)
