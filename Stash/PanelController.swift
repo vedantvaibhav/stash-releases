@@ -983,6 +983,8 @@ struct PanelContentView: View {
     var body: some View {
         ZStack {
             Color.black
+                .contentShape(Rectangle())
+                .onTapGesture { fileQuickLook.clearSelection() }
             VStack(spacing: 0) {
                 TabBarView(
                     selectedTab: $selectedTab,
@@ -1093,6 +1095,9 @@ struct PanelContentView: View {
                 guard let tab else { return }
                 selectedTab = tab
                 panelInteraction.requestedTab = nil
+            }
+            .onChange(of: selectedTab) { _ in
+                fileQuickLook.clearSelection()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
