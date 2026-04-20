@@ -21,7 +21,7 @@ final class KeyablePanel: NSPanel {
            isKeyWindow,
            event.modifierFlags.contains(.command),
            event.charactersIgnoringModifiers?.caseInsensitiveCompare("v") == .orderedSame,
-           !isPasteTargetedAtTextInput {
+           !isTextInputActive {
             if let storage = fileDropStorage, storage.tryPasteFromPasteboard() {
                 panelController?.resetPanelIdleTimer()
                 return
@@ -45,7 +45,7 @@ final class KeyablePanel: NSPanel {
         }
     }
 
-    private var isPasteTargetedAtTextInput: Bool {
+    var isTextInputActive: Bool {
         guard let fr = firstResponder else { return false }
         if fr is NSTextView { return true }
         if let tf = fr as? NSTextField, tf.isEditable { return true }
