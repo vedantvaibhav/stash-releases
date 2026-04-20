@@ -104,6 +104,8 @@ struct SettingsView: View {
     @State private var showClearNotesAlert     = false
     @State private var showClearFilesAlert     = false
 
+    @State private var isHoveringSignOut = false
+
     private let autoHideOptions: [(label: String, value: Double)] = [
         ("5s", 5), ("7s", 7), ("10s", 10), ("15s", 15), ("30s", 30), ("Never", 0)
     ]
@@ -195,17 +197,29 @@ struct SettingsView: View {
                     .padding(.top, 10)
                     .padding(.bottom, 8)
 
+                    Divider().padding(.horizontal, 0)
+
                     Button {
                         Task { await AuthService.shared.signOut() }
                     } label: {
-                        Text("Sign out")
-                            .font(.system(size: 13))
-                            .foregroundColor(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        HStack {
+                            Image(systemName: "rectangle.portrait.and.arrow.right")
+                                .font(.system(size: 13))
+                                .foregroundColor(.white.opacity(0.60))
+                            Text("Sign Out")
+                                .font(.system(size: 13, weight: .regular))
+                                .foregroundColor(.white.opacity(0.85))
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(isHoveringSignOut ? Color.white.opacity(0.06) : Color.clear)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
+                    .onHover { hovering in
+                        isHoveringSignOut = hovering
+                    }
                 }
             } else {
                 // Signed-out state
