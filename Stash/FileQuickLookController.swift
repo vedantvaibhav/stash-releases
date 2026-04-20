@@ -108,7 +108,13 @@ final class FileQuickLookController: NSObject, ObservableObject {
 
         guard nextIndex != current else { return }
         selectedFileID = items[nextIndex].id
-        reloadQuickLookIfVisible()
+        // Navigation only: change the focused index. DO NOT reloadData — that
+        // makes QL recompute geometry and snaps the panel back to its default
+        // position, which looks like a jump. Setting the index alone is enough
+        // for QL to swap the preview content via previewPanel(_:previewItemAt:).
+        if isQuickLookVisible {
+            QLPreviewPanel.shared()?.currentPreviewItemIndex = nextIndex
+        }
     }
 
     // MARK: - Local key monitor
@@ -188,10 +194,16 @@ final class FileQuickLookController: NSObject, ObservableObject {
               let source = currentSource,
               let index = source.itemsProvider().firstIndex(where: { $0.id == id }) else { return }
         let panel = QLPreviewPanel.shared()
+        let wasVisible = panel?.isVisible ?? false
         panel?.dataSource = self
         panel?.delegate = self
         panel?.reloadData()
         panel?.currentPreviewItemIndex = index
+        // Only center on a fresh open. If the panel was already visible we
+        // keep its current position (spec: user drags within a session persist).
+        if !wasVisible {
+            panel?.center()
+        }
         panel?.makeKeyAndOrderFront(nil)
     }
 
@@ -272,25 +284,13 @@ extension FileQuickLookController: QLPreviewPanelDelegate {
             self.panel?.makeKeyAndOrderFront(nil)
             return true
         case 123: // left
-            moveSelection(.left)
-            panel?.reloadData()
-            syncQuickLookIndex()
-            return true
+            moveSelection(.left); return true
         case 124: // right
-            moveSelection(.right)
-            panel?.reloadData()
-            syncQuickLookIndex()
-            return true
-        case 125, 126: // up, down
-            // In grid layout up/down must also change the focused file in QL.
-            switch event.keyCode {
-            case 125: moveSelection(.down)
-            case 126: moveSelection(.up)
-            default: break
-            }
-            panel?.reloadData()
-            syncQuickLookIndex()
-            return true
+            moveSelection(.right); return true
+        case 125: // down
+            moveSelection(.down); return true
+        case 126: // up
+            moveSelection(.up); return true
         default:
             return false
         }

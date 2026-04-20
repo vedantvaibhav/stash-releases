@@ -991,9 +991,10 @@ struct AllCombinedView: View {
                                         }
                                     )
                                     .frame(width: fileCardWidth, height: fileCardHeight)
+                                    .padding(2) // breathing room for the selection ring
                                 }
                             }
-                            .padding(.vertical, 2) // room for selection outline
+                            .padding(2) // room for selection outline on all sides
                         }
                     }
                 }
