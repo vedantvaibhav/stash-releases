@@ -111,11 +111,135 @@ final class FileQuickLookController: NSObject, ObservableObject {
         reloadQuickLookIfVisible()
     }
 
-    // MARK: - Quick Look (stubs filled in later tasks)
+    // MARK: - Local key monitor
 
-    func toggleQuickLook() { /* filled in Task 9 */ }
-    func closeQuickLookIfVisible() { /* filled in Task 9 */ }
-    func reloadQuickLookIfVisible() { /* filled in Task 9 */ }
-    // Stub: real implementation added in Task 9
-    func removeKeyMonitor() { }
+    private var keyMonitor: Any?
+    private weak var panel: NSPanel?
+
+    /// Installs a local keyDown monitor scoped to this process. Call in panel showPanel().
+    func installKeyMonitor(on panel: NSPanel) {
+        removeKeyMonitor()
+        self.panel = panel
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            guard let self else { return event }
+            return self.handleLocalKeyEvent(event) ? nil : event
+        }
+    }
+
+    /// Removes the monitor. Call in panel hidePanel() completion.
+    func removeKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+        panel = nil
+    }
+
+    /// Returns true when the event was consumed.
+    private func handleLocalKeyEvent(_ event: NSEvent) -> Bool {
+        guard let panel = panel, panel.isVisible else { return false }
+        // Never interfere with typing.
+        if let kp = panel as? KeyablePanel, kp.isTextInputActive { return false }
+
+        switch event.keyCode {
+        case 49: // space
+            return handleSpacebar()
+        case 123, 124, 125, 126: // left, right, down, up — filled in Task 10
+            return false
+        default:
+            return false
+        }
+    }
+
+    private func handleSpacebar() -> Bool {
+        if isQuickLookVisible {
+            closeQuickLookIfVisible()
+            return true
+        }
+        guard selectedFileID != nil else { return false }
+        openQuickLook()
+        return true
+    }
+
+    // MARK: - Quick Look
+
+    private var isQuickLookVisible: Bool {
+        QLPreviewPanel.sharedPreviewPanelExists() && QLPreviewPanel.shared().isVisible
+    }
+
+    func toggleQuickLook() {
+        if isQuickLookVisible {
+            closeQuickLookIfVisible()
+        } else if selectedFileID != nil {
+            openQuickLook()
+        }
+    }
+
+    func openQuickLook() {
+        guard let id = selectedFileID,
+              let source = currentSource,
+              let index = source.itemsProvider().firstIndex(where: { $0.id == id }) else { return }
+        let panel = QLPreviewPanel.shared()
+        panel?.dataSource = self
+        panel?.delegate = self
+        panel?.reloadData()
+        panel?.currentPreviewItemIndex = index
+        panel?.makeKeyAndOrderFront(nil)
+    }
+
+    func closeQuickLookIfVisible() {
+        guard isQuickLookVisible else { return }
+        let panel = QLPreviewPanel.shared()
+        panel?.orderOut(nil)
+        // Don't leave the shared QL panel holding a stale ref to us. Using
+        // ObjectIdentifier so we only nil when we're still the owner.
+        if let ds = panel?.dataSource as AnyObject?,
+           ObjectIdentifier(ds) == ObjectIdentifier(self) {
+            panel?.dataSource = nil
+        }
+        if let dl = panel?.delegate as AnyObject?,
+           ObjectIdentifier(dl) == ObjectIdentifier(self) {
+            panel?.delegate = nil
+        }
+    }
+
+    func reloadQuickLookIfVisible() {
+        guard isQuickLookVisible else { return }
+        QLPreviewPanel.shared().reloadData()
+    }
 }
+
+// MARK: - QLPreviewPanelDataSource
+
+extension FileQuickLookController: QLPreviewPanelDataSource {
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        currentSource?.itemsProvider().count ?? 0
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        guard let source = currentSource else { return NSURL() as QLPreviewItem }
+        let items = source.itemsProvider()
+        guard items.indices.contains(index) else { return NSURL() as QLPreviewItem }
+        let url = source.storage.fileURL(for: items[index])
+        return url as NSURL
+    }
+}
+
+// MARK: - QLPreviewPanelController (informal — helps QL dispatch if responder chain finds us)
+
+extension FileQuickLookController {
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
+
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        panel.dataSource = self
+        panel.delegate = self
+    }
+
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        // Defensive — QL is tearing down its control of us.
+    }
+}
+
+// MARK: - QLPreviewPanelDelegate (arrow navigation filled in Task 11)
+
+extension FileQuickLookController: QLPreviewPanelDelegate { }

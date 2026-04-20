@@ -770,6 +770,9 @@ final class PanelController: NSObject {
             guard self.contentPanel?.isVisible ?? false else { return }
             self.startClickOutsideMonitor()
         }
+        if let panel = contentPanel {
+            fileQuickLook.installKeyMonitor(on: panel)
+        }
         resetPanelIdleTimer()
     }
 
