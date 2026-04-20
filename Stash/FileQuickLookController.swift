@@ -215,6 +215,15 @@ final class FileQuickLookController: NSObject, ObservableObject {
         guard isQuickLookVisible else { return }
         QLPreviewPanel.shared().reloadData()
     }
+
+    /// After our selection moves, tell QL which index to display.
+    private func syncQuickLookIndex() {
+        guard isQuickLookVisible,
+              let id = selectedFileID,
+              let source = currentSource,
+              let index = source.itemsProvider().firstIndex(where: { $0.id == id }) else { return }
+        QLPreviewPanel.shared().currentPreviewItemIndex = index
+    }
 }
 
 // MARK: - QLPreviewPanelDataSource
@@ -248,6 +257,42 @@ extension FileQuickLookController {
     }
 }
 
-// MARK: - QLPreviewPanelDelegate (arrow navigation filled in Task 11)
+// MARK: - QLPreviewPanelDelegate
 
-extension FileQuickLookController: QLPreviewPanelDelegate { }
+extension FileQuickLookController: QLPreviewPanelDelegate {
+    /// QL forwards unhandled key events here before running its defaults.
+    /// Returning true means we fully handled it.
+    func previewPanel(_ panel: QLPreviewPanel!, handle event: NSEvent!) -> Bool {
+        guard event.type == .keyDown else { return false }
+        switch event.keyCode {
+        case 49: // space → close QL, hand key status back to Stash's panel
+            closeQuickLookIfVisible()
+            // Without this, there is a 1–2 frame window where no window is key
+            // and a quickly-repeated space can leak to whatever becomes key next.
+            self.panel?.makeKeyAndOrderFront(nil)
+            return true
+        case 123: // left
+            moveSelection(.left)
+            panel?.reloadData()
+            syncQuickLookIndex()
+            return true
+        case 124: // right
+            moveSelection(.right)
+            panel?.reloadData()
+            syncQuickLookIndex()
+            return true
+        case 125, 126: // up, down
+            // In grid layout up/down must also change the focused file in QL.
+            switch event.keyCode {
+            case 125: moveSelection(.down)
+            case 126: moveSelection(.up)
+            default: break
+            }
+            panel?.reloadData()
+            syncQuickLookIndex()
+            return true
+        default:
+            return false
+        }
+    }
+}
