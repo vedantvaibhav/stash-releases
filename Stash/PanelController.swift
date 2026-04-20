@@ -493,6 +493,14 @@ final class PanelController: NSObject {
             self.showPanel()
         }
 
+        // When a file is removed from storage, clear the QL focus if it was pointing there.
+        fileDropStorage.$files
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.fileQuickLook.reconcileWithStorage()
+            }
+            .store(in: &cancellables)
+
         createContentPanel()
         observeSettings()
     }
