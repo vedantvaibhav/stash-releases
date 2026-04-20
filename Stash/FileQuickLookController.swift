@@ -144,8 +144,16 @@ final class FileQuickLookController: NSObject, ObservableObject {
         switch event.keyCode {
         case 49: // space
             return handleSpacebar()
-        case 123, 124, 125, 126: // left, right, down, up — filled in Task 10
-            return false
+        case 123, 124, 125, 126: // arrow keys
+            guard selectedFileID != nil else { return false }
+            switch event.keyCode {
+            case 123: moveSelection(.left)
+            case 124: moveSelection(.right)
+            case 125: moveSelection(.down)
+            case 126: moveSelection(.up)
+            default: break
+            }
+            return true // always consume so arrows never reach desktop
         default:
             return false
         }
