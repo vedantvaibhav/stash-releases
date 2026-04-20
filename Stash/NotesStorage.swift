@@ -3,14 +3,16 @@ import Foundation
 
 enum NoteOrigin: Equatable {
     case written
-    case meeting     // long recording ≥ 5 min — has transcript + overview sections
-    case quick       // short recording < 5 min — single cleaned text
+    case meeting     // Mode C: ≥ 5 min — cleaned transcript + overview tabs
+    case voice       // Mode B: 3–5 min — overview only, no tabs
+    case quick       // Mode A: < 3 min — cleaned text + summary, clipboard primary
     case transcribed // legacy format (old files)
 
     var listIconSystemName: String {
         switch self {
         case .written:     return "square.and.pencil"
         case .meeting:     return "calendar"
+        case .voice:       return "mic.fill"
         case .quick:       return "text.bubble"
         case .transcribed: return "waveform"
         }
@@ -182,7 +184,7 @@ final class NotesStorage: ObservableObject {
         let meta = Self.parseMetaSection(from: string)
         let typeStr = meta["type"] ?? "written"
         let duration = Int(meta["duration"] ?? "0") ?? 0
-        let origin: NoteOrigin = typeStr == "meeting" ? .meeting : (typeStr == "quick" ? .quick : .written)
+        let origin: NoteOrigin = typeStr == "meeting" ? .meeting : (typeStr == "voice" ? .voice : (typeStr == "quick" ? .quick : .written))
 
         if origin == .meeting {
             let overview = Self.parseSection(from: string, named: "OVERVIEW")
@@ -234,7 +236,7 @@ final class NotesStorage: ObservableObject {
         }
         let meta = Self.parseMetaSection(from: string)
         let typeStr = meta["type"] ?? "written"
-        let type: NoteOrigin = typeStr == "meeting" ? .meeting : (typeStr == "quick" ? .quick : .written)
+        let type: NoteOrigin = typeStr == "meeting" ? .meeting : (typeStr == "voice" ? .voice : (typeStr == "quick" ? .quick : .written))
         return ParsedNote(
             transcript: Self.parseSection(from: string, named: "TRANSCRIPT"),
             overview: Self.parseSection(from: string, named: "OVERVIEW"),
@@ -250,6 +252,15 @@ final class NotesStorage: ObservableObject {
         let id = createNewNote()
         let isoDate = ISO8601DateFormatter().string(from: Date())
         let content = "---TRANSCRIPT---\n\(transcript)\n---OVERVIEW---\n\(overview)\n---META---\nduration: \(durationSeconds)\ndate: \(isoDate)\ntype: meeting"
+        saveNote(id: id, text: content, debounceListRefresh: false)
+        return id
+    }
+
+    @discardableResult
+    func saveVoiceNote(overview: String, durationSeconds: Int) -> String {
+        let id = createNewNote()
+        let isoDate = ISO8601DateFormatter().string(from: Date())
+        let content = "---TRANSCRIPT---\n\(overview)\n---META---\nduration: \(durationSeconds)\ndate: \(isoDate)\ntype: voice"
         saveNote(id: id, text: content, debounceListRefresh: false)
         return id
     }
@@ -340,12 +351,24 @@ final class NotesStorage: ObservableObject {
            let data = try? Data(contentsOf: txtURL),
            let string = String(data: data, encoding: .utf8) {
             return NSAttributedString(
-                string: string,
+                string: Self.cleanedDisplayText(from: string),
                 attributes: Self.defaultNoteAttributes()
             )
         }
 
         return NSAttributedString(string: "", attributes: Self.defaultNoteAttributes())
+    }
+
+    /// Strips section markers and META from new-format notes for clean display.
+    /// Meeting notes return transcript + overview combined; others return transcript only.
+    private static func cleanedDisplayText(from raw: String) -> String {
+        guard raw.hasPrefix("---TRANSCRIPT---") else { return raw }
+        let transcript = parseSection(from: raw, named: "TRANSCRIPT")
+        let overview   = parseSection(from: raw, named: "OVERVIEW")
+        if !overview.isEmpty {
+            return transcript.isEmpty ? overview : transcript + "\n\n---\n\n" + overview
+        }
+        return transcript
     }
 
     private static func defaultNoteAttributes() -> [NSAttributedString.Key: Any] {

@@ -21,7 +21,7 @@ final class KeyablePanel: NSPanel {
            isKeyWindow,
            event.modifierFlags.contains(.command),
            event.charactersIgnoringModifiers?.caseInsensitiveCompare("v") == .orderedSame,
-           !isPasteTargetedAtTextInput {
+           !isTextInputActive {
             if let storage = fileDropStorage, storage.tryPasteFromPasteboard() {
                 panelController?.resetPanelIdleTimer()
                 return
@@ -45,7 +45,7 @@ final class KeyablePanel: NSPanel {
         }
     }
 
-    private var isPasteTargetedAtTextInput: Bool {
+    var isTextInputActive: Bool {
         guard let fr = firstResponder else { return false }
         if fr is NSTextView { return true }
         if let tf = fr as? NSTextField, tf.isEditable { return true }
@@ -190,6 +190,8 @@ final class PanelMouseTrackingView: NSView {
 @MainActor
 final class PanelController: NSObject {
 
+    static weak var shared: PanelController?
+
     private var panelWidth: CGFloat { AppSettings.shared.panelWidth }
     private var panelHeight: CGFloat { AppSettings.shared.panelHeight }
 
@@ -208,6 +210,13 @@ final class PanelController: NSObject {
     let clipboardManager = ClipboardManager()
     let notesStorage = NotesStorage()
     let panelInteractionState = PanelInteractionState()
+    /// Shared across Files tab and All-tab Recent Files row so selection is
+    /// a single source of truth (multi-select for drag).
+    let fileSelection = FileSelectionState()
+    /// Shared grid hover state — keeps only one card hovered at a time across surfaces.
+    let fileGridHover = FileGridHoverState()
+    /// Owns QL-focused file id, arrow navigation, local key monitor, QL lifecycle.
+    let fileQuickLook = FileQuickLookController()
     /// Single instance for panel layout, cards layout, and the floating transcription pill.
     let transcriptionService = TranscriptionService()
     private let transcriptionFloatingWidget = TranscriptionFloatingWidgetController()
@@ -456,6 +465,7 @@ final class PanelController: NSObject {
     // MARK: - Setup
 
     func setup() {
+        PanelController.shared = self
         transcriptionService.notesStorage = notesStorage
         transcriptionService.makePanelKey = { [weak self] in
             self?.contentPanel?.makeKeyAndOrderFront(nil)
@@ -482,6 +492,14 @@ final class PanelController: NSObject {
             self.panelInteractionState.editingNoteId = id
             self.showPanel()
         }
+
+        // When a file is removed from storage, clear the QL focus if it was pointing there.
+        fileDropStorage.$files
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.fileQuickLook.reconcileWithStorage()
+            }
+            .store(in: &cancellables)
 
         createContentPanel()
         observeSettings()
@@ -514,7 +532,10 @@ final class PanelController: NSObject {
             clipboard: clipboardManager,
             notesStorage: notesStorage,
             transcription: transcriptionService,
-            panelInteraction: panelInteractionState
+            panelInteraction: panelInteractionState,
+            fileSelection: fileSelection,
+            fileGridHover: fileGridHover,
+            fileQuickLook: fileQuickLook
         )
         let hosting = NSHostingController(rootView: root)
 
@@ -527,7 +548,10 @@ final class PanelController: NSObject {
             makePanelKey: { [weak self] in
                 self?.contentPanel?.makeKeyAndOrderFront(nil)
             },
-            panelController: self
+            panelController: self,
+            fileSelection: fileSelection,
+            fileGridHover: fileGridHover,
+            fileQuickLook: fileQuickLook
         )
         cardsModeContainer = cardsView
 
@@ -714,6 +738,7 @@ final class PanelController: NSObject {
 
     func showPanel() {
         guard let panel = contentPanel else { return }
+        NSApp.activate(ignoringOtherApps: true)
         cancelDeferredClose()
 
         transcriptionFloatingWidget.setPanelOpenForWidget(true)
@@ -753,11 +778,20 @@ final class PanelController: NSObject {
             guard self.contentPanel?.isVisible ?? false else { return }
             self.startClickOutsideMonitor()
         }
+        if let panel = contentPanel {
+            fileQuickLook.installKeyMonitor(on: panel)
+        }
         resetPanelIdleTimer()
     }
 
     func hidePanel() {
         guard let panel = contentPanel, panel.isVisible else { return }
+
+        // Quick Look and the key monitor must go BEFORE the animation — otherwise
+        // QL lingers on-screen for ~250ms after the slide-out starts, and a
+        // spacebar press during that window can retrigger the monitor.
+        fileQuickLook.closeQuickLookIfVisible()
+        fileQuickLook.removeKeyMonitor()
 
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.25
@@ -772,6 +806,8 @@ final class PanelController: NSObject {
             self.stopClickOutsideMonitor()
             self.idleTimer?.invalidate()
             self.idleTimer = nil
+            // State wipe comes last: UI is already gone, nothing else to see.
+            self.fileQuickLook.clearSelection()
         })
     }
 
@@ -877,6 +913,9 @@ struct QuickPanelRootView: View {
     @ObservedObject var notesStorage: NotesStorage
     @ObservedObject var transcription: TranscriptionService
     @ObservedObject var panelInteraction: PanelInteractionState
+    @ObservedObject var fileSelection: FileSelectionState
+    @ObservedObject var fileGridHover: FileGridHoverState
+    @ObservedObject var fileQuickLook: FileQuickLookController
 
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var auth = AuthService.shared
@@ -896,6 +935,9 @@ struct QuickPanelRootView: View {
                     notesStorage: notesStorage,
                     transcription: transcription,
                     panelInteraction: panelInteraction,
+                    fileSelection: fileSelection,
+                    fileGridHover: fileGridHover,
+                    fileQuickLook: fileQuickLook,
                     showTranscriptionPage: Binding(
                         get: { panelInteraction.showTranscriptionPage },
                         set: { panelInteraction.showTranscriptionPage = $0 }
@@ -938,6 +980,9 @@ struct PanelContentView: View {
     @ObservedObject var notesStorage: NotesStorage
     @ObservedObject var transcription: TranscriptionService
     @ObservedObject var panelInteraction: PanelInteractionState
+    @ObservedObject var fileSelection: FileSelectionState
+    @ObservedObject var fileGridHover: FileGridHoverState
+    @ObservedObject var fileQuickLook: FileQuickLookController
     @Binding var showTranscriptionPage: Bool
     @Binding var editingNoteId: String?
     @Binding var noteToDelete: NoteItem?
@@ -949,6 +994,8 @@ struct PanelContentView: View {
     var body: some View {
         ZStack {
             Color.black
+                .contentShape(Rectangle())
+                .onTapGesture { fileQuickLook.clearSelection() }
             VStack(spacing: 0) {
                 TabBarView(
                     selectedTab: $selectedTab,
@@ -997,7 +1044,10 @@ struct PanelContentView: View {
                                         showTranscriptionPage: $showTranscriptionPage,
                                         editingNoteId: $editingNoteId,
                                         noteToDelete: $noteToDelete,
-                                        switchToNotesTab: { selectedTab = .notes }
+                                        switchToNotesTab: { selectedTab = .notes },
+                                        fileSelection: fileSelection,
+                                        fileGridHover: fileGridHover,
+                                        fileQuickLook: fileQuickLook
                                     )
                                 ),
                                 onDrop: { fileDropStorage.addFiles($0) }
@@ -1016,7 +1066,10 @@ struct PanelContentView: View {
                             SharedFilesColumn(
                                 fileDropStorage: fileDropStorage,
                                 fileToDelete: $fileToDelete,
-                                forCardsMode: false
+                                forCardsMode: false,
+                                fileSelection: fileSelection,
+                                fileGridHover: fileGridHover,
+                                fileQuickLook: fileQuickLook
                             )
                         case .notes:
                             FileDropZoneRepresentable(
@@ -1053,6 +1106,9 @@ struct PanelContentView: View {
                 guard let tab else { return }
                 selectedTab = tab
                 panelInteraction.requestedTab = nil
+            }
+            .onChange(of: selectedTab) { _ in
+                fileQuickLook.clearSelection()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

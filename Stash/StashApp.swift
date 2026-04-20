@@ -1,8 +1,6 @@
 import SwiftUI
 import AppKit
-import Carbon
 import Carbon.HIToolbox
-import CoreServices
 import Sparkle
 
 @main
@@ -153,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let icon = NSImage(named: "menu-bar-icon")
         icon?.isTemplate = true
-        icon?.size = NSSize(width: 16, height: 16)
+        icon?.size = NSSize(width: 15, height: 15)
         statusItem?.button?.image = icon
         statusItem?.button?.imagePosition = .imageLeading
         statusItem?.button?.target = self

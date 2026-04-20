@@ -5,6 +5,8 @@ _Last updated: 20 Apr 2026_
 ## Deferred
 
 - [ ] **Buy `getstash.app` domain (~$15/yr, namecheap)** — swap OAuth redirect from GitHub Pages to custom domain. One-line change in `AuthService.swift` + Supabase dashboard redirect URL.
+- [ ] **UI polish — auth gate (sign-in screen)** — needs better visual treatment. Current is functional but bare. Design pass + Figma.
+- [ ] **UI polish — OAuth success landing page** — `docs/auth/success.html` is minimal text. Add logo, polish typography, better "return to Stash" copy.
 - [ ] **Custom domain landing page** — Framer site with hero, features, download DMG, waitlist capture.
 - [ ] **Notes tab row tap-while-hover bug** — current workaround fragile. Full rebuild using Clipboard row pattern.
 - [ ] **Onboarding flow simplification** — remove unnecessary steps. Needs walk-through of current flow.
@@ -12,6 +14,7 @@ _Last updated: 20 Apr 2026_
 - [ ] **Panel open/close animations** — currently instant. Add subtle spring/fade.
 - [ ] **Settings UI modernization** — needs Figma or design pass.
 - [ ] **Notes detail view redesign** — inside-a-note reading/writing experience.
+- [ ] **Meeting note tabs UI polish** — Overview / Transcript tab picker styling, tab transitions, selected-state visual, spacing. Currently functional but basic.
 - [ ] **In-app activation tips** — Day 1/3/7 nudges after first use.
 - [ ] **Email sequence** — 8 emails drafted, need Loops.so or Resend setup.
 - [ ] **Trial + paywall** — Day 30 gate via RevenueCat + Stripe.

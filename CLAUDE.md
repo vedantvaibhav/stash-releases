@@ -37,6 +37,18 @@ _Last updated: 20 Apr 2026_
 - Design tokens live in `DesignTokens.swift`. No hardcoded colors/sizes in components.
 - Reusable icon CTA: `HeaderIconButton`. Do not duplicate.
 
+## Sparkle update signing
+
+- Private key lives in macOS Keychain only (item: "Private key for signing Sparkle updates"). Never commit, never share.
+- Public key is in `Info.plist` under `SUPublicEDKey`.
+- To sign a new DMG before publishing to appcast:
+    ```
+    sign_update ~/Desktop/Stash.dmg
+    ```
+  Output is the `sparkle:edSignature` value for the appcast `<enclosure>`.
+- `sign_update` lives in the same Sparkle SPM artifacts folder as `generate_keys`:
+  `~/Library/Developer/Xcode/DerivedData/Stash-*/SourcePackages/artifacts/sparkle/Sparkle/bin/`
+
 ## Things NOT to touch unless explicitly asked
 
 - `GlobalHotKey.swift` registration logic
