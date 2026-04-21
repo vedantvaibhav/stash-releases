@@ -231,6 +231,12 @@ final class PanelController: NSObject {
     private var userInteractionObserver: NSObjectProtocol?
     private var cancellables = Set<AnyCancellable>()
 
+    /// Incremented before every show/hide animation; completion handlers capture the
+    /// value they started with and bail if another animation has superseded them.
+    /// Guards against rapid-toggle leaks (e.g. hide completion calling orderOut
+    /// after a new show has already started).
+    private var animationToken: Int = 0
+
     // Click-outside-to-close + drag-state monitoring (idle timer pauses while dragging)
     private var globalClickMonitor: Any?
     private var isDragInProgress = false
@@ -752,20 +758,21 @@ final class PanelController: NSObject {
         panel.level = .floating
         panel.orderFrontRegardless()
 
-        // Slide in from the screen edge nearest to the snap zone.
-        let startFrame = contentPanelHiddenFrame
+        // Start 8 pt above final position, fade + settle down into place.
+        let startFrame = targetFrame.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.openSlideOffset)
         panel.setFrame(startFrame, display: false)
         panel.alphaValue = 0
         panel.makeKeyAndOrderFront(nil)
 
-        let contentRect = NSRect(origin: .zero, size: targetFrame.size)
+        animationToken &+= 1
+        let token = animationToken
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.3
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.0, 0.0, 0.2, 1.0)
+            context.duration = DesignTokens.PanelAnimation.openDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().setFrame(targetFrame, display: true)
-            panel.contentView?.animator().frame = contentRect
             panel.animator().alphaValue = 1
         }, completionHandler: { [weak self] in
+            guard let self, self.animationToken == token else { return }
             DispatchQueue.main.async { [weak self] in
                 self?.applyPanelChromeForLayoutStyle()
             }
@@ -773,7 +780,7 @@ final class PanelController: NSObject {
 
         // Don't start the click-outside monitor immediately; allow the opening click
         // to complete without accidentally closing.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + DesignTokens.PanelAnimation.openDuration) { [weak self] in
             guard let self else { return }
             guard self.contentPanel?.isVisible ?? false else { return }
             self.startClickOutsideMonitor()
@@ -793,14 +800,23 @@ final class PanelController: NSObject {
         fileQuickLook.closeQuickLookIfVisible()
         fileQuickLook.removeKeyMonitor()
 
+        let endFrame = panel.frame.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.closeSlideOffset)
+        let restoreFrame = contentPanelVisibleFrame
+
+        animationToken &+= 1
+        let token = animationToken
         NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.25
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0.0, 1.0, 1.0)
-            panel.animator().setFrame(contentPanelHiddenFrame, display: true)
+            context.duration = DesignTokens.PanelAnimation.closeDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().setFrame(endFrame, display: true)
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self, weak panel] in
-            guard let self, let panel else { return }
+            guard let self, let panel, self.animationToken == token else { return }
             panel.orderOut(nil)
+            // Restore frame + alpha to the canonical visible target so the next
+            // showPanel computes its start from the real target position, not the
+            // translated close position.
+            panel.setFrame(restoreFrame, display: false)
             panel.alphaValue = 1
             self.transcriptionFloatingWidget.setPanelOpenForWidget(false)
             self.stopClickOutsideMonitor()
