@@ -28,6 +28,7 @@ final class NotesSelectionToolbarController: NSObject {
     private var didAttachScrollObserver = false
     private var linkPopover: NSPopover?
     private var linkPopoverEscapeMonitor: Any?
+    private var pendingHideTask: DispatchWorkItem?
 
     var onCommand: ((ToolbarCommand) -> Void)?
 
@@ -92,9 +93,13 @@ final class NotesSelectionToolbarController: NSObject {
         }
         let selectedRange = textView.selectedRange()
         if selectedRange.length == 0 {
-            hide()
+            let work = DispatchWorkItem { [weak self] in self?.hide() }
+            pendingHideTask = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
             return
         }
+        pendingHideTask?.cancel()
+        pendingHideTask = nil
         ensurePanel()
         repositionIfVisible()
         panel?.orderFrontRegardless()
@@ -107,6 +112,8 @@ final class NotesSelectionToolbarController: NSObject {
     }
 
     func hide() {
+        pendingHideTask?.cancel()
+        pendingHideTask = nil
         panel?.orderOut(nil)
         removeEscapeMonitor()
     }
@@ -184,7 +191,7 @@ final class NotesSelectionToolbarController: NSObject {
             backing: .buffered,
             defer: false
         )
-        p.level = .popUpMenu
+        p.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)) + 1)
         p.backgroundColor = .clear
         p.isOpaque = false
         p.hasShadow = true
