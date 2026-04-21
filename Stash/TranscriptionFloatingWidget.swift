@@ -85,7 +85,7 @@ struct TranscriptionPillView: View {
     /// A service string we don't recognise falls back to a neutral checkmark.
     private func completionSymbol(for message: String) -> String {
         switch message {
-        case "Copied":     return "doc.on.doc"
+        case "Copied":     return "checkmark"
         case "Note saved": return "note.text"
         case "Failed":     return "xmark"
         default:           return "checkmark"
@@ -98,7 +98,7 @@ struct TranscriptionPillView: View {
     private var label: some View {
         switch mode {
         case .recording(let seconds):
-            pillLabel(formatDuration(seconds), monospaced: true)
+            pillLabel(formatDuration(seconds), tabularDigits: true)
         case .processing:
             pillLabel("Processing")
         case .completion(let message):
@@ -106,9 +106,12 @@ struct TranscriptionPillView: View {
         }
     }
 
-    private func pillLabel(_ text: String, monospaced: Bool = false) -> some View {
-        Text(text)
-            .font(.system(size: 14, weight: .regular, design: monospaced ? .monospaced : .default))
+    /// `tabularDigits: true` keeps SF Pro but forces equal-width digits so the
+    /// timer doesn't jitter between seconds — no change to the typeface itself.
+    private func pillLabel(_ text: String, tabularDigits: Bool = false) -> some View {
+        let base = Font.system(size: 14, weight: .regular)
+        return Text(text)
+            .font(tabularDigits ? base.monospacedDigit() : base)
             .foregroundStyle(DesignTokens.Typography.itemColor)
     }
 
@@ -125,15 +128,22 @@ struct TranscriptionPillView: View {
         }
     }
 
+    /// Default MM:SS; only expand to H:MM:SS once a recording crosses one hour
+    /// (rare for voice notes — no point padding a leading zero for the common case).
     private func formatDuration(_ seconds: Int) -> String {
         let h = seconds / 3600
         let m = (seconds % 3600) / 60
         let s = seconds % 60
-        return String(format: "%02d:%02d:%02d", h, m, s)
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%02d:%02d", m, s)
     }
 }
 
-// MARK: - Stop button (10×10 red dot, 32×32 tap target, pulsing)
+// MARK: - Stop button (10×10 solid red dot, 32×32 tap target)
+//
+// Visible dot is trailing-aligned inside the tap zone so the gap to the pill's
+// right edge matches the 12 pt trailing padding — the tap area extends leftward
+// (invisibly) into the label region for a generous hit box.
 //
 // Uses `.onTapGesture` (not `Button`) so the parent panel's window-drag
 // (`isMovableByWindowBackground = true`) is still reachable from the trailing
@@ -142,7 +152,6 @@ struct TranscriptionPillView: View {
 
 private struct StopRecordingButton: View {
     let onStop: () -> Void
-    @State private var pulse = false
 
     var body: some View {
         Circle()
@@ -151,21 +160,16 @@ private struct StopRecordingButton: View {
                 width: DesignTokens.Pill.recordingDotSize,
                 height: DesignTokens.Pill.recordingDotSize
             )
-            .opacity(pulse ? 1.0 : 0.4)
             .frame(
                 width: DesignTokens.Pill.stopTapTargetSize,
-                height: DesignTokens.Pill.stopTapTargetSize
+                height: DesignTokens.Pill.stopTapTargetSize,
+                alignment: .trailing
             )
             .contentShape(Rectangle())
             .onTapGesture { onStop() }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Stop recording")
             .accessibilityAddTraits(.isButton)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
-                    pulse = true
-                }
-            }
     }
 }
 
