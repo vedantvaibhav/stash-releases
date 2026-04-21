@@ -41,11 +41,11 @@ struct NotesSelectionToolbar: View {
         }
         .background(
             RoundedRectangle(cornerRadius: DesignTokens.Spacing.toolbarCornerRadius)
-                .fill(PanelCardChromeStyle.bgDefault)
-                .overlay(
-                    RoundedRectangle(cornerRadius: DesignTokens.Spacing.toolbarCornerRadius)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-                )
+                .fill(DesignTokens.Toolbar.bg)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Spacing.toolbarCornerRadius)
+                .stroke(Color.white.opacity(0.05), lineWidth: 1)
         )
         .fixedSize()
     }
