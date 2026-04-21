@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// MARK: - Rich single-note editor (NSTextView + RTF) + compact formatting bar
+// MARK: - Rich single-note editor (NSTextView + RTF)
 
 struct SingleNoteEditorView: NSViewRepresentable {
     let noteId: String
