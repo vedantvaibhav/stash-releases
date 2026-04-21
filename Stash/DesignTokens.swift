@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 enum DesignTokens {
     enum Icon {
@@ -20,6 +21,12 @@ enum DesignTokens {
         static let sectionGap: CGFloat = 20   // gap between sections
         static let itemGap: CGFloat = 4       // gap between list rows (where non-flush lists are used)
         static let cardGap: CGFloat = 8       // gap between cards
+
+        // Notes selection toolbar.
+        static let toolbarHeight: CGFloat = 34
+        static let toolbarIconSize: CGFloat = 14
+        static let toolbarPadding: CGFloat = 8
+        static let toolbarItemSpacing: CGFloat = 10
     }
 
     /// Geometry shared by every `StashListRow` caller — clipboard, notes, pinned.
@@ -55,6 +62,23 @@ enum DesignTokens {
         // Section headers (Pinned, Recent Files, Recent Notes, date groups).
         static let sectionFont = Font.system(size: 11, weight: .semibold)
         static let sectionColor = Color(hex: "#525252")
+
+        // Note editor — body text and heading levels.
+        // Body: 15 pt regular, 20 pt line height (≈ 1.33 multiple).
+        static let bodyFont = Font.system(size: 15, weight: .regular)
+        static let bodyLineHeight: CGFloat = 20
+
+        static let h1Font = Font.system(size: 24, weight: .semibold)
+        static let h2Font = Font.system(size: 20, weight: .semibold)
+        static let h3Font = Font.system(size: 17, weight: .semibold)
+
+        // AppKit equivalents (NSTextView needs NSFont, not SwiftUI Font).
+        // Keep both in lockstep with the SwiftUI sizes above.
+        static let bodyNSFont: NSFont = .systemFont(ofSize: 15, weight: .regular)
+        static let h1NSFont: NSFont = .systemFont(ofSize: 24, weight: .semibold)
+        static let h2NSFont: NSFont = .systemFont(ofSize: 20, weight: .semibold)
+        static let h3NSFont: NSFont = .systemFont(ofSize: 17, weight: .semibold)
+        static let inlineCodeNSFont: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular)
     }
 
     enum PanelAnimation {
