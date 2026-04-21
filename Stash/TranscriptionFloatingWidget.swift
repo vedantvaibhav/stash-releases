@@ -108,11 +108,15 @@ struct TranscriptionPillView: View {
 
     /// `tabularDigits: true` keeps SF Pro but forces equal-width digits so the
     /// timer doesn't jitter between seconds — no change to the typeface itself.
+    /// `.fixedSize(horizontal:)` stops the HStack from compressing the label into
+    /// an ellipsis when the pill is near its minimum width.
     private func pillLabel(_ text: String, tabularDigits: Bool = false) -> some View {
         let base = Font.system(size: 14, weight: .regular)
         return Text(text)
             .font(tabularDigits ? base.monospacedDigit() : base)
             .foregroundStyle(DesignTokens.Typography.itemColor)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
     }
 
     // MARK: Trailing element
