@@ -26,6 +26,8 @@ final class NotesSelectionToolbarController: NSObject {
     private var escapeMonitor: Any?
     private var didAttachWindowObservers = false
     private var didAttachScrollObserver = false
+    private var linkPopover: NSPopover?
+    private var linkPopoverEscapeMonitor: Any?
 
     var onCommand: ((ToolbarCommand) -> Void)?
 
@@ -107,6 +109,59 @@ final class NotesSelectionToolbarController: NSObject {
     func hide() {
         panel?.orderOut(nil)
         removeEscapeMonitor()
+    }
+
+    func presentLinkPopover(initialURL: String?,
+                            onApply: @escaping (String) -> Void) {
+        guard let panel, let hostingView = panel.contentView else { return }
+
+        let popover = NSPopover()
+        popover.behavior = .transient   // dismisses on clicks outside
+        popover.animates = true
+        popover.contentViewController = NSHostingController(rootView: NotesLinkPopover(
+            initialURL: initialURL,
+            onApply: { [weak popover, weak self] url in
+                onApply(url)
+                popover?.performClose(nil)
+                self?.removeLinkPopoverEscapeMonitor()
+            }
+        ))
+        // Anchor to the full toolbar panel rect; minY edge so popover appears below the toolbar.
+        popover.show(relativeTo: hostingView.bounds, of: hostingView, preferredEdge: .minY)
+        linkPopover = popover
+
+        // `.transient` dismisses on outside clicks but NOT on Escape; install a
+        // local key monitor that closes the popover when Escape fires. Scope
+        // the monitor to events landing on the popover's window so other
+        // Escape handlers (e.g., the toolbar's own monitor) still fire
+        // normally when the popover isn't shown.
+        linkPopoverEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak popover] event in
+            guard event.keyCode == 53 else { return event }
+            guard let popover, popover.isShown else { return event }
+            popover.performClose(nil)
+            self?.removeLinkPopoverEscapeMonitor()
+            return nil
+        }
+
+        // Catch outside-click dismissal too — `.transient` closes the popover
+        // without calling our apply / escape paths, so without this the
+        // escape monitor would leak until the next `presentLinkPopover`
+        // overwrites it. Observing `didCloseNotification` covers all three
+        // dismissal paths uniformly.
+        NotificationCenter.default
+            .publisher(for: NSPopover.didCloseNotification, object: popover)
+            .sink { [weak self] _ in
+                self?.removeLinkPopoverEscapeMonitor()
+                self?.linkPopover = nil
+            }
+            .store(in: &cancellables)
+    }
+
+    private func removeLinkPopoverEscapeMonitor() {
+        if let monitor = linkPopoverEscapeMonitor {
+            NSEvent.removeMonitor(monitor)
+            linkPopoverEscapeMonitor = nil
+        }
     }
 
     // MARK: Internals
