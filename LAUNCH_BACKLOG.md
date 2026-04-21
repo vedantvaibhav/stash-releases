@@ -8,11 +8,13 @@ _Last updated: 20 Apr 2026_
 - [ ] **UI polish — auth gate (sign-in screen)** — needs better visual treatment. Current is functional but bare. Design pass + Figma.
 - [ ] **UI polish — OAuth success landing page** — `docs/auth/success.html` is minimal text. Add logo, polish typography, better "return to Stash" copy.
 - [ ] **Custom domain landing page** — Framer site with hero, features, download DMG, waitlist capture.
-- [ ] **Notes tab row tap-while-hover bug** — current workaround fragile. Full rebuild using Clipboard row pattern.
+- [x] ~~**Notes tab row tap-while-hover bug**~~ — resolved
 - [ ] **Onboarding flow simplification** — remove unnecessary steps. Needs walk-through of current flow.
-- [ ] **Files Quick Look (spacebar preview)** — previously attempted, circled back. Rebuild cleanly.
+- [x] ~~**Files Quick Look (spacebar preview)**~~ — resolved
 - [ ] **Panel open/close animations** — currently instant. Add subtle spring/fade.
 - [ ] **Settings UI modernization** — needs Figma or design pass.
+- [ ] **Floating transcription widget pill redesign** — three states (Recording / Processing / Copied). Figma: https://www.figma.com/design/ZPMewp00IZp9xGYeUjupbi/M1?node-id=280-981&m=dev
+- [ ] **Row component unification** — Clipboard / Pinned / Notes share one row. In flight.
 - [ ] **Notes detail view redesign** — inside-a-note reading/writing experience.
 - [ ] **Meeting note tabs UI polish** — Overview / Transcript tab picker styling, tab transitions, selected-state visual, spacing. Currently functional but basic.
 - [ ] **In-app activation tips** — Day 1/3/7 nudges after first use.
