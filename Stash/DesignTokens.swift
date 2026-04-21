@@ -23,7 +23,6 @@ enum DesignTokens {
         static let cardGap: CGFloat = 8       // gap between cards
 
         // Notes selection toolbar.
-        static let toolbarHeight: CGFloat = 34
         static let toolbarIconSize: CGFloat = 14
         static let toolbarPadding: CGFloat = 8
         static let toolbarItemSpacing: CGFloat = 10
