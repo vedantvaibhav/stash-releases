@@ -34,6 +34,7 @@
 		A10000000000000000000025 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000025 /* DesignTokens.swift */; };
 		A10000000000000000000026 /* NotesSelectionToolbarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000026 /* NotesSelectionToolbarController.swift */; };
 		A10000000000000000000027 /* NotesSelectionToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000027 /* NotesSelectionToolbar.swift */; };
+		A10000000000000000000028 /* NotesInlineCodeLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */; };
 		B8D39FF84C5D46CFF64B16CC /* FileQuickLookController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD725516AE9C99F850F9EEAB /* FileQuickLookController.swift */; };
 		FC63C6E92F82656000B67359 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = FC63C6E82F82656000B67359 /* Sparkle */; };
 		FC63C6EB2F8266DB00B67359 /* UpdaterManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC63C6EA2F8266DB00B67359 /* UpdaterManager.swift */; };
@@ -71,6 +72,7 @@
 		A30000000000000000000001 /* Stash.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Stash.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A20000000000000000000026 /* NotesSelectionToolbarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesSelectionToolbarController.swift; sourceTree = "<group>"; };
 		A20000000000000000000027 /* NotesSelectionToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesSelectionToolbar.swift; sourceTree = "<group>"; };
+		A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesInlineCodeLayoutManager.swift; sourceTree = "<group>"; };
 		DD725516AE9C99F850F9EEAB /* FileQuickLookController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FileQuickLookController.swift; sourceTree = "<group>"; };
 		FC63C6EA2F8266DB00B67359 /* UpdaterManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -130,6 +132,7 @@
 				DD725516AE9C99F850F9EEAB /* FileQuickLookController.swift */,
 				A20000000000000000000026 /* NotesSelectionToolbarController.swift */,
 				A20000000000000000000027 /* NotesSelectionToolbar.swift */,
+				A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */,
 			);
 			path = Stash;
 			sourceTree = "<group>";
@@ -250,6 +253,7 @@
 				B8D39FF84C5D46CFF64B16CC /* FileQuickLookController.swift in Sources */,
 				A10000000000000000000026 /* NotesSelectionToolbarController.swift in Sources */,
 				A10000000000000000000027 /* NotesSelectionToolbar.swift in Sources */,
+				A10000000000000000000028 /* NotesInlineCodeLayoutManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
