@@ -11,39 +11,41 @@ struct NotesSelectionToolbar: View {
     let onCommand: (ToolbarCommand) -> Void
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Group 1 — paragraph style
-            styleMenu
-            divider
-
-            // Group 2 — inline character formats
+        VStack(spacing: 0) {
+            // Row 1 — paragraph style + character formats
             HStack(spacing: DesignTokens.Spacing.toolbarItemSpacing) {
+                styleMenu
+                verticalSeparator
                 iconButton("bold", command: .bold, format: .bold)
                 iconButton("italic", command: .italic, format: .italic)
                 iconButton("underline", command: .underline, format: .underline)
                 iconButton("strikethrough", command: .strikethrough, format: .strikethrough)
             }
             .padding(.horizontal, DesignTokens.Spacing.toolbarPadding)
-            divider
+            .frame(height: DesignTokens.Spacing.toolbarRowHeight)
 
-            // Group 3 — link / code
+            // Horizontal divider between rows
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 1)
+
+            // Row 2 — link / code / stubs
             HStack(spacing: DesignTokens.Spacing.toolbarItemSpacing) {
-                iconButton("curlybraces", command: .inlineCode, format: .inlineCode)
                 iconButton("link", command: .link, format: .link)
-            }
-            .padding(.horizontal, DesignTokens.Spacing.toolbarPadding)
-            divider
-
-            // Group 4 — color (stub) + more (stub)
-            HStack(spacing: DesignTokens.Spacing.toolbarItemSpacing) {
+                iconButton("curlybraces", command: .inlineCode, format: .inlineCode)
                 disabledIconButton("paintpalette", tooltip: "Coming soon")
                 disabledIconButton("ellipsis", tooltip: "Coming soon")
             }
             .padding(.horizontal, DesignTokens.Spacing.toolbarPadding)
+            .frame(height: DesignTokens.Spacing.toolbarRowHeight)
         }
-        .frame(height: DesignTokens.Spacing.toolbarHeight)
         .background(
-            Capsule().fill(PanelCardChromeStyle.bgDefault)
+            RoundedRectangle(cornerRadius: DesignTokens.Spacing.toolbarCornerRadius)
+                .fill(PanelCardChromeStyle.bgDefault)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Spacing.toolbarCornerRadius)
+                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                )
         )
         .fixedSize()
     }
@@ -109,7 +111,7 @@ struct NotesSelectionToolbar: View {
 
     // MARK: Dividers
 
-    private var divider: some View {
+    private var verticalSeparator: some View {
         Rectangle()
             .fill(Color.white.opacity(0.08))
             .frame(width: 1, height: 18)
