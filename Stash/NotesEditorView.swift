@@ -184,6 +184,12 @@ struct SingleNoteEditorView: NSViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
+            // Skip while `scheduleLoad` is wiping + setting the text storage —
+            // selection notifications fire during that transition but the glyph
+            // layout hasn't been regenerated yet, so `boundingRect(forGlyphRange:)`
+            // in the controller's positioning code would query an invalidated
+            // layout manager.
+            if isApplyingBulkChange { return }
             toolbarController.syncWithSelection()
             toolbarController.updateActiveState(currentActiveFormatsSnapshot())
         }
