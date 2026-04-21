@@ -1,7 +1,11 @@
 import SwiftUI
 
-/// Pill-shaped floating toolbar matching Figma (Notion-style). Stateless —
-/// the controller owns `NotesSelectionToolbarState` and dispatches commands.
+/// Pill-shaped floating toolbar matching Figma (Notion-style). The view holds
+/// a weak-style `@ObservedObject` on `NotesSelectionToolbarState` owned by the
+/// controller, so snapshot-level state changes trigger a re-render. Commands
+/// flow out via the `onCommand` closure — the controller executes them on the
+/// text view. (`ObservableObject` + `@Published` are used for macOS 13
+/// compatibility; `@Observable` requires macOS 14.)
 struct NotesSelectionToolbar: View {
     @ObservedObject var state: NotesSelectionToolbarState
     let onCommand: (ToolbarCommand) -> Void
@@ -64,6 +68,10 @@ struct NotesSelectionToolbar: View {
             .foregroundStyle(DesignTokens.Icon.tintMuted.opacity(0.4))
             .frame(width: 20, height: 20)
             .help(tooltip)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(symbol == "paintpalette" ? "Text color" : "More")
+            .accessibilityValue(tooltip)
+            .accessibilityAddTraits(.isButton)
     }
 
     // MARK: Heading menu
