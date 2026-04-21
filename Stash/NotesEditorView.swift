@@ -185,6 +185,7 @@ struct SingleNoteEditorView: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             toolbarController.syncWithSelection()
+            toolbarController.updateActiveState(currentActiveFormatsSnapshot())
         }
 
         func textDidChange(_ notification: Notification) {
@@ -326,6 +327,57 @@ struct SingleNoteEditorView: NSViewRepresentable {
                 return url.absoluteString
             }
             return nil
+        }
+
+        func currentActiveFormatsSnapshot() -> NotesSelectionToolbarState.Snapshot {
+            guard let tv = textView, let storage = tv.textStorage else {
+                return .init()
+            }
+            let range = tv.selectedRange()
+
+            // Empty selection — read typing attributes.
+            let attributes: [NSAttributedString.Key: Any]
+            if range.length == 0 {
+                attributes = tv.typingAttributes
+            } else if range.location < storage.length {
+                attributes = storage.attributes(at: range.location, effectiveRange: nil)
+            } else {
+                attributes = tv.typingAttributes
+            }
+
+            var formats: Set<TextFormat> = []
+            if let font = attributes[.font] as? NSFont {
+                let traits = font.fontDescriptor.symbolicTraits
+                if traits.contains(.bold)      { formats.insert(.bold) }
+                if traits.contains(.italic)    { formats.insert(.italic) }
+                // Inline-code detection mirrors the apply path — gates on the
+                // monospaced font trait, which survives RTF round-trip.
+                if traits.contains(.monoSpace) { formats.insert(.inlineCode) }
+            }
+            if let u = attributes[.underlineStyle] as? Int, u != 0 {
+                formats.insert(.underline)
+            }
+            if let s = attributes[.strikethroughStyle] as? Int, s != 0 {
+                formats.insert(.strikethrough)
+            }
+            if attributes[.link] != nil {
+                formats.insert(.link)
+            }
+
+            // Heading detection — read the font size.
+            let heading: HeadingLevel
+            if let font = attributes[.font] as? NSFont {
+                switch font.pointSize {
+                case DesignTokens.Typography.h1NSFont.pointSize: heading = .h1
+                case DesignTokens.Typography.h2NSFont.pointSize: heading = .h2
+                case DesignTokens.Typography.h3NSFont.pointSize: heading = .h3
+                default:                                          heading = .paragraph
+                }
+            } else {
+                heading = .paragraph
+            }
+
+            return .init(activeFormats: formats, heading: heading)
         }
 
         func applyHeading(_ level: HeadingLevel) {
