@@ -9,6 +9,7 @@ enum DesignTokens {
         // Icon tint states
         static let tintRecording    = Color(red: 0.863, green: 0.149, blue: 0.149) // #DC2626
         static let tintPlusButton   = Color.white.opacity(0.45)
+        static let tintMuted        = Color.white.opacity(0.72)
 
         // Active background (mic while recording)
         static let backgroundActive = Color(red: 0.102, green: 0.102, blue: 0.102) // #1A1A1A
@@ -34,7 +35,6 @@ enum DesignTokens {
     enum Pill {
         static let width: CGFloat = 180
         static let height: CGFloat = 32
-        static let cornerRadius: CGFloat = 16   // fully rounded capsule
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14
         static let leadingPadding: CGFloat = 4
@@ -43,7 +43,6 @@ enum DesignTokens {
         static let contentSpacing: CGFloat = 12
         static let recordingDotSize: CGFloat = 10
         static let stopTapTargetSize: CGFloat = 32
-        static let iconGlyphTint: Color = Color.white.opacity(0.72)
     }
 
     enum Typography {

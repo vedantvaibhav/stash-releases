@@ -49,7 +49,6 @@ struct TranscriptionPillView: View {
 
     // MARK: Icon disc (24×24 with 14pt inner glyph / spinner)
 
-    @ViewBuilder
     private var iconDisc: some View {
         ZStack {
             Circle().fill(DesignTokens.Icon.backgroundRest)
@@ -62,24 +61,28 @@ struct TranscriptionPillView: View {
     private var iconGlyph: some View {
         switch mode {
         case .recording:
-            Image(systemName: "waveform")
-                .font(.system(size: DesignTokens.Pill.iconGlyphSize, weight: .regular))
-                .foregroundStyle(DesignTokens.Pill.iconGlyphTint)
-                .transition(.opacity)
+            glyph("waveform")
         case .processing:
             ProgressView()
                 .progressViewStyle(.circular)
                 .controlSize(.small)
-                .tint(DesignTokens.Pill.iconGlyphTint)
+                .tint(DesignTokens.Icon.tintMuted)
                 .transition(.opacity)
         case .completion(let message):
-            Image(systemName: completionSymbol(for: message))
-                .font(.system(size: DesignTokens.Pill.iconGlyphSize, weight: .regular))
-                .foregroundStyle(DesignTokens.Pill.iconGlyphTint)
-                .transition(.opacity)
+            glyph(completionSymbol(for: message))
         }
     }
 
+    private func glyph(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: DesignTokens.Pill.iconGlyphSize, weight: .regular))
+            .foregroundStyle(DesignTokens.Icon.tintMuted)
+            .transition(.opacity)
+    }
+
+    /// Mirrors the strings emitted by `TranscriptionService.showCompletion(_:)`
+    /// (see TranscriptionService.swift — `"Copied" | "Note saved" | "Failed"`).
+    /// A service string we don't recognise falls back to a neutral checkmark.
     private func completionSymbol(for message: String) -> String {
         switch message {
         case "Copied":     return "doc.on.doc"
@@ -95,18 +98,18 @@ struct TranscriptionPillView: View {
     private var label: some View {
         switch mode {
         case .recording(let seconds):
-            Text(formatDuration(seconds))
-                .font(.system(size: 14, weight: .regular, design: .monospaced))
-                .foregroundStyle(DesignTokens.Typography.itemColor)
+            pillLabel(formatDuration(seconds), monospaced: true)
         case .processing:
-            Text("Processing")
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(DesignTokens.Typography.itemColor)
+            pillLabel("Processing")
         case .completion(let message):
-            Text(message)
-                .font(.system(size: 14, weight: .regular))
-                .foregroundStyle(DesignTokens.Typography.itemColor)
+            pillLabel(message)
         }
+    }
+
+    private func pillLabel(_ text: String, monospaced: Bool = false) -> some View {
+        Text(text)
+            .font(.system(size: 14, weight: .regular, design: monospaced ? .monospaced : .default))
+            .foregroundStyle(DesignTokens.Typography.itemColor)
     }
 
     // MARK: Trailing element
@@ -186,16 +189,19 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private enum Phase { case none, recording, processing, completion }
     private var phase: Phase = .none
     private var completionWorkItem: DispatchWorkItem?
+    /// Change-detection guard — `TranscriptionService.audioLevel` ticks ~10×/s,
+    /// firing `objectWillChange`. We only need to rebuild the hosted SwiftUI tree
+    /// when the displayed `PillMode` actually changes (duration seconds, phase,
+    /// or completion text).
+    private var lastMode: PillMode?
 
     var onOpenTranscription: (() -> Void)?
 
     func attach(transcription: TranscriptionService) {
         self.transcription = transcription
         transcription.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.sync() }
-            }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.sync() }
             .store(in: &cancellables)
         sync()
     }
@@ -259,6 +265,8 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
     private func updateHosted(mode: PillMode) {
         guard let hosting else { return }
+        if lastMode == mode { return }
+        lastMode = mode
         hosting.rootView = TranscriptionPillView(
             mode: mode,
             onStop: { [weak self] in self?.transcription?.stopRecording() }
@@ -272,6 +280,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
     private func hidePanel() {
         panel?.orderOut(nil)
+        lastMode = nil
     }
 
     private func buildPanel() {
