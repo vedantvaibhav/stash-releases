@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 // MARK: - Rich single-note editor (NSTextView + RTF)
@@ -45,6 +46,15 @@ struct SingleNoteEditorView: NSViewRepresentable {
         context.coordinator.noteId = noteId
         context.coordinator.notesStorage = notesStorage
         context.coordinator.textView = textView
+        context.coordinator.toolbarController.attach(to: textView)
+
+        NotificationCenter.default
+            .publisher(for: NSTextView.didEndEditingNotification, object: textView)
+            .sink { [weak coordinator = context.coordinator] _ in
+                coordinator?.toolbarController.hide()
+            }
+            .store(in: &context.coordinator.notificationSubscriptions)
+
         context.coordinator.boundNoteId = noteId
         context.coordinator.didRequestFocus = false
         context.coordinator.isApplyingBulkChange = true
@@ -102,10 +112,13 @@ struct SingleNoteEditorView: NSViewRepresentable {
         ]
     }
 
+    @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var noteId: String = ""
         var notesStorage: NotesStorage!
         weak var textView: NSTextView?
+        let toolbarController = NotesSelectionToolbarController()
+        var notificationSubscriptions: Set<AnyCancellable> = []
         var boundNoteId: String = ""
         var didRequestFocus = false
         var isApplyingBulkChange = false
@@ -139,6 +152,10 @@ struct SingleNoteEditorView: NSViewRepresentable {
                 textView.window?.makeFirstResponder(textView)
                 self.didRequestFocus = true
             }
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            toolbarController.syncWithSelection()
         }
 
         func textDidChange(_ notification: Notification) {
