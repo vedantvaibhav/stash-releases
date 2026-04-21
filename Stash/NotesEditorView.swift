@@ -41,12 +41,34 @@ struct SingleNoteEditorView: NSViewRepresentable {
         textView.typingAttributes = Self.defaultTypingAttributes()
         textView.insertionPointColor = .white
 
+        // Swap in our inline-code-aware layout manager using the documented
+        // container-side replacement path. `replaceLayoutManager` re-wires
+        // NSTextView.layoutManager automatically and avoids leaving the
+        // container bound ambiguously during the swap.
+        if let existingContainer = textView.textContainer {
+            existingContainer.replaceLayoutManager(NotesInlineCodeLayoutManager())
+        }
+
         scrollView.documentView = textView
 
         context.coordinator.noteId = noteId
         context.coordinator.notesStorage = notesStorage
         context.coordinator.textView = textView
         context.coordinator.toolbarController.attach(to: textView)
+
+        context.coordinator.toolbarController.onCommand = { [weak coordinator = context.coordinator] command in
+            guard let coordinator else { return }
+            switch command {
+            case .bold:          coordinator.applyBold()
+            case .italic:        coordinator.applyItalic()
+            case .underline:     coordinator.applyUnderline()
+            case .strikethrough: coordinator.applyStrikethrough()
+            case .inlineCode:    coordinator.applyInlineCode()
+            case .heading:       break    // Task 6
+            case .link:          break    // Task 7
+            case .color, .more:  break    // v1 stubs
+            }
+        }
 
         NotificationCenter.default
             .publisher(for: NSTextView.didEndEditingNotification, object: textView)
@@ -190,6 +212,111 @@ struct SingleNoteEditorView: NSViewRepresentable {
         func updatePlaceholderVisibility() {
             guard let tv = textView else { return }
             placeholderField?.isHidden = tv.string.isEmpty == false
+        }
+
+        // MARK: - Formatting
+
+        func ensureFirstResponder() {
+            guard let tv = textView else { return }
+            tv.window?.makeKeyAndOrderFront(nil)
+            tv.window?.makeFirstResponder(tv)
+        }
+
+        func applyBold()   { applyFontTrait(.boldFontMask) }
+        func applyItalic() { applyFontTrait(.italicFontMask) }
+
+        func applyUnderline() {
+            applyUnderlineLike(attribute: .underlineStyle)
+        }
+
+        func applyStrikethrough() {
+            applyUnderlineLike(attribute: .strikethroughStyle)
+        }
+
+        func applyInlineCode() {
+            ensureFirstResponder()
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let range = tv.selectedRange()
+            guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
+
+            // Detect "already inline code" via the monospaced font trait — this
+            // survives RTF serialization (unlike a custom attribute key, which
+            // Apple's RTF serializer silently drops on round-trip).
+            var alreadyCoded = false
+            storage.enumerateAttribute(.font, in: range, options: []) { value, _, stop in
+                if let f = value as? NSFont,
+                   f.fontDescriptor.symbolicTraits.contains(.monoSpace) {
+                    alreadyCoded = true
+                    stop.pointee = true
+                }
+            }
+
+            let defaultFgColor = NSColor.white.withAlphaComponent(0.9)
+            let inlineCodeFgColor = NSColor(Color(hex: "#A3A3A3"))
+            let inlineCodeBgColor = NSColor.white.withAlphaComponent(0.08)
+
+            storage.beginEditing()
+            if alreadyCoded {
+                storage.removeAttribute(.backgroundColor, range: range)
+                storage.addAttribute(.font, value: DesignTokens.Typography.bodyNSFont, range: range)
+                storage.addAttribute(.foregroundColor, value: defaultFgColor, range: range)
+            } else {
+                storage.addAttribute(.backgroundColor, value: inlineCodeBgColor, range: range)
+                storage.addAttribute(.font, value: DesignTokens.Typography.inlineCodeNSFont, range: range)
+                storage.addAttribute(.foregroundColor, value: inlineCodeFgColor, range: range)
+            }
+            storage.endEditing()
+            notesStorage.saveNoteAttributed(id: noteId, attributed: tv.attributedString())
+        }
+
+        // MARK: Shared helpers
+
+        private func applyFontTrait(_ trait: NSFontTraitMask) {
+            ensureFirstResponder()
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let range = tv.selectedRange()
+            if range.length == 0 {
+                let font = (tv.typingAttributes[.font] as? NSFont) ?? DesignTokens.Typography.bodyNSFont
+                let fm = NSFontManager.shared
+                let hasTrait = font.fontDescriptor.symbolicTraits.contains(symbolicTrait(for: trait))
+                tv.typingAttributes[.font] = hasTrait
+                    ? fm.convert(font, toNotHaveTrait: trait)
+                    : fm.convert(font, toHaveTrait: trait)
+                return
+            }
+            storage.applyFontTraits(trait, range: range)
+            notesStorage.saveNoteAttributed(id: noteId, attributed: tv.attributedString())
+        }
+
+        private func symbolicTrait(for mask: NSFontTraitMask) -> NSFontDescriptor.SymbolicTraits {
+            switch mask {
+            case .boldFontMask:   return .bold
+            case .italicFontMask: return .italic
+            default:              return []
+            }
+        }
+
+        private func applyUnderlineLike(attribute: NSAttributedString.Key) {
+            ensureFirstResponder()
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let range = tv.selectedRange()
+
+            if range.length == 0 {
+                let cur = tv.typingAttributes[attribute] as? Int ?? 0
+                tv.typingAttributes[attribute] = cur == 0 ? NSUnderlineStyle.single.rawValue : 0
+                return
+            }
+
+            guard NSMaxRange(range) <= storage.length else { return }
+            var hasIt = false
+            storage.enumerateAttribute(attribute, in: range, options: []) { value, _, stop in
+                if let n = value as? Int, n != 0 { hasIt = true; stop.pointee = true }
+            }
+            let newVal = hasIt ? 0 : NSUnderlineStyle.single.rawValue
+            storage.beginEditing()
+            storage.addAttribute(attribute, value: newVal, range: range)
+            storage.endEditing()
+            notesStorage.saveNoteAttributed(id: noteId, attributed: tv.attributedString())
         }
 
     }
