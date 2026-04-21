@@ -253,14 +253,13 @@ enum TextFormat: Hashable {
     case bold, italic, underline, strikethrough, inlineCode, link
 }
 
-@Observable
-final class NotesSelectionToolbarState {
+final class NotesSelectionToolbarState: ObservableObject {
     struct Snapshot: Equatable {
         var activeFormats: Set<TextFormat> = []
         var heading: HeadingLevel = .paragraph
     }
 
-    private(set) var snapshot = Snapshot()
+    @Published private(set) var snapshot = Snapshot()
 
     func apply(_ next: Snapshot) {
         snapshot = next
