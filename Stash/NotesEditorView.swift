@@ -257,9 +257,23 @@ struct SingleNoteEditorView: NSViewRepresentable {
 
             storage.beginEditing()
             if alreadyCoded {
+                // Preserve bold/italic traits from each run while swapping the
+                // monospaced face back to the body face. Assigning bodyNSFont
+                // wholesale (a single flat font) would silently strip bold/italic
+                // inside mixed runs.
                 storage.removeAttribute(.backgroundColor, range: range)
-                storage.addAttribute(.font, value: DesignTokens.Typography.bodyNSFont, range: range)
                 storage.addAttribute(.foregroundColor, value: defaultFgColor, range: range)
+                let fm = NSFontManager.shared
+                storage.enumerateAttribute(.font, in: range, options: []) { value, subRange, _ in
+                    let traits = (value as? NSFont)?.fontDescriptor.symbolicTraits ?? []
+                    var mask: NSFontTraitMask = []
+                    if traits.contains(.bold)   { mask.insert(.boldFontMask) }
+                    if traits.contains(.italic) { mask.insert(.italicFontMask) }
+                    let newFont = mask.isEmpty
+                        ? DesignTokens.Typography.bodyNSFont
+                        : fm.convert(DesignTokens.Typography.bodyNSFont, toHaveTrait: mask)
+                    storage.addAttribute(.font, value: newFont, range: subRange)
+                }
             } else {
                 storage.addAttribute(.backgroundColor, value: inlineCodeBgColor, range: range)
                 storage.addAttribute(.font, value: DesignTokens.Typography.inlineCodeNSFont, range: range)
@@ -275,16 +289,42 @@ struct SingleNoteEditorView: NSViewRepresentable {
             ensureFirstResponder()
             guard let tv = textView, let storage = tv.textStorage else { return }
             let range = tv.selectedRange()
+            let fm = NSFontManager.shared
+            let symTrait = symbolicTrait(for: trait)
+
             if range.length == 0 {
                 let font = (tv.typingAttributes[.font] as? NSFont) ?? DesignTokens.Typography.bodyNSFont
-                let fm = NSFontManager.shared
-                let hasTrait = font.fontDescriptor.symbolicTraits.contains(symbolicTrait(for: trait))
+                let hasTrait = font.fontDescriptor.symbolicTraits.contains(symTrait)
                 tv.typingAttributes[.font] = hasTrait
                     ? fm.convert(font, toNotHaveTrait: trait)
                     : fm.convert(font, toHaveTrait: trait)
                 return
             }
-            storage.applyFontTraits(trait, range: range)
+            guard NSMaxRange(range) <= storage.length else { return }
+
+            // Toggle semantics: if any run in the selection lacks the trait, add
+            // it everywhere; otherwise remove it everywhere. Mirrors the cursor-
+            // only branch and matches Notion/Word's Bold button behavior.
+            // `NSTextStorage.applyFontTraits(_:range:)` only ADDS the trait, so
+            // we hand-roll the toggle with per-run convert().
+            var allHaveTrait = true
+            storage.enumerateAttribute(.font, in: range, options: []) { value, _, stop in
+                let font = (value as? NSFont) ?? DesignTokens.Typography.bodyNSFont
+                if !font.fontDescriptor.symbolicTraits.contains(symTrait) {
+                    allHaveTrait = false
+                    stop.pointee = true
+                }
+            }
+
+            storage.beginEditing()
+            storage.enumerateAttribute(.font, in: range, options: []) { value, subRange, _ in
+                let font = (value as? NSFont) ?? DesignTokens.Typography.bodyNSFont
+                let newFont = allHaveTrait
+                    ? fm.convert(font, toNotHaveTrait: trait)
+                    : fm.convert(font, toHaveTrait: trait)
+                storage.addAttribute(.font, value: newFont, range: subRange)
+            }
+            storage.endEditing()
             notesStorage.saveNoteAttributed(id: noteId, attributed: tv.attributedString())
         }
 

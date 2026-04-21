@@ -25,6 +25,8 @@ final class NotesInlineCodeLayoutManager: NSLayoutManager {
 
         color.setFill()
         for i in 0..<rectCount {
+            // 1-pt vertical inset keeps the rounded pill from bleeding into
+            // adjacent line spacing when inline code sits on consecutive lines.
             let rect = rectArray[i].insetBy(dx: 0, dy: 1)
             let path = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
             path.fill()
