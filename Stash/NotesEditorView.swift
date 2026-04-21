@@ -64,7 +64,8 @@ struct SingleNoteEditorView: NSViewRepresentable {
             case .underline:     coordinator.applyUnderline()
             case .strikethrough: coordinator.applyStrikethrough()
             case .inlineCode:    coordinator.applyInlineCode()
-            case .heading:       break    // Task 6
+            case .heading(let level):
+                coordinator.applyHeading(level)
             case .link:          break    // Task 7
             case .color, .more:  break    // v1 stubs
             }
@@ -280,6 +281,39 @@ struct SingleNoteEditorView: NSViewRepresentable {
                 storage.addAttribute(.foregroundColor, value: inlineCodeFgColor, range: range)
             }
             storage.endEditing()
+            notesStorage.saveNoteAttributed(id: noteId, attributed: tv.attributedString())
+        }
+
+        func applyHeading(_ level: HeadingLevel) {
+            ensureFirstResponder()
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let nsString = tv.string as NSString
+            let selectedRange = tv.selectedRange()
+            let paragraphRange = nsString.paragraphRange(for: selectedRange)
+            guard paragraphRange.length > 0, NSMaxRange(paragraphRange) <= storage.length else { return }
+
+            let font: NSFont
+            switch level {
+            case .paragraph: font = DesignTokens.Typography.bodyNSFont
+            case .h1:        font = DesignTokens.Typography.h1NSFont
+            case .h2:        font = DesignTokens.Typography.h2NSFont
+            case .h3:        font = DesignTokens.Typography.h3NSFont
+            }
+
+            storage.beginEditing()
+            storage.addAttribute(.font, value: font, range: paragraphRange)
+            // Strip inline-code chrome — background color + the #A3A3A3
+            // foreground — so a paragraph that was previously inline-coded
+            // reads clean after promotion to a heading. The overwriting
+            // `.font` assignment above already clears the monospaced trait.
+            storage.removeAttribute(.backgroundColor, range: paragraphRange)
+            storage.addAttribute(
+                .foregroundColor,
+                value: NSColor.white.withAlphaComponent(0.9),
+                range: paragraphRange
+            )
+            storage.endEditing()
+
             notesStorage.saveNoteAttributed(id: noteId, attributed: tv.attributedString())
         }
 
