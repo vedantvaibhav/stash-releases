@@ -274,6 +274,19 @@ final class NotesSelectionToolbarController: NSObject {
             escapeMonitor = nil
         }
     }
+
+    // `NSEvent.removeMonitor(_:)` is `nonisolated`, so it's safe to call from
+    // the @MainActor class's (implicitly nonisolated) deinit. Without this the
+    // escape + link-popover monitors would leak when SwiftUI tears down the
+    // NSViewRepresentable and the coordinator releases the controller.
+    deinit {
+        if let monitor = escapeMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let monitor = linkPopoverEscapeMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
 }
 
 /// Borderless, non-activating, never-key panel so clicks inside the toolbar
