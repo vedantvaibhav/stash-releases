@@ -33,7 +33,7 @@ enum DesignTokens {
     /// Floating transcription pill (redesign 2026-04-21). Fixed dimensions so Recording,
     /// Processing and Copied states share identical width/height per Figma node 280-981.
     enum Pill {
-        static let width: CGFloat = 150
+        static let width: CGFloat = 140
         static let height: CGFloat = 32
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14

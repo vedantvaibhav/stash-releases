@@ -199,6 +199,13 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// or completion text).
     private var lastMode: PillMode?
 
+    /// Drag-to-snap state (mirrors the main tray's `snapToNearestZone` behavior).
+    /// `isMovableByWindowBackground` handles the live drag; this monitor observes
+    /// mouseDown / mouseUp on our panel to decide when a drag actually ended.
+    private static let snapZoneDefaultsKey = "TranscriptionPillSnapZone"
+    private var dragStartOrigin: NSPoint?
+    private var dragMonitor: Any?
+
     var onOpenTranscription: (() -> Void)?
 
     func attach(transcription: TranscriptionService) {
@@ -320,7 +327,19 @@ final class TranscriptionFloatingWidgetController: NSObject {
         hosting = host
         panel = p
 
-        positionAtMenuBar()
+        restorePosition()
+        installDragMonitor()
+    }
+
+    /// First launch uses the menu-bar default (8 pt below the bar). Subsequent
+    /// launches restore whichever corner the user last snapped the pill into.
+    private func restorePosition() {
+        if let raw = UserDefaults.standard.string(forKey: Self.snapZoneDefaultsKey),
+           let zone = PanelSnapZone(rawValue: raw) {
+            applySnapZone(zone, animated: false)
+        } else {
+            positionAtMenuBar()
+        }
     }
 
     private func positionAtMenuBar() {
@@ -333,5 +352,59 @@ final class TranscriptionFloatingWidgetController: NSObject {
         let x = sf.midX - w / 2
         let y = sf.maxY - menuBarHeight - 8 - h
         p.setFrameOrigin(NSPoint(x: x, y: y))
+    }
+
+    // MARK: Drag-to-snap
+
+    private func installDragMonitor() {
+        guard dragMonitor == nil else { return }
+        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+            self?.handleDragEvent(event)
+            return event
+        }
+    }
+
+    private func handleDragEvent(_ event: NSEvent) {
+        guard let panel, event.window === panel else { return }
+        switch event.type {
+        case .leftMouseDown:
+            dragStartOrigin = panel.frame.origin
+        case .leftMouseUp:
+            guard let start = dragStartOrigin else { return }
+            dragStartOrigin = nil
+            // Let AppKit finish processing `isMovableByWindowBackground` before
+            // we read the final origin.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let panel = self.panel else { return }
+                let moved = hypot(panel.frame.origin.x - start.x, panel.frame.origin.y - start.y) > 4
+                if moved { self.snapToNearestZone() }
+            }
+        default:
+            break
+        }
+    }
+
+    private func snapToNearestZone() {
+        guard let panel, let screen = NSScreen.main else { return }
+        let vf = screen.visibleFrame
+        let size = CGSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+        let zone = PanelSnapZone.nearest(to: panel.frame, size: size, screen: vf)
+        UserDefaults.standard.set(zone.rawValue, forKey: Self.snapZoneDefaultsKey)
+        applySnapZone(zone, animated: true)
+    }
+
+    private func applySnapZone(_ zone: PanelSnapZone, animated: Bool) {
+        guard let panel, let screen = NSScreen.main else { return }
+        let size = CGSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+        let target = zone.visibleFrame(size: size, screen: screen.visibleFrame)
+        if animated {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.28
+                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.3, 0.64, 1.0) // springy, matches tray
+                panel.animator().setFrame(target, display: true)
+            }
+        } else {
+            panel.setFrame(target, display: false)
+        }
     }
 }
