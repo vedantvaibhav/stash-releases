@@ -56,6 +56,17 @@ enum DesignTokens {
         static let sectionFont = Font.system(size: 11, weight: .semibold)
         static let sectionColor = Color(hex: "#525252")
     }
+
+    enum PanelAnimation {
+        /// Open: fade 0 → 1 with an 8 pt downward settle. Ease-out.
+        static let openDuration: CFTimeInterval = 0.18
+        /// Close: fade 1 → 0 with a 6 pt upward lift. Ease-in. Slightly faster than open.
+        static let closeDuration: CFTimeInterval = 0.14
+        /// Panel starts 8 pt above its final y on open.
+        static let openSlideOffset: CGFloat = 8
+        /// Panel ends 6 pt above its start y on close.
+        static let closeSlideOffset: CGFloat = 6
+    }
 }
 
 // MARK: - Color(hex:) helper
