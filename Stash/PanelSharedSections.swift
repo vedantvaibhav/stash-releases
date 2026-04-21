@@ -678,12 +678,13 @@ struct SharedNotesColumn: View {
 
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 8) {
-                Button("← Back") {
+                HeaderIconButton(
+                    icon: .system("chevron.left"),
+                    iconColor: DesignTokens.Icon.tintMuted
+                ) {
                     notesStorage.refreshNotes()
                     editingNoteId = nil
                 }
-                .buttonStyle(.plain)
-                .font(.subheadline)
 
                 Spacer()
 
@@ -694,18 +695,16 @@ struct SharedNotesColumn: View {
                     }
                 }
 
-                Button {
+                HeaderIconButton(
+                    icon: .system(noteCopyFeedback ? "checkmark" : "doc.on.doc"),
+                    iconColor: noteCopyFeedback ? .green : DesignTokens.Icon.tintMuted
+                ) {
                     let text = notesStorage.loadNote(id: noteId)
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
                     noteCopyFeedback = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { noteCopyFeedback = false }
-                } label: {
-                    Image(systemName: noteCopyFeedback ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 15))
-                        .foregroundColor(noteCopyFeedback ? .green : .secondary)
                 }
-                .buttonStyle(.plain)
                 .help("Copy note")
             }
             .padding(.horizontal, 8)
