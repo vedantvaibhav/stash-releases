@@ -21,6 +21,31 @@ enum DesignTokens {
         static let cardGap: CGFloat = 8       // gap between cards
     }
 
+    /// Geometry shared by every `StashListRow` caller — clipboard, notes, pinned.
+    enum Row {
+        static let height: CGFloat = 34
+        static let horizontalPadding: CGFloat = 8
+        static let spacing: CGFloat = 8
+        static let cornerRadius: CGFloat = 8
+    }
+
+    /// Floating transcription pill (redesign 2026-04-21). Fixed dimensions so Recording,
+    /// Processing and Copied states share identical width/height per Figma node 280-981.
+    enum Pill {
+        static let width: CGFloat = 180
+        static let height: CGFloat = 32
+        static let cornerRadius: CGFloat = 16   // fully rounded capsule
+        static let iconDiscSize: CGFloat = 24
+        static let iconGlyphSize: CGFloat = 14
+        static let leadingPadding: CGFloat = 4
+        static let trailingPadding: CGFloat = 12
+        static let verticalPadding: CGFloat = 4
+        static let contentSpacing: CGFloat = 12
+        static let recordingDotSize: CGFloat = 10
+        static let stopTapTargetSize: CGFloat = 32
+        static let iconGlyphTint: Color = Color.white.opacity(0.72)
+    }
+
     enum Typography {
         // Primary list item text (clipboard rows, pinned cards, notes rows).
         // SF Pro weight 510 from Figma maps to the closest SwiftUI weight: .medium.
