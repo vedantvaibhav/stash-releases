@@ -27,6 +27,8 @@ enum DesignTokens {
         static let toolbarIconSize: CGFloat = 14
         static let toolbarPadding: CGFloat = 8
         static let toolbarItemSpacing: CGFloat = 10
+        static let toolbarRowHeight: CGFloat = 34
+        static let toolbarCornerRadius: CGFloat = 12
     }
 
     /// Geometry shared by every `StashListRow` caller — clipboard, notes, pinned.
