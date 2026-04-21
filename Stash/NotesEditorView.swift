@@ -55,6 +55,7 @@ struct SingleNoteEditorView: NSViewRepresentable {
         context.coordinator.notesStorage = notesStorage
         context.coordinator.textView = textView
         context.coordinator.toolbarController.attach(to: textView)
+        context.coordinator.installKeyboardShortcuts()
 
         context.coordinator.toolbarController.onCommand = { [weak coordinator = context.coordinator] command in
             guard let coordinator else { return }
@@ -151,6 +152,7 @@ struct SingleNoteEditorView: NSViewRepresentable {
         var isApplyingBulkChange = false
         private var loadGeneration = 0
         private weak var placeholderField: NSTextField?
+        private var keyMonitor: Any?
 
         func scheduleLoad(noteId: String, storage: NotesStorage) {
             loadGeneration += 1
@@ -409,6 +411,50 @@ struct SingleNoteEditorView: NSViewRepresentable {
             case .boldFontMask:   return .bold
             case .italicFontMask: return .italic
             default:              return []
+            }
+        }
+
+        /// Note on coexistence with the Escape monitor in
+        /// `NotesSelectionToolbarController` and the link-popover monitor in
+        /// `presentLinkPopover`: all three subscribe to `.keyDown` and return
+        /// `nil` only for events they actually handle (Escape → keyCode 53;
+        /// these shortcuts → ⌘-modified b/i/u/k). Unmatched events pass
+        /// through, so monitors compose cleanly — do not make this monitor
+        /// return `nil` unconditionally.
+        func installKeyboardShortcuts() {
+            guard keyMonitor == nil else { return }
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, let tv = self.textView else { return event }
+                // Only intercept events targeted at our text view.
+                guard tv.window?.firstResponder === tv else { return event }
+                guard event.modifierFlags.contains(.command) else { return event }
+
+                let chars = event.charactersIgnoringModifiers?.lowercased()
+                switch chars {
+                case "b": self.applyBold();      return nil
+                case "i": self.applyItalic();    return nil
+                case "u": self.applyUnderline(); return nil
+                case "k":
+                    let initial = self.currentSelectionURL()
+                    self.toolbarController.presentLinkPopover(initialURL: initial) { url in
+                        self.applyLink(url)
+                    }
+                    return nil
+                default:  return event
+                }
+            }
+        }
+
+        func removeKeyboardShortcuts() {
+            if let monitor = keyMonitor {
+                NSEvent.removeMonitor(monitor)
+                keyMonitor = nil
+            }
+        }
+
+        deinit {
+            if let monitor = keyMonitor {
+                NSEvent.removeMonitor(monitor)
             }
         }
 
