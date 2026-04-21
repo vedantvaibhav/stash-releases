@@ -66,7 +66,11 @@ struct SingleNoteEditorView: NSViewRepresentable {
             case .inlineCode:    coordinator.applyInlineCode()
             case .heading(let level):
                 coordinator.applyHeading(level)
-            case .link:          break    // Task 7
+            case .link:
+                let initial = coordinator.currentSelectionURL()
+                coordinator.toolbarController.presentLinkPopover(initialURL: initial) { url in
+                    coordinator.applyLink(url)
+                }
             case .color, .more:  break    // v1 stubs
             }
         }
@@ -282,6 +286,44 @@ struct SingleNoteEditorView: NSViewRepresentable {
             }
             storage.endEditing()
             notesStorage.saveNoteAttributed(id: noteId, attributed: tv.attributedString())
+        }
+
+        func applyLink(_ urlString: String) {
+            ensureFirstResponder()
+            guard let tv = textView, let storage = tv.textStorage else { return }
+            let range = tv.selectedRange()
+            guard let url = URL(string: urlString) else { return }
+
+            if range.length == 0 {
+                // No selection — insert the URL string and link it.
+                let attr = NSAttributedString(string: urlString, attributes: [
+                    .link: url,
+                    .foregroundColor: NSColor.systemBlue,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .font: DesignTokens.Typography.bodyNSFont
+                ])
+                storage.beginEditing()
+                storage.replaceCharacters(in: range, with: attr)
+                storage.endEditing()
+            } else {
+                guard NSMaxRange(range) <= storage.length else { return }
+                storage.beginEditing()
+                storage.addAttribute(.link, value: url, range: range)
+                storage.addAttribute(.foregroundColor, value: NSColor.systemBlue, range: range)
+                storage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+                storage.endEditing()
+            }
+            notesStorage.saveNoteAttributed(id: noteId, attributed: tv.attributedString())
+        }
+
+        func currentSelectionURL() -> String? {
+            guard let tv = textView, let storage = tv.textStorage else { return nil }
+            let range = tv.selectedRange()
+            guard range.location < storage.length else { return nil }
+            if let url = storage.attribute(.link, at: range.location, effectiveRange: nil) as? URL {
+                return url.absoluteString
+            }
+            return nil
         }
 
         func applyHeading(_ level: HeadingLevel) {
