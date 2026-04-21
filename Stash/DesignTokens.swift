@@ -30,6 +30,10 @@ enum DesignTokens {
         static let toolbarCornerRadius: CGFloat = 12
     }
 
+    enum Toolbar {
+        static let bg = Color(red: 20/255, green: 20/255, blue: 20/255)
+    }
+
     /// Geometry shared by every `StashListRow` caller — clipboard, notes, pinned.
     enum Row {
         static let height: CGFloat = 34
