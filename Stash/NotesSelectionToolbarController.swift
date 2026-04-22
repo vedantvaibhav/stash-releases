@@ -95,7 +95,7 @@ final class NotesSelectionToolbarController: NSObject {
         if selectedRange.length == 0 {
             let work = DispatchWorkItem { [weak self] in self?.hide() }
             pendingHideTask = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
             return
         }
         pendingHideTask?.cancel()
@@ -191,7 +191,8 @@ final class NotesSelectionToolbarController: NSObject {
             backing: .buffered,
             defer: false
         )
-        p.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)) + 1)
+        let ownerLevel = textView?.window?.level ?? NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.assistiveTechHighWindow)))
+        p.level = NSWindow.Level(rawValue: ownerLevel.rawValue + 1)
         p.backgroundColor = .clear
         p.isOpaque = false
         p.hasShadow = true
@@ -287,6 +288,7 @@ final class NotesSelectionToolbarController: NSObject {
     // escape + link-popover monitors would leak when SwiftUI tears down the
     // NSViewRepresentable and the coordinator releases the controller.
     deinit {
+        pendingHideTask?.cancel()
         if let monitor = escapeMonitor {
             NSEvent.removeMonitor(monitor)
         }
