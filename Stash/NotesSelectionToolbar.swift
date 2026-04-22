@@ -45,7 +45,7 @@ struct NotesSelectionToolbar: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Spacing.toolbarCornerRadius)
-                .stroke(Color.white.opacity(0.05), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.05), lineWidth: 1)
         )
         .fixedSize()
     }
