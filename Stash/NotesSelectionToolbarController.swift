@@ -77,6 +77,11 @@ final class NotesSelectionToolbarController: NSObject {
                 .publisher(for: NSWindow.willCloseNotification, object: window)
                 .sink { [weak self] _ in self?.hide() }
                 .store(in: &cancellables)
+            NotificationCenter.default
+                .publisher(for: .stashPanelDidHide)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.hide() }
+                .store(in: &cancellables)
             didAttachWindowObservers = true
         }
     }
