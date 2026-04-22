@@ -5,6 +5,7 @@ import CoreGraphics
 
 extension Notification.Name {
     static let quickPanelUserInteraction = Notification.Name("QuickPanelUserInteraction")
+    static let stashPanelDidHide = Notification.Name("StashPanelDidHide")
 }
 
 /// NSPanel subclass that can become key window so the notes text view accepts keyboard input.
@@ -793,6 +794,7 @@ final class PanelController: NSObject {
 
     func hidePanel() {
         guard let panel = contentPanel, panel.isVisible else { return }
+        NotificationCenter.default.post(name: .stashPanelDidHide, object: nil)
 
         // Quick Look and the key monitor must go BEFORE the animation — otherwise
         // QL lingers on-screen for ~250ms after the slide-out starts, and a
