@@ -1,29 +1,279 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Signed in to Stash</title>
   <style>
-    body { font-family: -apple-system, sans-serif; background: #000;
-           color: #fff; display: flex; align-items: center;
-           justify-content: center; height: 100vh; margin: 0;
-           flex-direction: column; gap: 16px; }
-    h1 { font-weight: 500; }
-    p { color: #888; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+                   "Helvetica Neue", Arial, sans-serif;
+      background: #000;
+      color: #fff;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Card ─────────────────────────────── */
+    .card {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 36px;
+      padding: 0 24px;
+      text-align: center;
+      animation: fadeUp 0.5s cubic-bezier(.22,.68,0,1.2) both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0);    }
+    }
+
+    /* ── Logo ─────────────────────────────── */
+    .logo {
+      width: 64px;
+      height: 64px;
+      background: #fff;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 30px;
+      font-weight: 800;
+      color: #000;
+      letter-spacing: -1px;
+      box-shadow: 0 0 0 1px rgba(255,255,255,0.08),
+                  0 8px 32px rgba(0,0,0,0.6);
+    }
+
+    /* ── Headline ─────────────────────────── */
+    .headline h1 {
+      font-size: 26px;
+      font-weight: 600;
+      letter-spacing: -0.4px;
+      color: rgba(255,255,255,0.92);
+      line-height: 1.2;
+    }
+    .headline p {
+      margin-top: 8px;
+      font-size: 14px;
+      color: rgba(255,255,255,0.35);
+      font-weight: 400;
+    }
+
+    /* ── User number ──────────────────────── */
+    .user-number-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      opacity: 0;
+      transition: opacity 0.4s ease;
+    }
+    .user-number-wrap.visible { opacity: 1; }
+
+    .user-number-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.10em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.28);
+    }
+
+    .number-stage {
+      position: relative;
+      display: flex;
+      align-items: baseline;
+      justify-content: center;
+    }
+
+    .number-glow {
+      position: absolute;
+      inset: -30px -60px;
+      background: radial-gradient(ellipse at 50% 60%,
+                    rgba(255,255,255,0.07) 0%,
+                    transparent 70%);
+      pointer-events: none;
+    }
+
+    .number-prefix {
+      font-size: 28px;
+      font-weight: 500;
+      color: rgba(255,255,255,0.3);
+      margin-right: 3px;
+      font-variant-numeric: tabular-nums;
+      font-family: "SF Mono", "Menlo", "Courier New", monospace;
+    }
+
+    #digits {
+      font-size: 58px;
+      font-weight: 700;
+      letter-spacing: -3px;
+      color: #fff;
+      font-variant-numeric: tabular-nums;
+      font-family: "SF Mono", "Menlo", "Courier New", monospace;
+      min-width: 3ch;
+      display: inline-block;
+      text-align: right;
+    }
+
+    /* ── CTA button ───────────────────────── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 28px;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: rgba(255,255,255,0.82);
+      font-size: 14px;
+      font-weight: 500;
+      font-family: inherit;
+      text-decoration: none;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .btn:hover  { background: rgba(255,255,255,0.16); border-color: rgba(255,255,255,0.14); }
+    .btn:active { background: rgba(255,255,255,0.22); }
+    .btn svg { opacity: 0.6; flex-shrink: 0; }
   </style>
 </head>
 <body>
-  <h1>Signed in ✓</h1>
-  <p>Redirecting back to Stash...</p>
-  <script>
-    // Merge query params and hash params, then redirect to the app
-    const params = new URLSearchParams(window.location.search);
-    const hashParams = new URLSearchParams(window.location.hash.slice(1));
-    const finalParams = new URLSearchParams();
-    for (const [k, v] of params) finalParams.set(k, v);
-    for (const [k, v] of hashParams) finalParams.set(k, v);
-    window.location.href = "quickpanel://auth/callback?" + finalParams.toString();
-    // Close tab 1.5 s later as a fallback if the app redirect opened successfully
-    setTimeout(() => window.close(), 1500);
-  </script>
+
+<div class="card">
+
+  <!-- Logo -->
+  <div class="logo">S</div>
+
+  <!-- Headline -->
+  <div class="headline">
+    <h1>You're signed in to Stash</h1>
+    <p>Heading back to the app now…</p>
+  </div>
+
+  <!-- Lottery user number -->
+  <div class="user-number-wrap" id="numberSection">
+    <div class="user-number-label">You are user</div>
+    <div class="number-stage">
+      <div class="number-glow"></div>
+      <span class="number-prefix">#</span>
+      <span id="digits">…</span>
+    </div>
+  </div>
+
+  <!-- CTA -->
+  <a class="btn" id="openBtn" href="#">
+    Open Stash
+    <!-- Lucide log-out icon -->
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round">
+      <path d="m16 17 5-5-5-5"/>
+      <path d="M21 12H9"/>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+    </svg>
+  </a>
+
+</div>
+
+<script>
+  const SUPABASE_URL = "https://hlkkmkayjytblvhnatwx.supabase.co";
+  const ANON_KEY     = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhsa2tta2F5anl0Ymx2aG5hdHd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxMTc0MDQsImV4cCI6MjA4OTY5MzQwNH0.uSu3zj74xfH8yn9z_Drw0HeHJIsQID6lx7ILd9R_ffw";
+
+  // ── 1. Fire the deep link immediately (macOS intercepts; page stays open)
+  const qParams   = new URLSearchParams(window.location.search);
+  const hParams   = new URLSearchParams(window.location.hash.slice(1));
+  const merged    = new URLSearchParams();
+  for (const [k,v] of qParams) merged.set(k,v);
+  for (const [k,v] of hParams) merged.set(k,v);
+  const deepLink  = "quickpanel://auth/callback?" + merged.toString();
+  window.location.href = deepLink;
+  document.getElementById("openBtn").href = deepLink;
+
+  // ── 2. Fetch total user count from Supabase
+  async function fetchUserCount() {
+    try {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/users?select=id`,
+        {
+          headers: {
+            "apikey":        ANON_KEY,
+            "Authorization": "Bearer " + ANON_KEY,
+            "Prefer":        "count=exact",
+            "Range":         "0-0"
+          }
+        }
+      );
+      // Supabase returns Content-Range: 0-0/<total>
+      const range = res.headers.get("Content-Range");
+      if (range) {
+        const total = parseInt(range.split("/")[1], 10);
+        if (!isNaN(total) && total > 0) return total;
+      }
+    } catch (_) { /* RLS or network — degrade gracefully */ }
+    return null;
+  }
+
+  // ── 3. Lottery animation
+  // Phase 1 (0 → CHAOS_MS):  rapid random numbers — chaotic slot-machine feel
+  // Phase 2 (CHAOS_MS → END): decelerate into the real number
+  function runLottery(target, el) {
+    const TOTAL_MS  = 2400;
+    const CHAOS_MS  = 1100;
+    const start     = performance.now();
+    let   lastFlash = 0;
+
+    function easeOut(t) { return 1 - Math.pow(1 - t, 4); }
+
+    function tick(now) {
+      const elapsed  = now - start;
+      const progress = Math.min(elapsed / TOTAL_MS, 1);
+
+      if (elapsed < CHAOS_MS) {
+        // Flash a new random number every ~55 ms
+        if (now - lastFlash > 55) {
+          const rand = Math.floor(Math.random() * Math.max(target * 2, 50)) + 1;
+          el.textContent = rand.toLocaleString();
+          lastFlash = now;
+        }
+      } else {
+        const phase = (elapsed - CHAOS_MS) / (TOTAL_MS - CHAOS_MS);
+        const val   = Math.round(easeOut(Math.min(phase, 1)) * target);
+        el.textContent = val.toLocaleString();
+      }
+
+      if (progress < 1) requestAnimationFrame(tick);
+      else              el.textContent = target.toLocaleString(); // exact snap
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  // ── 4. Orchestrate
+  (async () => {
+    const count   = await fetchUserCount();
+    const section = document.getElementById("numberSection");
+    const digits  = document.getElementById("digits");
+
+    if (count !== null) {
+      // Reveal the section then animate
+      section.classList.add("visible");
+      // Tiny delay so the fade-in finishes before we start rolling
+      setTimeout(() => runLottery(count, digits), 120);
+    }
+    // If count is null (RLS blocks anon access) the section stays hidden —
+    // no broken UI, just a slightly simpler page.
+    // To enable the count: add an RLS policy on the `users` table that allows
+    // anon SELECT on the `id` column (read-only; no PII exposed).
+  })();
+</script>
+
 </body>
 </html>

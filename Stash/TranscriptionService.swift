@@ -41,6 +41,8 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var durationTimer: Timer?
     private var transcriptTimer: Timer?
     private var levelTimer: Timer?
+    private var maxDurationTimer: Timer?
+    private var autoStoppedAtLimit = false
 
     // MARK: - Start
 
@@ -74,7 +76,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             AVSampleRateKey: 44_100,
             AVNumberOfChannelsKey: 1,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-            AVEncoderBitRateKey: 96_000
+            AVEncoderBitRateKey: 32_000
         ]
 
         do {
@@ -109,6 +111,17 @@ final class TranscriptionService: NSObject, ObservableObject {
                 Task { @MainActor in self?.sendLiveChunk() }
             }
             if let t = transcriptTimer { RunLoop.main.add(t, forMode: .common) }
+
+            maxDurationTimer?.invalidate()
+            autoStoppedAtLimit = false
+            maxDurationTimer = Timer(timeInterval: 5400, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.isRecording else { return }
+                    self.autoStoppedAtLimit = true
+                    self.stopRecording()
+                }
+            }
+            if let t = maxDurationTimer { RunLoop.main.add(t, forMode: .common) }
 
         } catch {
             errorMessage = "Could not start recording: \(error.localizedDescription)"
@@ -151,6 +164,8 @@ final class TranscriptionService: NSObject, ObservableObject {
         transcriptTimer = nil
         levelTimer?.invalidate()
         levelTimer = nil
+        maxDurationTimer?.invalidate()
+        maxDurationTimer = nil
         recorder?.stop()
         recorder = nil
         isRecording = false
@@ -184,187 +199,200 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - LLM prompts
 
-    private static let promptModeA = """
-    You are cleaning a short voice note (under 3 minutes).
+    private static let promptShortClean = """
+    You are a transcript cleaner. Your only job is to make the speaker's words clean and paste-ready.
 
-    Your job:
-    - Clean up grammar and remove filler words (um, uh, like, you know)
-    - Keep the tone CASUAL and conversational — the way a person actually talks
-    - Use simple punctuation: periods and commas only
-    - DO NOT use semicolons (;)
-    - DO NOT use ellipses (...)
-    - DO NOT use em-dashes (—) unless absolutely necessary
-    - Short sentences are better than long ones
-    - Keep original phrasing as much as possible — paste-ready
+    SELF-CORRECTIONS (highest priority rule):
+    When the speaker corrects themselves mid-sentence, keep ONLY the final intended version — delete everything before the correction including the correction signal.
+    Examples (follow these exactly):
+    - "the meeting is at seven, no five" → "the meeting is at five"
+    - "on Monday, I mean Tuesday" → "on Tuesday"
+    - "we'll use React, or wait, Vue" → "we'll use Vue"
+    - "the deadline is... hmm... Friday" → "the deadline is Friday"
+    - "call John, aarah" → "call Sarah"
+    - "let's do this Thursday, no wait, next Monday" → "let's do this next Monday"
 
-    Output format (exactly):
+    Do NOT treat these as self-corrections (keep the meaning, just clean filler):
+    - "No, I don't think that works" → "I don't think that works"
+    - "That's not right" → "That's not right"
 
-    [cleaned transcript in casual natural tone]
+    FILLER WORDS — silently remove all of these:
+    um, uh, er, ah, like (when not comparative), you know, so (as opener), basically, literally, right (as filler), kind of, sort of, just (as filler), I mean (when not correcting), honestly, actually (when used as throat-clearing filler)
 
-    ---
-
-    [2-3 short casual sentences summarizing what was said]
-
-    Rules:
-    - No headers, no bullets (unless content is clearly a list)
-    - No metadata, no timestamps
-    - Never invent information
-    - If unclear, keep it vague rather than guessing
-    - Preserve original intent strictly
-    - Do not over-summarize
+    OUTPUT RULES:
+    - Output ONLY the cleaned text — no headers, no labels, no summary, no explanation
+    - Preserve the speaker's vocabulary and tone exactly
+    - Keep first-person voice
+    - Fix punctuation naturally — periods and commas only
+    - Shorter sentences over run-ons
+    - Never add information not in the original
+    - If something is genuinely unclear after cleaning, keep it rather than guessing
     """
 
-    private static let promptModeB = """
-    You are processing a medium-length voice note (3–5 minutes).
+    private static let promptLongTranscript = """
+    You are cleaning a meeting transcript for a permanent record.
 
-    Your job:
-    - Clean up and lightly structure the content
-    - Convert to bullet points ONLY if:
-      - the content clearly contains lists, steps, or multiple ideas
-      - there are 3+ distinct ideas or named entities being introduced
+    SELF-CORRECTIONS — same rule as above, keep ONLY the corrected version:
+    - "the call is at seven, no five" → "the call is at five"
+    - "by Monday, I mean Wednesday" → "by Wednesday"
+    - "we decided on X, actually let's go with Y" → "we decided on Y"
 
-    Output: a single clean Overview of the content.
+    FILLER WORDS — remove: um, uh, er, ah, like (non-comparative), you know, so (opener), basically, literally, right (filler), kind of, sort of
 
-    Style:
-    - Conversational tone
-    - Slightly structured for readability
-    - Not overly formal
-
-    Rules:
-    - No metadata
-    - No sections like "Transcript", "Duration", "Summary", etc.
-    - No rigid headers
-    - Avoid over-formatting
-    - Keep it intuitive and easy to scan
-    - Never invent information
-    - Never add interpretations not present in the input
-    - If something is unclear, keep it vague rather than guessing
-    - Preserve original intent strictly
-    - Do not over-summarize. Retain density of information.
+    RULES:
+    - Preserve ALL content — do not summarize, do not cut any topic or idea
+    - Keep speaker labels if identifiable (Speaker 1, Speaker 2, or real names if said)
+    - Fix grammar lightly — do not rewrite
+    - Output ONLY the cleaned transcript, nothing else
+    - Periods and commas only — no semicolons, ellipses, or em-dashes
+    - Never invent or add content
     """
 
-    private static let promptModeC_transcript = """
-    You are cleaning a long meeting transcript.
+    private static let promptLongOverview = """
+    You are creating a structured overview from a meeting transcript.
 
-    Your job:
-    - Fix grammar
-    - Remove filler words (um, uh, like, you know)
-    - Keep speaker labels if identifiable in the raw transcript (Speaker 1, Speaker 2, or actual names if mentioned). Otherwise leave the text flowing.
-    - Preserve ALL content — do not summarize, do not cut
-
-    Punctuation: use only periods and commas. No semicolons. No ellipses. No em-dashes.
-
-    Rules:
-    - Output only the cleaned transcript, nothing else
-    - Never invent content
-    - Preserve original intent strictly
-    """
-
-    private static let promptModeC_overview = """
-    You are taking notes from a long recording (over 5 minutes).
-
-    Your job: produce a bullet-point Overview covering all points discussed.
-
-    Format:
-    - Every point as a bullet (start with "- ")
+    FORMAT — strict:
+    - Bullet points only, every bullet starts with "- "
     - One idea per bullet
-    - Short, scannable bullets — not paragraphs
-    - Group related bullets together naturally but NO section headers
-    - No "Summary", "Decisions", "Action Items", "Key Points" headers anywhere
+    - Group related — absolutely no section headers of any kind
+    - Short scannable bullets, not paragraphs
 
-    Style:
-    - Neutral tone
-    - Casual language, not corporate
-    - Simple punctuation — periods and commas only
-    - No semicolons, no ellipses, no em-dashes
-    - Short sentences
+    STYLE:
+    - Casual, neutral tone — not corporate or formal
+    - Periods and commas only — no em-dashes, semicolons, ellipses
 
-    Rules:
-    - Every bullet must come from the transcript
+    RULES:
+    - Every bullet must come directly from the transcript
     - Never invent information or add interpretation
+    - Capture everything discussed — do not over-summarize or drop topics
     - If something is unclear, keep it vague rather than guessing
-    - Capture everything important — do not over-summarize
-    - Preserve the original density of information
+    - Do not start with any label like "Overview:", "Summary:", "Key Points:", etc.
     """
 
     // MARK: - Unified pipeline
 
     private func processRecording(audioData: Data, durationSeconds: Int) async {
-        // Mode A: < 180s. Modes B and C open panel — not short.
-        lastRecordingWasShort = durationSeconds < 180
+        let isShort = durationSeconds < 300
+        lastRecordingWasShort = isShort
+
+        if autoStoppedAtLimit {
+            autoStoppedAtLimit = false
+            lastErrorForBanner = "90-minute limit reached — processing what was captured. Start a new session for the rest."
+            clearBannerAfterDelay(6.0)
+        }
+
+        // MARK: Whisper — with one auto-retry on transient errors
+        let rawWhisperOutput: String
         do {
-            let rawTranscript = try await Task(priority: .userInitiated) {
+            rawWhisperOutput = try await Task(priority: .userInitiated) {
                 try await self.callWhisper(audioData: audioData)
             }.value
+        } catch let firstError as NSError {
+            if isTransientWhisperError(status: firstError.code) {
+                showCompletion("Retrying…")
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                do {
+                    rawWhisperOutput = try await Task(priority: .userInitiated) {
+                        try await self.callWhisper(audioData: audioData)
+                    }.value
+                } catch {
+                    isProcessing = false
+                    showCompletion("Failed")
+                    lastErrorForBanner = error.localizedDescription
+                    clearBannerAfterDelay()
+                    return
+                }
+            } else {
+                isProcessing = false
+                showCompletion("Failed")
+                lastErrorForBanner = firstError.localizedDescription
+                clearBannerAfterDelay()
+                return
+            }
+        } catch {
+            isProcessing = false
+            showCompletion("Failed")
+            lastErrorForBanner = error.localizedDescription
+            clearBannerAfterDelay()
+            return
+        }
 
-            if durationSeconds < 180 {
-                // Mode A: < 3 min — clean + summary, copy to clipboard, silent save
-                let output = try await callChat(
-                    systemPrompt: Self.promptModeA,
+        // MARK: Hallucination filter
+        guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput) else {
+            isProcessing = false
+            showCompletion("No audio")
+            return
+        }
+
+        // MARK: LLM cleaning — failure saves raw transcript so nothing is lost
+        if isShort {
+            do {
+                let cleaned = try await callChat(
+                    systemPrompt: Self.promptShortClean,
                     userMessage: rawTranscript,
-                    maxTokens: 700,
+                    maxTokens: 400,
                     model: APIConstants.chatModelForShortClean
                 )
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(output, forType: .string)
+                NSPasteboard.general.setString(cleaned, forType: .string)
                 if let storage = notesStorage {
-                    _ = storage.saveQuickNote(text: output, durationSeconds: durationSeconds)
+                    _ = storage.saveQuickNote(text: cleaned, durationSeconds: durationSeconds)
                     storage.refreshNotes()
                 }
                 isProcessing = false
                 showCompletion("Copied")
-
-            } else if durationSeconds < 300 {
-                // Mode B: 3–5 min — LLM overview, save as voice note, open panel
-                let overview = try await callChat(
-                    systemPrompt: Self.promptModeB,
-                    userMessage: rawTranscript,
-                    maxTokens: 800,
-                    model: APIConstants.chatModelForShortClean
-                )
+            } catch {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(rawTranscript, forType: .string)
                 if let storage = notesStorage {
-                    let id = storage.saveVoiceNote(overview: overview, durationSeconds: durationSeconds)
+                    _ = storage.saveQuickNote(text: rawTranscript, durationSeconds: durationSeconds)
                     storage.refreshNotes()
-                    onNoteCreated?(id)
                 }
                 isProcessing = false
-                showCompletion("Note saved")
-
-            } else {
-                // Mode C: > 5 min — two parallel LLM calls (clean transcript + overview)
-                async let cleanedTranscriptCall = callChat(
-                    systemPrompt: Self.promptModeC_transcript,
+                showCompletion("Copied (raw)")
+                lastErrorForBanner = "Couldn't clean transcript — raw version copied and saved"
+                clearBannerAfterDelay()
+            }
+        } else {
+            do {
+                async let transcriptCall = callChat(
+                    systemPrompt: Self.promptLongTranscript,
                     userMessage: rawTranscript,
                     maxTokens: 3000,
                     model: APIConstants.chatModel
                 )
                 async let overviewCall = callChat(
-                    systemPrompt: Self.promptModeC_overview,
+                    systemPrompt: Self.promptLongOverview,
                     userMessage: rawTranscript,
                     maxTokens: 1500,
                     model: APIConstants.chatModel
                 )
-                let (cleanedTranscript, overview) = try await (cleanedTranscriptCall, overviewCall)
+                let (cleanedTranscript, overview) = try await (transcriptCall, overviewCall)
                 if let storage = notesStorage {
-                    let id = storage.saveMeetingNote(transcript: cleanedTranscript, overview: overview, durationSeconds: durationSeconds)
+                    let id = storage.saveMeetingNote(
+                        transcript: cleanedTranscript,
+                        overview: overview,
+                        durationSeconds: durationSeconds
+                    )
                     storage.refreshNotes()
                     onNoteCreated?(id)
                 }
                 isProcessing = false
                 showCompletion("Note saved")
-            }
-        } catch {
-            isProcessing = false
-            let desc = error.localizedDescription
-            errorMessage = desc
-            #if DEBUG
-            print("[Transcription] FAILED — \(desc)")
-            print("[Transcription] Full error: \(error)")
-            #endif
-            showCompletion("Failed")
-            lastErrorForBanner = desc
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
-                self?.lastErrorForBanner = nil
+            } catch {
+                if let storage = notesStorage {
+                    let id = storage.saveMeetingNote(
+                        transcript: rawTranscript,
+                        overview: "Overview unavailable — raw transcript saved below.",
+                        durationSeconds: durationSeconds
+                    )
+                    storage.refreshNotes()
+                    onNoteCreated?(id)
+                }
+                isProcessing = false
+                showCompletion("Saved (raw)")
+                lastErrorForBanner = "Couldn't clean transcript — raw version saved"
+                clearBannerAfterDelay()
             }
         }
     }
@@ -382,7 +410,153 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Error helpers
+
+    private func friendlyError(domain: String, status: Int, body: String) -> String {
+        switch status {
+        case 401:
+            return "\(domain) API key not configured or invalid"
+        case 429:
+            return "\(domain) rate limit hit — try again in a moment"
+        case 413:
+            return "Recording too large to process"
+        case 400:
+            if body.lowercased().contains("context") || body.lowercased().contains("token") {
+                return "Recording too long to clean in one pass"
+            }
+            return "\(domain) rejected the request"
+        case 500, 502, 503:
+            return "\(domain) service temporarily unavailable"
+        default:
+            if status < 0 { return "No internet connection" }
+            return "\(domain) error (\(status))"
+        }
+    }
+
+    private func isTransientWhisperError(status: Int) -> Bool {
+        status == 429 || (500...503).contains(status)
+    }
+
+    private func clearBannerAfterDelay(_ delay: Double = 4.0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.lastErrorForBanner = nil
+        }
+    }
+
     // MARK: - Whisper API
+
+    private func sanitiseWhisperOutput(_ raw: String) -> String? {
+        // PASS 1 — token hallucinations (bracket artefacts Whisper emits on silence)
+        let tokenHallucinations = [
+            "[BLANK_AUDIO]", "[blank_audio]", "[inaudible]", "[Inaudible]",
+            "[music]", "[Music]", "[silence]", "[Silence]", "[noise]", "[Noise]",
+            "[laughter]", "[Laughter]", "[applause]", "[Applause]",
+            "(No transcript)", "(no transcript)", "(silence)", "(inaudible)"
+        ]
+        var text = raw
+        for token in tokenHallucinations {
+            text = text.replacingOccurrences(of: token, with: "")
+        }
+
+        // PASS 2 — semantic hallucinations Whisper generates on near-silent audio.
+        // Match case-insensitively line-by-line so a single hallucination phrase
+        // embedded in real speech is not over-stripped.
+        let semanticHallucinations: [String] = [
+            "thank you for watching",
+            "thanks for watching",
+            "please subscribe",
+            "don't forget to subscribe",
+            "like and subscribe",
+            "hit the like button",
+            "see you in the next video",
+            "see you next time",
+            "until next time",
+            "thanks for listening",
+            "thank you for listening",
+            "thanks for tuning in",
+            "thank you for tuning in",
+            "that's all for today",
+            "that's it for today",
+            "that's it for this episode",
+            "we'll see you next week",
+            "you",
+            "bye",
+            "bye bye",
+            "okay",
+            "alright",
+            "um",
+            "uh",
+            "hmm",
+            "hm",
+            "mm-hmm",
+            "mm hmm",
+            "...",
+            "…"
+        ]
+        let lines = text.components(separatedBy: .newlines).filter { line in
+            let stripped = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "-.,!? "))
+            guard !stripped.isEmpty else { return false }
+            let normalised = stripped.lowercased()
+            if semanticHallucinations.contains(where: { normalised == $0 }) { return false }
+            let nonNoise = stripped.trimmingCharacters(in: CharacterSet(charactersIn: "-. "))
+            return !nonNoise.isEmpty
+        }
+        let cleaned = lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // PASS 3 — full-output semantic match (handles multi-word phrases that
+        // survived line filtering because they were the only line).
+        let fullNormalised = cleaned.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".,!? "))
+        if semanticHallucinations.contains(where: { fullNormalised == $0 }) {
+            return nil
+        }
+
+        // PASS 3b — URL / attribution detection.
+        // Real speech almost never produces a URL. If Whisper outputs www., http,
+        // or a bare domain suffix (.org, .com, .net, .io, .gov), it's a hallucination
+        // from ambient audio (UN videos, podcast ads, YouTube end-cards, etc.).
+        let urlPatterns = ["www.", "http://", "https://", ".com", ".org", ".net", ".io", ".gov", ".edu"]
+        if urlPatterns.contains(where: { cleaned.lowercased().contains($0) }) {
+            #if DEBUG
+            print("[Transcription] sanitise: rejected (URL pattern) — \"\(cleaned)\"")
+            #endif
+            return nil
+        }
+
+        // PASS 3c — media attribution phrases not caught by exact-match above.
+        let attributionPatterns = [
+            "for more", "visit us at", "find us at", "follow us on",
+            "subscribe to our", "check out our", "more videos", "our website",
+            "our channel", "our podcast", "this video was", "this episode was",
+            "produced by", "sponsored by", "brought to you by"
+        ]
+        if attributionPatterns.contains(where: { fullNormalised.contains($0) }) {
+            #if DEBUG
+            print("[Transcription] sanitise: rejected (attribution pattern) — \"\(cleaned)\"")
+            #endif
+            return nil
+        }
+
+        // PASS 4 — word-count gate. Fewer than 5 non-trivial words → almost
+        // certainly hallucination or mic-bumped silence.
+        let words = cleaned.components(separatedBy: .whitespaces).filter { word in
+            let w = word.trimmingCharacters(in: .punctuationCharacters)
+            return w.count >= 2
+        }
+        guard words.count >= 5 else {
+            #if DEBUG
+            print("[Transcription] sanitise: rejected (\(words.count) substantive words) — \"\(cleaned)\"")
+            #endif
+            return nil
+        }
+
+        #if DEBUG
+        print("[Transcription] sanitise: accepted \(words.count) words")
+        #endif
+        return cleaned
+    }
 
     private func callWhisper(audioData: Data) async throws -> String {
         let url = URL(string: whisperURL)!
@@ -429,7 +603,7 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         guard status == 200 else {
             throw NSError(domain: "Whisper", code: status,
-                          userInfo: [NSLocalizedDescriptionKey: responseText])
+                          userInfo: [NSLocalizedDescriptionKey: friendlyError(domain: "Whisper", status: status, body: responseText)])
         }
         return responseText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -462,7 +636,7 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         guard status == 200 else {
             throw NSError(domain: "LLM", code: status,
-                          userInfo: [NSLocalizedDescriptionKey: responseText])
+                          userInfo: [NSLocalizedDescriptionKey: friendlyError(domain: "LLM", status: status, body: responseText)])
         }
 
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]

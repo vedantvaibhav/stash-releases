@@ -22,16 +22,6 @@ enum DesignTokens {
         static let itemGap: CGFloat = 4       // gap between list rows (where non-flush lists are used)
         static let cardGap: CGFloat = 8       // gap between cards
 
-        // Notes selection toolbar.
-        static let toolbarIconSize: CGFloat = 14
-        static let toolbarPadding: CGFloat = 8
-        static let toolbarItemSpacing: CGFloat = 10
-        static let toolbarRowHeight: CGFloat = 34
-        static let toolbarCornerRadius: CGFloat = 12
-    }
-
-    enum Toolbar {
-        static let bg = Color(red: 20/255, green: 20/255, blue: 20/255)
     }
 
     /// Geometry shared by every `StashListRow` caller — clipboard, notes, pinned.

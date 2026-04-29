@@ -122,16 +122,12 @@ struct FileDropListContent: View {
     var body: some View {
         Group {
             if storage.files.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "arrow.down.circle")
-                        .font(.system(size: 32))
-                        .foregroundColor(Color(NSColor.placeholderTextColor))
-                    Text("Drop files here")
-                        .font(.subheadline)
-                        .foregroundColor(Color(NSColor.placeholderTextColor))
-                }
+                PanelEmptyState(
+                    title: "No Files",
+                    subtitle: "Drag and drop your files for quick access"
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(8)
+                .padding(.vertical, 20)
             } else {
                 GeometryReader { geo in
                     fileGrid(availableWidth: geo.size.width)

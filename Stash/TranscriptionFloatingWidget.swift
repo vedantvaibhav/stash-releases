@@ -85,10 +85,13 @@ struct TranscriptionPillView: View {
     /// A service string we don't recognise falls back to a neutral checkmark.
     private func completionSymbol(for message: String) -> String {
         switch message {
-        case "Copied":     return "checkmark"
-        case "Note saved": return "note.text"
-        case "Failed":     return "xmark"
-        default:           return "checkmark"
+        case "Copied":        return "checkmark"
+        case "Note saved":    return "note.text"
+        case "Failed":        return "xmark"
+        case "No audio":      return "mic.slash"
+        case "Copied (raw)":  return "checkmark"
+        case "Saved (raw)":   return "note.text"
+        default:              return "checkmark"
         }
     }
 

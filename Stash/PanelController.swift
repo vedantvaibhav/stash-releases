@@ -183,8 +183,24 @@ final class PanelMouseTrackingView: NSView {
         super.mouseUp(with: event)
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Let subviews get the first shot (buttons, text fields, etc.).
+        // Fall back to self so empty areas can initiate a panel drag.
+        if let hit = super.hitTest(point), hit !== self {
+            return hit
+        }
+        return self
+    }
+
     override var acceptsFirstResponder: Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+// NSHostingView is opaque by default, so mouseDownCanMoveWindow returns false
+// and isMovableByWindowBackground never fires for it. Override to allow the OS
+// to move the window when the user drags on non-interactive areas of the SwiftUI view.
+private final class MovableHostingView: NSHostingView<QuickPanelRootView> {
+    override var mouseDownCanMoveWindow: Bool { true }
 }
 
 /// Manages the sliding content panel.
@@ -223,7 +239,9 @@ final class PanelController: NSObject {
     private let transcriptionFloatingWidget = TranscriptionFloatingWidgetController()
 
     private var contentPanel: KeyablePanel?
-    private var panelHostingController: NSHostingController<QuickPanelRootView>?
+    private var panelHostingView: MovableHostingView?
+    private var snapDragMonitor: Any?
+    private var snapDragStartOrigin: NSPoint?
     private var cardsModeContainer: CardsModeContainerView?
     /// Latest measured cards stack height (including stack edge insets), lower bound 180.
     private var cardsStackHeightCached: CGFloat = 180
@@ -359,6 +377,7 @@ final class PanelController: NSObject {
         if let m = localDragMonitor { NSEvent.removeMonitor(m); localDragMonitor = nil }
         if let m = mouseUpMonitor { NSEvent.removeMonitor(m); mouseUpMonitor = nil }
         if let m = localMouseUpMonitor { NSEvent.removeMonitor(m); localMouseUpMonitor = nil }
+        if let m = snapDragMonitor { NSEvent.removeMonitor(m); snapDragMonitor = nil }
         isDragInProgress = false
         isDraggingIntoPanel = false
     }
@@ -510,6 +529,13 @@ final class PanelController: NSObject {
 
         createContentPanel()
         observeSettings()
+
+        snapDragMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .leftMouseUp]
+        ) { [weak self] event in
+            self?.handleSnapDrag(event)
+            return event
+        }
     }
 
     private func createContentPanel() {
@@ -544,7 +570,7 @@ final class PanelController: NSObject {
             fileGridHover: fileGridHover,
             fileQuickLook: fileQuickLook
         )
-        let hosting = NSHostingController(rootView: root)
+        let hostingView = MovableHostingView(rootView: root)
 
         let cardsView = CardsModeContainerView(
             clipboard: clipboardManager,
@@ -567,17 +593,17 @@ final class PanelController: NSObject {
         container.autoresizingMask = [.width, .height]
         container.panelController = self
 
-        hosting.view.translatesAutoresizingMaskIntoConstraints = false
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
         cardsView.translatesAutoresizingMaskIntoConstraints = false
         // Cards below, SwiftUI hosting on top — avoids any compositing oddities when cards are hidden.
         container.addSubview(cardsView)
-        container.addSubview(hosting.view)
+        container.addSubview(hostingView)
 
         NSLayoutConstraint.activate([
-            hosting.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hosting.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            hosting.view.topAnchor.constraint(equalTo: container.topAnchor),
-            hosting.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            hostingView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: container.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
             cardsView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             cardsView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -587,8 +613,9 @@ final class PanelController: NSObject {
 
         updateCardsVsPanelHostingVisibility()
 
+        panel.isMovableByWindowBackground = true
         panel.contentView = container
-        panelHostingController = hosting
+        panelHostingView = hostingView
         contentPanel = panel
 
         applyPanelChromeForLayoutStyle()
@@ -597,7 +624,7 @@ final class PanelController: NSObject {
     private func updateCardsVsPanelHostingVisibility() {
         let showAuthGate = !AuthService.shared.isSignedIn
         let cards = isCardsLayout && !showAuthGate
-        panelHostingController?.view.isHidden = cards
+        panelHostingView?.isHidden = cards
         cardsModeContainer?.isHidden = !cards || showAuthGate
     }
 
@@ -641,7 +668,7 @@ final class PanelController: NSObject {
         updateCardsVsPanelHostingVisibility()
         contentView.wantsLayer = true
 
-        let hostingView = panelHostingController?.view
+        let hostingView = panelHostingView
 
         if isCardsLayout {
             panel.isOpaque = false
@@ -832,6 +859,27 @@ final class PanelController: NSObject {
     func togglePanel() {
         guard let panel = contentPanel else { return }
         if panel.isVisible { hidePanel() } else { showPanel() }
+    }
+
+    private func handleSnapDrag(_ event: NSEvent) {
+        guard let panel = contentPanel, event.window === panel else { return }
+        switch event.type {
+        case .leftMouseDown:
+            snapDragStartOrigin = panel.frame.origin
+        case .leftMouseUp:
+            guard let start = snapDragStartOrigin else { return }
+            snapDragStartOrigin = nil
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let panel = self.contentPanel else { return }
+                let moved = hypot(
+                    panel.frame.origin.x - start.x,
+                    panel.frame.origin.y - start.y
+                ) > 4
+                if moved { self.snapToNearestZone() }
+            }
+        default:
+            break
+        }
     }
 
     /// Called by `PanelMouseTrackingView` after a drag ends.
