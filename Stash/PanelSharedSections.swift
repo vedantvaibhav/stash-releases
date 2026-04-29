@@ -1,6 +1,38 @@
 import AppKit
 import SwiftUI
 
+// MARK: - Empty state
+
+struct PanelEmptyState: View {
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image("empty-state-icon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 24, height: 24)
+                .foregroundColor(Color.white.opacity(0.25))
+
+            VStack(spacing: 6) {
+                Text(title)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(Color.white.opacity(0.35))
+                    .multilineTextAlignment(.center)
+
+                Text(subtitle)
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(Color.white.opacity(0.25))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity)
+    }
+}
+
 // MARK: - Panel UI tokens (All tab, Clipboard, Notes — one visual language)
 
 /// Section labels: "Pinned", "Recent Files", "Recent Notes", and date groups in the Notes list.
@@ -203,6 +235,13 @@ struct SharedClipboardColumn: View {
         let unpinned = all.filter { !$0.isPinned }
 
         ZStack(alignment: .bottom) {
+            if pinned.isEmpty && unpinned.isEmpty {
+                PanelEmptyState(
+                    title: "Nothing copied yet",
+                    subtitle: "Copy any text and it'll appear here"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
             VStack(alignment: .leading, spacing: 0) {
                 // Pinned cards section
                 if !pinned.isEmpty {
@@ -221,6 +260,7 @@ struct SharedClipboardColumn: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             // Toast overlay
             if let toast = clipboard.transientMessage {
@@ -516,14 +556,11 @@ struct SharedNotesColumn: View {
             VStack(alignment: .leading, spacing: 0) {
                 // List or empty state
                 if notesStorage.notes.isEmpty {
-                    VStack(spacing: 8) {
-                        Spacer()
-                        Text("No notes yet")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity)
+                    PanelEmptyState(
+                        title: "No notes yet",
+                        subtitle: "Write a note or transcribe your next meeting"
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     let listed: [NoteItem] = {
                         guard let cap = maxListNotes else { return notesStorage.notes }
@@ -680,24 +717,26 @@ struct SharedNotesColumn: View {
             HStack(alignment: .center, spacing: 8) {
                 HeaderIconButton(
                     icon: .system("chevron.left"),
-                    iconColor: DesignTokens.Icon.tintMuted
+                    iconColor: DesignTokens.Icon.tintMuted,
+                    size: 26
                 ) {
                     notesStorage.refreshNotes()
                     editingNoteId = nil
                 }
 
-                Spacer()
-
                 if showTabs {
-                    HStack(spacing: 2) {
+                    HStack(spacing: 16) {
                         noteTabButton("Overview", tab: .overview)
                         noteTabButton("Transcript", tab: .transcript)
                     }
                 }
 
+                Spacer()
+
                 HeaderIconButton(
                     icon: .system(noteCopyFeedback ? "checkmark" : "doc.on.doc"),
-                    iconColor: noteCopyFeedback ? .green : DesignTokens.Icon.tintMuted
+                    iconColor: noteCopyFeedback ? .green : DesignTokens.Icon.tintMuted,
+                    size: 26
                 ) {
                     let text = notesStorage.loadNote(id: noteId)
                     NSPasteboard.general.clearContents()
@@ -729,12 +768,9 @@ struct SharedNotesColumn: View {
     private func noteTabButton(_ label: String, tab: NoteEditorTab) -> some View {
         Button(label) { selectedNoteTab = tab }
             .buttonStyle(.plain)
-            .font(.system(size: 12, weight: selectedNoteTab == tab ? .semibold : .regular))
-            .foregroundColor(selectedNoteTab == tab ? .white : .white.opacity(0.35))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(selectedNoteTab == tab ? Color.white.opacity(0.10) : Color.clear)
-            .cornerRadius(5)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(selectedNoteTab == tab ? .white : .white.opacity(0.28))
+            .padding(.horizontal, 4)
     }
 
     private func noteSectionScrollView(_ text: String) -> some View {
@@ -931,21 +967,27 @@ struct AllCombinedView: View {
                             .font(PanelSectionHeaderStyle.font)
                             .foregroundStyle(PanelSectionHeaderStyle.foreground)
 
-                        if pinnedEntries.count <= 3 {
-                            HStack(spacing: 8) {
+                        if pinnedEntries.count <= 6 {
+                            LazyVGrid(
+                                columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())],
+                                spacing: 8
+                            ) {
                                 ForEach(pinnedEntries) { entry in
                                     AllPinnedCard(entry: entry, clipboard: clipboard)
                                 }
                             }
                         } else {
                             ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
+                                LazyHGrid(
+                                    rows: [GridItem(.flexible(minimum: 34)), GridItem(.flexible(minimum: 34))],
+                                    spacing: 8
+                                ) {
                                     ForEach(pinnedEntries) { entry in
                                         AllPinnedCard(entry: entry, clipboard: clipboard)
-                                            .frame(width: 180)
                                     }
                                 }
                             }
+                            .frame(height: 96)
                         }
                     }
                 }
@@ -1024,15 +1066,12 @@ struct AllCombinedView: View {
                 }
 
                 if isEmpty {
-                    VStack(spacing: 8) {
-                        Spacer()
-                        Text("Nothing here yet")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                    }
+                    PanelEmptyState(
+                        title: "Nothing here yet",
+                        subtitle: "Copy text, drop a file, or transcribe your next meeting"
+                    )
                     .frame(maxWidth: .infinity)
-                    .padding(.top, 60)
+                    .padding(.top, 80)
                 }
             }
         }

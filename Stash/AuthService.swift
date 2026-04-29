@@ -11,7 +11,10 @@ import CryptoKit
 //
 // ⚠️ Manual step — Supabase dashboard:
 // In Supabase → Authentication → URL Configuration → Redirect URLs, ensure
-// "quickpanel://auth/callback" is listed. This cannot be changed from code.
+// "https://vedantvaibhav.github.io/stash-releases/auth/success" is listed.
+// (NOT "quickpanel://auth/callback" — that deep link is produced by the success
+// page's JavaScript AFTER Supabase validates the redirect. Supabase only checks
+// the redirect_to value, which is the GitHub Pages URL above.)
 @MainActor
 final class AuthService: ObservableObject {
 

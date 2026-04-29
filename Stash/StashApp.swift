@@ -24,6 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var globalHotKey: GlobalHotKey?
     private var quickRecordHotKey: GlobalHotKey?
     private var hotkeyObserver: NSObjectProtocol?
+    private var quickRecordHotkeyObserver: NSObjectProtocol?
+    private var doubleTapObserver: NSObjectProtocol?
+    private var doubleTapMonitor: Any?
+    private var doubleTapPressTime: Date?
+    private var doubleTapLastTapTime: Date?
     private let updaterManager = UpdaterManager()
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -75,8 +80,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         panelController = PanelController()
 
-        // Register hotkey immediately (pressing it during onboarding is a no-op since the
-        // panel isn't set up yet, but recording a new hotkey on slide 2 still updates prefs).
         registerHotkeyFromSettings()
 
         hotkeyObserver = NotificationCenter.default.addObserver(
@@ -87,29 +90,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.registerHotkeyFromSettings()
         }
 
-        // Check for a stored Supabase session; if found and onboarding was already
-        // completed, skip onboarding and open the panel directly.
+        quickRecordHotkeyObserver = NotificationCenter.default.addObserver(
+            forName: .quickRecordHotkeyChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.registerHotkeyFromSettings()
+        }
+
+        doubleTapObserver = NotificationCenter.default.addObserver(
+            forName: .doubleTapQuickRecordChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.installDoubleTapMonitor() }
+
+        panelController?.setup()
+
+        installDoubleTapMonitor()
+
         Task {
             await AuthService.shared.checkSession()
-            if AuthService.shared.isSignedIn &&
-               UserDefaults.standard.bool(forKey: "onboardingCompleted") {
-                panelController?.setup()
-            } else {
-                // Show onboarding on first launch; set up the panel only after it
-                // completes so the main QuickPanel never opens during onboarding.
-                OnboardingManager.shared.showIfNeeded { [weak self] in
-                    self?.panelController?.setup()
-                }
-            }
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         globalHotKey?.unregister()
         quickRecordHotKey?.unregister()
-        if let obs = hotkeyObserver {
-            NotificationCenter.default.removeObserver(obs)
-        }
+        if let obs = hotkeyObserver { NotificationCenter.default.removeObserver(obs) }
+        if let obs = quickRecordHotkeyObserver { NotificationCenter.default.removeObserver(obs) }
+        if let obs = doubleTapObserver { NotificationCenter.default.removeObserver(obs) }
+        if let m = doubleTapMonitor { NSEvent.removeMonitor(m); doubleTapMonitor = nil }
     }
 
     // MARK: - Hotkey registration
@@ -124,24 +134,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         _ = globalHotKey?.register()
 
-        // ⌘⇧R — quick record without opening the panel — signature 'QPRK'
+        // Quick record — 0xFFFE = double-tap sentinel (handled by installDoubleTapMonitor),
+        // 0 = never configured. Neither needs a Carbon hotkey.
         quickRecordHotKey?.unregister()
-        quickRecordHotKey = GlobalHotKey(keyCode: UInt32(kVK_ANSI_R),
-                                         modifiers: UInt32(cmdKey | shiftKey),
-                                         signature: 0x51_50_52_4B) { [weak self] in
-            guard let ts = self?.panelController?.transcriptionService else { return }
-            if ts.isRecording {
-                ts.stopRecording()
+        quickRecordHotKey = nil
+        let qrCode = s.quickRecordHotKeyCode
+        if qrCode != 0xFFFE && qrCode != 0 {
+            let qrMods = s.quickRecordHotKeyModifiers
+            quickRecordHotKey = GlobalHotKey(keyCode: qrCode,
+                                             modifiers: qrMods,
+                                             signature: 0x51_50_52_4B) { [weak self] in
+                guard let ts = self?.panelController?.transcriptionService else { return }
+                if ts.isRecording {
+                    ts.stopRecording()
+                } else {
+                    guard AuthService.shared.isSignedIn else {
+                        self?.panelController?.showPanel()
+                        return
+                    }
+                    ts.startRecording()
+                }
+            }
+            _ = quickRecordHotKey?.register()
+        }
+    }
+
+    // MARK: - Double-tap monitor
+
+    private func installDoubleTapMonitor() {
+        if let m = doubleTapMonitor { NSEvent.removeMonitor(m); doubleTapMonitor = nil }
+        doubleTapPressTime = nil
+        doubleTapLastTapTime = nil
+
+        let setting = AppSettings.shared.doubleTapQuickRecord
+        guard setting != .off else { return }
+        let targetFlag: NSEvent.ModifierFlags
+        switch setting {
+        case .command: targetFlag = .command
+        case .option:  targetFlag = .option
+        case .control: targetFlag = .control
+        case .shift:   targetFlag = .shift
+        case .off:     return
+        }
+
+        doubleTapMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            guard let self else { return }
+            let isDown = event.modifierFlags.intersection(targetFlag) == targetFlag
+            let now = Date()
+
+            if isDown {
+                self.doubleTapPressTime = now
             } else {
-                guard AuthService.shared.isSignedIn else {
-                    self?.panelController?.showPanel()
+                guard let pressTime = self.doubleTapPressTime,
+                      now.timeIntervalSince(pressTime) < 0.35 else {
+                    self.doubleTapPressTime = nil
+                    self.doubleTapLastTapTime = nil
                     return
                 }
-                ts.startRecording()
-                // Panel stays hidden — pill appears automatically
+                self.doubleTapPressTime = nil
+
+                if let lastTap = self.doubleTapLastTapTime,
+                   now.timeIntervalSince(lastTap) < 0.45 {
+                    self.doubleTapLastTapTime = nil
+                    DispatchQueue.main.async { self.handleDoubleTapTrigger() }
+                } else {
+                    self.doubleTapLastTapTime = now
+                }
             }
         }
-        _ = quickRecordHotKey?.register()
+    }
+
+    @MainActor
+    private func handleDoubleTapTrigger() {
+        guard let ts = panelController?.transcriptionService else { return }
+        if ts.isRecording {
+            ts.stopRecording()
+        } else {
+            guard AuthService.shared.isSignedIn else {
+                panelController?.showPanel()
+                return
+            }
+            ts.startRecording()
+        }
     }
 
     // MARK: - Status item setup
@@ -165,9 +239,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if event.type == .rightMouseDown {
             showStatusMenu()
-        } else {
-            panelController?.togglePanel()
+            return
         }
+
+        panelController?.togglePanel()
     }
 
     // MARK: - Right-click context menu

@@ -10,6 +10,7 @@ enum IconSource {
 struct HeaderIconButton: View {
     let icon: IconSource
     let iconColor: Color
+    var size: CGFloat = 32
     let action: () -> Void
     var isActive: Bool = false
     var activeBackgroundColor: Color = Color.clear
@@ -20,7 +21,7 @@ struct HeaderIconButton: View {
         Button(action: action) {
             iconView
                 .foregroundColor(iconColor)
-                .frame(width: 28, height: 28)
+                .frame(width: size - 4, height: size - 4)
                 .background(
                     Circle()
                         .fill(backgroundColor)
@@ -32,7 +33,7 @@ struct HeaderIconButton: View {
                 isHovering = hovering
             }
         }
-        .frame(width: 32, height: 32)
+        .frame(width: size, height: size)
     }
 
     @ViewBuilder
@@ -40,12 +41,12 @@ struct HeaderIconButton: View {
         switch icon {
         case .system(let name):
             Image(systemName: name)
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: size * 0.44, weight: .medium))
         case .asset(let name):
             Image(name)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 16, height: 16)
+                .frame(width: size * 0.5, height: size * 0.5)
         }
     }
 

@@ -1,6 +1,9 @@
 import AppKit
-import Combine
 import SwiftUI
+
+enum HeadingLevel: Equatable {
+    case paragraph, h1, h2, h3
+}
 
 // MARK: - Rich single-note editor (NSTextView + RTF)
 
@@ -54,34 +57,6 @@ struct SingleNoteEditorView: NSViewRepresentable {
         context.coordinator.noteId = noteId
         context.coordinator.notesStorage = notesStorage
         context.coordinator.textView = textView
-        context.coordinator.toolbarController.attach(to: textView)
-        context.coordinator.installKeyboardShortcuts()
-
-        context.coordinator.toolbarController.onCommand = { [weak coordinator = context.coordinator] command in
-            guard let coordinator else { return }
-            switch command {
-            case .bold:          coordinator.applyBold()
-            case .italic:        coordinator.applyItalic()
-            case .underline:     coordinator.applyUnderline()
-            case .strikethrough: coordinator.applyStrikethrough()
-            case .inlineCode:    coordinator.applyInlineCode()
-            case .heading(let level):
-                coordinator.applyHeading(level)
-            case .link:
-                let initial = coordinator.currentSelectionURL()
-                coordinator.toolbarController.presentLinkPopover(initialURL: initial) { url in
-                    coordinator.applyLink(url)
-                }
-            case .color, .more:  break    // v1 stubs
-            }
-        }
-
-        NotificationCenter.default
-            .publisher(for: NSTextView.didEndEditingNotification, object: textView)
-            .sink { [weak coordinator = context.coordinator] _ in
-                coordinator?.toolbarController.hide()
-            }
-            .store(in: &context.coordinator.notificationSubscriptions)
 
         context.coordinator.boundNoteId = noteId
         context.coordinator.didRequestFocus = false
@@ -145,14 +120,11 @@ struct SingleNoteEditorView: NSViewRepresentable {
         var noteId: String = ""
         var notesStorage: NotesStorage!
         weak var textView: NSTextView?
-        let toolbarController = NotesSelectionToolbarController()
-        var notificationSubscriptions: Set<AnyCancellable> = []
         var boundNoteId: String = ""
         var didRequestFocus = false
         var isApplyingBulkChange = false
         private var loadGeneration = 0
         private weak var placeholderField: NSTextField?
-        private var keyMonitor: Any?
 
         func scheduleLoad(noteId: String, storage: NotesStorage) {
             loadGeneration += 1
@@ -181,17 +153,6 @@ struct SingleNoteEditorView: NSViewRepresentable {
                 textView.window?.makeFirstResponder(textView)
                 self.didRequestFocus = true
             }
-        }
-
-        func textViewDidChangeSelection(_ notification: Notification) {
-            // Skip while `scheduleLoad` is wiping + setting the text storage —
-            // selection notifications fire during that transition but the glyph
-            // layout hasn't been regenerated yet, so `boundingRect(forGlyphRange:)`
-            // in the controller's positioning code would query an invalidated
-            // layout manager.
-            if isApplyingBulkChange { return }
-            toolbarController.syncWithSelection()
-            toolbarController.updateActiveState(currentActiveFormatsSnapshot())
         }
 
         func textDidChange(_ notification: Notification) {
@@ -325,67 +286,6 @@ struct SingleNoteEditorView: NSViewRepresentable {
             notesStorage.saveNoteAttributed(id: noteId, attributed: tv.attributedString())
         }
 
-        func currentSelectionURL() -> String? {
-            guard let tv = textView, let storage = tv.textStorage else { return nil }
-            let range = tv.selectedRange()
-            guard range.location < storage.length else { return nil }
-            if let url = storage.attribute(.link, at: range.location, effectiveRange: nil) as? URL {
-                return url.absoluteString
-            }
-            return nil
-        }
-
-        func currentActiveFormatsSnapshot() -> NotesSelectionToolbarState.Snapshot {
-            guard let tv = textView, let storage = tv.textStorage else {
-                return .init()
-            }
-            let range = tv.selectedRange()
-
-            // Empty selection — read typing attributes.
-            let attributes: [NSAttributedString.Key: Any]
-            if range.length == 0 {
-                attributes = tv.typingAttributes
-            } else if range.location < storage.length {
-                attributes = storage.attributes(at: range.location, effectiveRange: nil)
-            } else {
-                attributes = tv.typingAttributes
-            }
-
-            var formats: Set<TextFormat> = []
-            if let font = attributes[.font] as? NSFont {
-                let traits = font.fontDescriptor.symbolicTraits
-                if traits.contains(.bold)      { formats.insert(.bold) }
-                if traits.contains(.italic)    { formats.insert(.italic) }
-                // Inline-code detection mirrors the apply path — gates on the
-                // monospaced font trait, which survives RTF round-trip.
-                if traits.contains(.monoSpace) { formats.insert(.inlineCode) }
-            }
-            if let u = attributes[.underlineStyle] as? Int, u != 0 {
-                formats.insert(.underline)
-            }
-            if let s = attributes[.strikethroughStyle] as? Int, s != 0 {
-                formats.insert(.strikethrough)
-            }
-            if attributes[.link] != nil {
-                formats.insert(.link)
-            }
-
-            // Heading detection — read the font size.
-            let heading: HeadingLevel
-            if let font = attributes[.font] as? NSFont {
-                switch font.pointSize {
-                case DesignTokens.Typography.h1NSFont.pointSize: heading = .h1
-                case DesignTokens.Typography.h2NSFont.pointSize: heading = .h2
-                case DesignTokens.Typography.h3NSFont.pointSize: heading = .h3
-                default:                                          heading = .paragraph
-                }
-            } else {
-                heading = .paragraph
-            }
-
-            return .init(activeFormats: formats, heading: heading)
-        }
-
         func applyHeading(_ level: HeadingLevel) {
             ensureFirstResponder()
             guard let tv = textView, let storage = tv.textStorage else { return }
@@ -469,50 +369,6 @@ struct SingleNoteEditorView: NSViewRepresentable {
             case .boldFontMask:   return .bold
             case .italicFontMask: return .italic
             default:              return []
-            }
-        }
-
-        /// Note on coexistence with the Escape monitor in
-        /// `NotesSelectionToolbarController` and the link-popover monitor in
-        /// `presentLinkPopover`: all three subscribe to `.keyDown` and return
-        /// `nil` only for events they actually handle (Escape → keyCode 53;
-        /// these shortcuts → ⌘-modified b/i/u/k). Unmatched events pass
-        /// through, so monitors compose cleanly — do not make this monitor
-        /// return `nil` unconditionally.
-        func installKeyboardShortcuts() {
-            guard keyMonitor == nil else { return }
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard let self, let tv = self.textView else { return event }
-                // Only intercept events targeted at our text view.
-                guard tv.window?.firstResponder === tv else { return event }
-                guard event.modifierFlags.contains(.command) else { return event }
-
-                let chars = event.charactersIgnoringModifiers?.lowercased()
-                switch chars {
-                case "b": self.applyBold();      return nil
-                case "i": self.applyItalic();    return nil
-                case "u": self.applyUnderline(); return nil
-                case "k":
-                    let initial = self.currentSelectionURL()
-                    self.toolbarController.presentLinkPopover(initialURL: initial) { url in
-                        self.applyLink(url)
-                    }
-                    return nil
-                default:  return event
-                }
-            }
-        }
-
-        func removeKeyboardShortcuts() {
-            if let monitor = keyMonitor {
-                NSEvent.removeMonitor(monitor)
-                keyMonitor = nil
-            }
-        }
-
-        deinit {
-            if let monitor = keyMonitor {
-                NSEvent.removeMonitor(monitor)
             }
         }
 

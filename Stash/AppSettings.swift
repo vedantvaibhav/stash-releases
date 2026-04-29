@@ -9,7 +9,8 @@ extension Notification.Name {
     static let quickPanelClearClipboard     = Notification.Name("QuickPanelClearClipboard")
     static let quickPanelClearNotes         = Notification.Name("QuickPanelClearNotes")
     static let quickPanelClearDroppedFiles  = Notification.Name("QuickPanelClearDroppedFiles")
-    static let quickRecordHotkeyChanged    = Notification.Name("quickRecordHotkeyChanged")
+    static let quickRecordHotkeyChanged     = Notification.Name("quickRecordHotkeyChanged")
+    static let doubleTapQuickRecordChanged  = Notification.Name("DoubleTapQuickRecordChanged")
     static let authCompleted                = Notification.Name("AuthCompleted")
 }
 
@@ -21,6 +22,26 @@ enum QuickPanelLayoutStyle: String, CaseIterable, Identifiable {
     /// Three stacked frosted cards that expand on hover.
     case cards
     var id: String { rawValue }
+}
+
+// MARK: - Double-tap quick record
+
+enum DoubleTapQuickRecord: String, CaseIterable {
+    case off     = "off"
+    case command = "command"
+    case option  = "option"
+    case control = "control"
+    case shift   = "shift"
+
+    var label: String {
+        switch self {
+        case .off:     return "Off"
+        case .command: return "Double ⌘"
+        case .option:  return "Double ⌥"
+        case .control: return "Double ⌃"
+        case .shift:   return "Double ⇧"
+        }
+    }
 }
 
 // MARK: - Shared settings store
@@ -71,6 +92,12 @@ final class AppSettings: ObservableObject {
         didSet { ud.set(Double(panelHeight), forKey: Keys.panelHeight) }
     }
 
+    // MARK: Double-tap quick record
+
+    @Published var doubleTapQuickRecord: DoubleTapQuickRecord {
+        didSet { ud.set(doubleTapQuickRecord.rawValue, forKey: Keys.doubleTapQuickRecord) }
+    }
+
     // MARK: Launch at login
 
     @Published var launchAtLogin: Bool {
@@ -87,10 +114,10 @@ final class AppSettings: ObservableObject {
         hotKeyModifiers = UInt32(savedMods ?? (cmdKey | shiftKey))
 
         let savedQRCode = ud.object(forKey: Keys.quickRecordHotKeyCode) as? Int
-        quickRecordHotKeyCode = UInt32(savedQRCode ?? 0)
+        quickRecordHotKeyCode = UInt32(savedQRCode ?? kVK_ANSI_R)
 
         let savedQRMods = ud.object(forKey: Keys.quickRecordHotKeyModifiers) as? Int
-        quickRecordHotKeyModifiers = UInt32(savedQRMods ?? 0)
+        quickRecordHotKeyModifiers = UInt32(savedQRMods ?? (cmdKey | shiftKey))
 
         let savedHide = ud.object(forKey: Keys.autoHideSeconds) as? Double
         autoHideSeconds = savedHide ?? 7.0
@@ -103,6 +130,9 @@ final class AppSettings: ObservableObject {
 
         let savedLogin = ud.object(forKey: Keys.launchAtLogin) as? Bool
         launchAtLogin = savedLogin ?? false
+
+        let savedDTQR = ud.string(forKey: Keys.doubleTapQuickRecord) ?? "off"
+        doubleTapQuickRecord = DoubleTapQuickRecord(rawValue: savedDTQR) ?? .off
 
         if let raw = ud.string(forKey: Keys.layoutStyle),
            let style = QuickPanelLayoutStyle(rawValue: raw) {
@@ -122,6 +152,7 @@ final class AppSettings: ObservableObject {
         static let launchAtLogin              = "qp.launchAtLogin"
         static let quickRecordHotKeyCode      = "qp.quickRecordHotKeyCode"
         static let quickRecordHotKeyModifiers = "qp.quickRecordHotKeyModifiers"
+        static let doubleTapQuickRecord       = "qp.doubleTapQuickRecord"
     }
 }
 

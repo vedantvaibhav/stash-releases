@@ -23,7 +23,6 @@
 		A10000000000000000000010 /* PanelSharedSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* PanelSharedSections.swift */; };
 		A10000000000000000000013 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* TranscriptionService.swift */; };
 		A10000000000000000000014 /* TranscriptionFloatingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* TranscriptionFloatingWidget.swift */; };
-		A10000000000000000000015 /* Onboarding.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* Onboarding.swift */; };
 		A10000000000000000000016 /* SupabaseConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* SupabaseConfig.swift */; };
 		A10000000000000000000017 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* AuthService.swift */; };
 		A10000000000000000000018 /* AppUser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* AppUser.swift */; };
@@ -32,10 +31,7 @@
 		A10000000000000000000023 /* APIConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000023 /* APIConstants.swift */; };
 		A10000000000000000000024 /* HeaderIconButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000024 /* HeaderIconButton.swift */; };
 		A10000000000000000000025 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000025 /* DesignTokens.swift */; };
-		A10000000000000000000026 /* NotesSelectionToolbarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000026 /* NotesSelectionToolbarController.swift */; };
-		A10000000000000000000027 /* NotesSelectionToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000027 /* NotesSelectionToolbar.swift */; };
 		A10000000000000000000028 /* NotesInlineCodeLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */; };
-		A10000000000000000000029 /* NotesLinkPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000029 /* NotesLinkPopover.swift */; };
 		B8D39FF84C5D46CFF64B16CC /* FileQuickLookController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD725516AE9C99F850F9EEAB /* FileQuickLookController.swift */; };
 		FC63C6E92F82656000B67359 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = FC63C6E82F82656000B67359 /* Sparkle */; };
 		FC63C6EB2F8266DB00B67359 /* UpdaterManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC63C6EA2F8266DB00B67359 /* UpdaterManager.swift */; };
@@ -61,7 +57,6 @@
 		A20000000000000000000010 /* PanelSharedSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelSharedSections.swift; sourceTree = "<group>"; };
 		A20000000000000000000013 /* TranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionService.swift; sourceTree = "<group>"; };
 		A20000000000000000000014 /* TranscriptionFloatingWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionFloatingWidget.swift; sourceTree = "<group>"; };
-		A20000000000000000000015 /* Onboarding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Onboarding.swift; sourceTree = "<group>"; };
 		A20000000000000000000016 /* SupabaseConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseConfig.swift; sourceTree = "<group>"; };
 		A20000000000000000000017 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		A20000000000000000000018 /* AppUser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUser.swift; sourceTree = "<group>"; };
@@ -71,10 +66,7 @@
 		A20000000000000000000024 /* HeaderIconButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeaderIconButton.swift; sourceTree = "<group>"; };
 		A20000000000000000000025 /* DesignTokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTokens.swift; sourceTree = "<group>"; };
 		A30000000000000000000001 /* Stash.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Stash.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A20000000000000000000026 /* NotesSelectionToolbarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesSelectionToolbarController.swift; sourceTree = "<group>"; };
-		A20000000000000000000027 /* NotesSelectionToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesSelectionToolbar.swift; sourceTree = "<group>"; };
 		A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesInlineCodeLayoutManager.swift; sourceTree = "<group>"; };
-		A20000000000000000000029 /* NotesLinkPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesLinkPopover.swift; sourceTree = "<group>"; };
 		DD725516AE9C99F850F9EEAB /* FileQuickLookController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FileQuickLookController.swift; sourceTree = "<group>"; };
 		FC63C6EA2F8266DB00B67359 /* UpdaterManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdaterManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -125,17 +117,13 @@
 				A20000000000000000000025 /* DesignTokens.swift */,
 				A20000000000000000000013 /* TranscriptionService.swift */,
 				A20000000000000000000014 /* TranscriptionFloatingWidget.swift */,
-				A20000000000000000000015 /* Onboarding.swift */,
 				A20000000000000000000016 /* SupabaseConfig.swift */,
 				A20000000000000000000017 /* AuthService.swift */,
 				A20000000000000000000018 /* AppUser.swift */,
 				A20000000000000000000004 /* Info.plist */,
 				A20000000000000000000003 /* Assets.xcassets */,
 				DD725516AE9C99F850F9EEAB /* FileQuickLookController.swift */,
-				A20000000000000000000026 /* NotesSelectionToolbarController.swift */,
-				A20000000000000000000027 /* NotesSelectionToolbar.swift */,
 				A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */,
-				A20000000000000000000029 /* NotesLinkPopover.swift */,
 			);
 			path = Stash;
 			sourceTree = "<group>";
@@ -246,7 +234,6 @@
 				A10000000000000000000010 /* PanelSharedSections.swift in Sources */,
 				A10000000000000000000013 /* TranscriptionService.swift in Sources */,
 				A10000000000000000000014 /* TranscriptionFloatingWidget.swift in Sources */,
-				A10000000000000000000015 /* Onboarding.swift in Sources */,
 				A10000000000000000000016 /* SupabaseConfig.swift in Sources */,
 				A10000000000000000000017 /* AuthService.swift in Sources */,
 				A10000000000000000000018 /* AppUser.swift in Sources */,
@@ -254,10 +241,7 @@
 				A10000000000000000000024 /* HeaderIconButton.swift in Sources */,
 				A10000000000000000000025 /* DesignTokens.swift in Sources */,
 				B8D39FF84C5D46CFF64B16CC /* FileQuickLookController.swift in Sources */,
-				A10000000000000000000026 /* NotesSelectionToolbarController.swift in Sources */,
-				A10000000000000000000027 /* NotesSelectionToolbar.swift in Sources */,
 				A10000000000000000000028 /* NotesInlineCodeLayoutManager.swift in Sources */,
-				A10000000000000000000029 /* NotesLinkPopover.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

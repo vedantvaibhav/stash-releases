@@ -41,7 +41,7 @@ Sign-in is required (Supabase + Google OAuth PKCE). Auto-updates via Sparkle. Tw
   3. Status item (menu-bar icon) — left-click toggles panel, right-click opens a context menu.
   4. Global hotkeys — main panel toggle (default ⌘⇧Space) and quick-record (⌘⇧R).
   5. `PanelController` — the panel window.
-  6. Session restore via `AuthService.shared.checkSession()`; then either open the panel or run onboarding.
+  6. Session restore via `AuthService.shared.checkSession()`; then calls `PanelController.setup()` directly.
 
 **User interactions reach the app through:**
 
@@ -72,8 +72,7 @@ Sign-in is required (Supabase + Google OAuth PKCE). Auto-updates via Sparkle. Tw
 | Meeting transcription — record + pipeline | `TranscriptionService.swift` |
 | Floating transcription pill (Recording / Processing / Copied) | `TranscriptionFloatingWidget.swift` |
 | Auth (Supabase + Google OAuth PKCE, session restore) | `AuthService.swift`, `AppUser.swift`, `SupabaseConfig.swift` |
-| First-run onboarding (5 slides) | `Onboarding.swift` |
-| Settings window (hotkey recorder, layout, auto-hide, clear data) | `SettingsView.swift`, `AppSettings.swift` |
+| Settings window (hotkey recorder, auto-hide, launch at login, clear data) | `SettingsView.swift`, `AppSettings.swift` |
 | Global hotkey registration (Carbon) | `GlobalHotKey.swift` |
 | Sparkle auto-updates | `UpdaterManager.swift`, `appcast.xml` |
 | API-key resolution + provider detection | `APIKeys.swift`, `APIConstants.swift` |
@@ -102,7 +101,6 @@ _Alphabetical. All Swift files live under `Stash/`._
 - **`Info.plist`** — Bundle config. `LSUIElement = true`, URL scheme, Sparkle `SUPublicEDKey`, `SUFeedURL`.
 - **`NotesEditorView.swift`** — `NSTextView` + RTF single-note editor with a compact formatting bar.
 - **`NotesStorage.swift`** — `ObservableObject`. `NoteItem` model (id, content, timestamps, origin) with `NoteOrigin` distinguishing manual vs from-transcription notes. RTF round-trip.
-- **`Onboarding.swift`** — First-run flow: Welcome → Hotkey → Microphone → Launch at Login → Google Sign In. Managed by `OnboardingManager.shared.showIfNeeded`. `OnboardingHotkeyRecorder` mirrors the one in `SettingsView`.
 - **`PanelController.swift`** — Core (~1,250 lines). Owns `KeyablePanel` (NSPanel subclass that can become key so text fields work), `PanelSnapZone` enum, `PanelMouseTrackingView`, drag tracking, auto-hide idle timer, and the `NSHostingView` wrapping `QuickPanelRootView`. Wires together clipboard, notes, files, transcription, and auth gate. The `onNoteCreated` callback is owned here — do not override it elsewhere.
 - **`PanelSharedSections.swift`** — Reusable column views consumed by both panel and cards layouts: clipboard column, pinned cards, notes column + list, files column, transcription page, "All" tab combined view. Also shared visual tokens (`PanelSectionHeaderStyle`, etc.).
 - **`Secrets.example.plist`** — Template for the gitignored `Secrets.plist`. Lists expected key names only — no real values.
@@ -131,9 +129,8 @@ QuickPanelApp (@main)
       • setupStatusItem()
       • PanelController()
       • registerHotkeyFromSettings()
+      • PanelController.setup()
       • Task { await AuthService.shared.checkSession() }
-        ├─ signed in + onboardingCompleted → PanelController.setup()
-        └─ else → OnboardingManager.shared.showIfNeeded { panelController.setup() }
 ```
 
 **Panel toggle (hotkey or status-item click)**
