@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var quickRecordHotkeyObserver: NSObjectProtocol?
     private var doubleTapObserver: NSObjectProtocol?
     private var doubleTapMonitor: Any?
+    private var doubleTapLocalMonitor: Any?
     private var doubleTapPressTime: Date?
     private var doubleTapLastTapTime: Date?
     private let updaterManager = UpdaterManager()
@@ -120,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let obs = quickRecordHotkeyObserver { NotificationCenter.default.removeObserver(obs) }
         if let obs = doubleTapObserver { NotificationCenter.default.removeObserver(obs) }
         if let m = doubleTapMonitor { NSEvent.removeMonitor(m); doubleTapMonitor = nil }
+        if let m = doubleTapLocalMonitor { NSEvent.removeMonitor(m); doubleTapLocalMonitor = nil }
     }
 
     // MARK: - Hotkey registration
@@ -163,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installDoubleTapMonitor() {
         if let m = doubleTapMonitor { NSEvent.removeMonitor(m); doubleTapMonitor = nil }
+        if let m = doubleTapLocalMonitor { NSEvent.removeMonitor(m); doubleTapLocalMonitor = nil }
         doubleTapPressTime = nil
         doubleTapLastTapTime = nil
 
@@ -177,11 +180,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .off:     return
         }
 
-        doubleTapMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+        let handler: (NSEvent) -> Void = { [weak self] event in
             guard let self else { return }
             let isDown = event.modifierFlags.intersection(targetFlag) == targetFlag
             let now = Date()
-
             if isDown {
                 self.doubleTapPressTime = now
             } else {
@@ -192,7 +194,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 self.doubleTapPressTime = nil
-
                 if let lastTap = self.doubleTapLastTapTime,
                    now.timeIntervalSince(lastTap) < 0.45 {
                     self.doubleTapLastTapTime = nil
@@ -201,6 +202,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.doubleTapLastTapTime = now
                 }
             }
+        }
+
+        // Global monitor — fires when another app is frontmost.
+        doubleTapMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: handler)
+
+        // Local monitor — global monitors are silent for the app's own events,
+        // so this catches double-taps while Stash itself is key (e.g. right after login).
+        doubleTapLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            handler(event)
+            return event
         }
     }
 
@@ -250,37 +261,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showStatusMenu() {
         let menu = NSMenu()
 
-        let toggleItem = NSMenuItem(title: "Open / Close QuickPanel",
-                                    action: #selector(togglePanelFromMenu),
-                                    keyEquivalent: "")
-        toggleItem.target = self
-        menu.addItem(toggleItem)
-
-        menu.addItem(.separator())
-
-        let updatesItem = NSMenuItem(title: "Check for Updates…",
+        let updatesItem = NSMenuItem(title: "Check for Updates",
                                      action: #selector(checkForUpdates),
                                      keyEquivalent: "")
         updatesItem.target = self
-        menu.addItem(updatesItem)
+        updatesItem.image = nil
 
-        menu.addItem(.separator())
-
-        let settingsItem = NSMenuItem(title: "Settings…",
-                                      action: #selector(openSettings),
-                                      keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: "Settings",
+                                      action: #selector(openSettingsWindow),
+                                      keyEquivalent: "")
         settingsItem.target = self
+        settingsItem.image = nil
+
+        let quitItem = NSMenuItem(title: "Quit",
+                                  action: #selector(quitApp),
+                                  keyEquivalent: "")
+        quitItem.target = self
+        quitItem.image = nil
+
+        menu.addItem(updatesItem)
         menu.addItem(settingsItem)
-
         menu.addItem(.separator())
-
-        let quitItem = NSMenuItem(title: "Quit QuickPanel",
-                                  action: #selector(NSApplication.terminate(_:)),
-                                  keyEquivalent: "q")
         menu.addItem(quitItem)
 
-        // Temporarily assign the menu so the system shows it, then clear so
-        // future left-clicks still toggle the panel.
         statusItem?.menu = menu
         statusItem?.button?.performClick(nil)
         statusItem?.menu = nil
@@ -294,7 +297,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updaterManager.checkForUpdates()
     }
 
-    @objc private func openSettings() {
+    @objc private func openSettingsWindow() {
         SettingsWindowController.shared.showSettings()
+    }
+
+    @objc private func quitApp() {
+        NSApp.terminate(nil)
     }
 }

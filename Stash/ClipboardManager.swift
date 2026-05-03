@@ -27,7 +27,8 @@ final class ClipboardManager: ObservableObject {
     private let previewLength = 60
 
     init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         let quickPanelDir = appSupport.appendingPathComponent("QuickPanel")
         try? FileManager.default.createDirectory(at: quickPanelDir, withIntermediateDirectories: true)
         dbPath = quickPanelDir.appendingPathComponent("clipboard.db").path

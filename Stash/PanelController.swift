@@ -124,11 +124,6 @@ final class PanelMouseTrackingView: NSView {
     weak var panelController: PanelController?
     private var trackingArea: NSTrackingArea?
 
-    // Panel-drag state
-    private var dragStartMouse: NSPoint?
-    private var dragStartOrigin: NSPoint?
-    private var isPanelDrag = false
-
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
@@ -147,40 +142,6 @@ final class PanelMouseTrackingView: NSView {
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         panelController?.resumeIdleTimer()
-    }
-
-    // MARK: Drag-to-reposition
-
-    override func mouseDown(with event: NSEvent) {
-        dragStartMouse  = NSEvent.mouseLocation
-        dragStartOrigin = window?.frame.origin
-        isPanelDrag     = false
-        super.mouseDown(with: event)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let start = dragStartMouse, let origin = dragStartOrigin, let win = window else { return }
-        let loc = NSEvent.mouseLocation
-        let dx = loc.x - start.x, dy = loc.y - start.y
-        if !isPanelDrag, hypot(dx, dy) < 4 { return }   // threshold before committing to a panel drag
-        isPanelDrag = true
-        win.setFrameOrigin(NSPoint(x: origin.x + dx, y: origin.y + dy))
-        panelController?.resetPanelIdleTimer()
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        defer {
-            isPanelDrag     = false
-            dragStartMouse  = nil
-            dragStartOrigin = nil
-        }
-        if isPanelDrag {
-            DispatchQueue.main.async { [weak self] in
-                self?.panelController?.snapToNearestZone()
-            }
-            return
-        }
-        super.mouseUp(with: event)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -258,9 +219,13 @@ final class PanelController: NSObject {
 
     // Click-outside-to-close + drag-state monitoring (idle timer pauses while dragging)
     private var globalClickMonitor: Any?
+    private var appActivationObserver: NSObjectProtocol?
     private var isDragInProgress = false
-    var isDraggingIntoPanel = false
-    private var closeWorkItem: DispatchWorkItem?
+    var isDraggingIntoPanel = false {
+        didSet {
+            if isDraggingIntoPanel { cancelDeferredClose() }
+        }
+    }
     private var dragMonitor: Any?
     private var localDragMonitor: Any?
     private var mouseUpMonitor: Any?
@@ -328,21 +293,63 @@ final class PanelController: NSObject {
     private func startClickOutsideMonitor() {
         stopClickOutsideMonitor()
 
+        // Right-click outside panel → close immediately.
+        // Right-click never precedes a file drag, so no deferral needed.
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown]
-        ) { [weak self] event in
-            self?.handleGlobalClick(event: event)
+            matching: [.rightMouseDown]
+        ) { [weak self] _ in
+            guard let self, let panel = self.contentPanel, panel.isVisible else { return }
+            guard !panel.frame.contains(NSEvent.mouseLocation) else { return }
+            self.hidePanel()
         }
 
-        dragMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDragged]) { [weak self] _ in
+        // App-switch detection — the ONLY reliable close signal.
+        //
+        // NSWorkspace.didActivateApplicationNotification fires when macOS changes
+        // the foreground app. It does NOT fire for desktop file clicks (Finder stays
+        // background while selecting the file), so those clicks leave the panel open.
+        //
+        // • Finder bundle   → user clicked a file, folder, or Finder window → stay open
+        // • Our bundle / "" → LSUIElement edge case or unknown               → stay open
+        // • anything else   → Chrome, Slack, Terminal, etc.                  → close
+        appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self, let panel = self.contentPanel, panel.isVisible else { return }
+            guard !self.isDraggingIntoPanel else { return }
+
+            let activated = notification.userInfo?[
+                NSWorkspace.applicationUserInfoKey
+            ] as? NSRunningApplication
+
+            let frontID = activated?.bundleIdentifier ?? ""
+
+            switch frontID {
+            case "com.apple.finder":
+                self.cancelDeferredClose()
+            case "", Bundle.main.bundleIdentifier ?? "–":
+                break // stay open
+            default:
+                self.hidePanel()
+            }
+        }
+
+        // Drag monitors: pause the idle timer while a drag is active.
+        // These are unrelated to close-on-click and remain unchanged.
+        dragMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDragged]
+        ) { [weak self] _ in
             guard let self else { return }
             self.isDragInProgress = true
             self.idleTimer?.invalidate()
             self.idleTimer = nil
         }
 
-        // Drags that start inside QuickPanel are not visible to the global monitor; track them locally.
-        localDragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDragged]) { [weak self] event in
+        localDragMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDragged]
+        ) { [weak self] event in
             self?.isDragInProgress = true
             self?.idleTimer?.invalidate()
             self?.idleTimer = nil
@@ -354,104 +361,38 @@ final class PanelController: NSObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self else { return }
                 self.isDragInProgress = false
-                if !self.mouseInsidePanel {
-                    self.resetPanelIdleTimer()
-                }
+                if !self.mouseInsidePanel { self.resetPanelIdleTimer() }
             }
         }
 
-        mouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { _ in
-            scheduleDragEnded()
-        }
+        mouseUpMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseUp]
+        ) { _ in scheduleDragEnded() }
 
-        // Mouse-up in our app isn't visible to the global monitor; clear drag state the same way.
-        localMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp]) { event in
-            scheduleDragEnded()
-            return event
-        }
+        localMouseUpMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseUp]
+        ) { event in scheduleDragEnded(); return event }
     }
 
     private func stopClickOutsideMonitor() {
-        if let m = globalClickMonitor { NSEvent.removeMonitor(m); globalClickMonitor = nil }
-        if let m = dragMonitor { NSEvent.removeMonitor(m); dragMonitor = nil }
-        if let m = localDragMonitor { NSEvent.removeMonitor(m); localDragMonitor = nil }
-        if let m = mouseUpMonitor { NSEvent.removeMonitor(m); mouseUpMonitor = nil }
+        if let m = globalClickMonitor  { NSEvent.removeMonitor(m); globalClickMonitor  = nil }
+        if let m = dragMonitor         { NSEvent.removeMonitor(m); dragMonitor         = nil }
+        if let m = localDragMonitor    { NSEvent.removeMonitor(m); localDragMonitor    = nil }
+        if let m = mouseUpMonitor      { NSEvent.removeMonitor(m); mouseUpMonitor      = nil }
         if let m = localMouseUpMonitor { NSEvent.removeMonitor(m); localMouseUpMonitor = nil }
-        if let m = snapDragMonitor { NSEvent.removeMonitor(m); snapDragMonitor = nil }
-        isDragInProgress = false
+        if let obs = appActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+            appActivationObserver = nil
+        }
+        isDragInProgress    = false
         isDraggingIntoPanel = false
     }
 
-    func scheduleDeferredClose() {
-        cancelDeferredClose()
-        let item = DispatchWorkItem { [weak self] in
-            DispatchQueue.main.async { self?.hidePanel() }
-        }
-        closeWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: item)
-    }
-
     func cancelDeferredClose() {
-        closeWorkItem?.cancel()
-        closeWorkItem = nil
-    }
-
-    private func handleGlobalClick(event: NSEvent) {
-        guard let panel = contentPanel, panel.isVisible else { return }
-        guard !isDraggingIntoPanel else { return }
-        guard !isDragInProgress else { return }
-
-        let screenPoint = NSEvent.mouseLocation
-
-        // Ignore clicks inside the panel
-        if panel.frame.contains(screenPoint) { return }
-
-        // Convert to CGWindowList coordinate system
-        // CGWindowList uses top-left origin of the menu bar screen
-        let menuBarScreenHeight = NSScreen.screens.first?.frame.height
-            ?? NSScreen.main?.frame.height ?? 0
-        let cgY = menuBarScreenHeight - screenPoint.y
-        let cgPoint = CGPoint(x: screenPoint.x, y: cgY)
-
-        guard let windowList = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly, .excludeDesktopElements],
-            kCGNullWindowID
-        ) as? [[String: Any]] else {
-            // Can't determine — use safe deferred path
-            scheduleDeferredClose()
-            return
-        }
-
-        for window in windowList {
-            guard
-                let boundsDict = window[kCGWindowBounds as String] as? [String: CGFloat],
-                let owner = window[kCGWindowOwnerName as String] as? String
-            else { continue }
-
-            let rect = CGRect(
-                x: boundsDict["X"] ?? 0,
-                y: boundsDict["Y"] ?? 0,
-                width: boundsDict["Width"] ?? 0,
-                height: boundsDict["Height"] ?? 0
-            )
-
-            guard rect.contains(cgPoint) else { continue }
-
-            if owner == "Finder" {
-                // Finder browser window — user may drag from it, stay open
-                return
-            } else {
-                // Any other app (browser, Slack, Terminal etc) — close immediately
-                DispatchQueue.main.async { [weak self] in self?.hidePanel() }
-                return
-            }
-        }
-
-        // No regular window found at click point = DESKTOP AREA
-        // The user may be clicking a desktop file to drag it in.
-        // Wait 500ms — if a drag arrives into the panel, cancelDeferredClose()
-        // will be called from draggingEntered. If nothing arrives, we close.
-        scheduleDeferredClose()
+        // Called from isDraggingIntoPanel didSet and the activation observer
+        // to abort any in-flight hidePanel that was already dispatched.
+        // No-op now that scheduleDeferredClose is removed — kept as a call
+        // site stub so draggingEntered callers compile unchanged.
     }
 
     // MARK: - Screen geometry
@@ -507,6 +448,16 @@ final class PanelController: NSObject {
             .filter { $0 }
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.hidePanel() }
+            .store(in: &cancellables)
+
+        // Mirror the signed-in user's email into TranscriptionService so Slack
+        // error reports include it. Sets on login, clears on logout.
+        AuthService.shared.$currentUser
+            .map { $0?.email }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] email in
+                self?.transcriptionService.userEmail = email
+            }
             .store(in: &cancellables)
 
         // Long (>= 5 min) meeting recordings are the only ones that fire
@@ -902,73 +853,142 @@ final class PanelController: NSObject {
 
 struct AuthGateView: View {
     @ObservedObject private var auth = AuthService.shared
+    @State private var isHoveringCTA = false
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.85).ignoresSafeArea()
-            VStack(spacing: 0) {
-                Spacer()
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.system(size: 56))
-                    .foregroundColor(.white)
-                Spacer().frame(height: 20)
-                Text("Sign in to Stash")
-                    .font(.system(size: 22, weight: .medium))
-                    .foregroundColor(.white)
-                Spacer().frame(height: 10)
-                Text("A Stash account is required to use the app.")
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.55))
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 36) {
+
+                // MARK: Top — logo + headline
+                VStack(spacing: 20) {
+
+                    StashLogoView()
+                        .frame(width: 48, height: 48)
+
+                    (
+                        Text("everything you copy, note, and record. ")
+                            .foregroundColor(Color.white.opacity(0.40))
+                        +
+                        Text("always at hand.")
+                            .foregroundColor(.white)
+                    )
+                    .font(.custom("Inter-SemiBold", size: 20))
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 48)
-                Spacer().frame(height: 32)
-                Button {
-                    Task { await AuthService.shared.signInWithGoogle() }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "globe")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.black)
-                        Text("Continue with Google")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.black)
+                    .textCase(.lowercase)
+                    .lineSpacing(4)
+                    .frame(width: 338)
+                }
+
+                // MARK: Bottom — Google button
+                VStack(spacing: 0) {
+                    Button {
+                        Task { await AuthService.shared.signInWithGoogle() }
+                    } label: {
+                        HStack(spacing: 16) {
+                            GoogleGIcon()
+                                .frame(width: 18, height: 18)
+                            Text("Continue with Google")
+                                .font(.custom("Inter-Regular", size: 14))
+                                .foregroundColor(Color(red: 0.04, green: 0.04, blue: 0.04))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                        .background(isHoveringCTA ? Color(white: 0.88) : Color.white)
+                        .clipShape(Capsule())
+                        .animation(.easeInOut(duration: 0.15), value: isHoveringCTA)
                     }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 48)
-                    .background(Color.white)
-                    .cornerRadius(12)
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 20)
-                .disabled(auth.isLoading)
-                if let error = auth.errorMessage {
-                    Text(error)
-                        .font(.system(size: 12))
-                        .foregroundColor(.orange)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 24)
-                        .padding(.top, 8)
-                        .onTapGesture { AuthService.shared.errorMessage = nil }
-                }
-                if auth.isLoading {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                            .progressViewStyle(.circular)
-                            .tint(.white)
-                            .scaleEffect(0.8)
-                        Text("Opening Google sign in...")
-                            .font(.system(size: 13))
-                            .foregroundColor(.white.opacity(0.6))
-                        Button("Cancel") { AuthService.shared.isLoading = false }
-                            .buttonStyle(.plain)
+                    .buttonStyle(.plain)
+                    .onHover { isHoveringCTA = $0 }
+                    .frame(maxWidth: 500)
+                    .disabled(auth.isLoading)
+
+                    if let error = auth.errorMessage {
+                        Text(error)
                             .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundColor(Color.orange.opacity(0.85))
+                            .multilineTextAlignment(.center)
+                            .frame(width: 300)
+                            .padding(.top, 12)
+                            .onTapGesture { AuthService.shared.errorMessage = nil }
                     }
-                    .padding(.top, 16)
                 }
-                Spacer()
+            }
+            .padding(20)
+        }
+    }
+}
+
+// MARK: - Stash logo (exact SVG paths — do not modify structure)
+
+private struct StashLogoView: View {
+    var body: some View {
+        Image("logo")
+            .resizable()
+            .scaledToFit()
+    }
+}
+
+// MARK: - Google G icon (official four-colour)
+
+private struct GoogleGIcon: View {
+    var body: some View {
+        Image("Social Icons")
+            .resizable()
+            .scaledToFit()
+    }
+}
+
+// MARK: - NSBezierPath SVG parser (M, L, C, Z — sufficient for Stash logo paths)
+
+private extension NSBezierPath {
+    convenience init?(svgPath: String) {
+        self.init()
+        let scanner = Scanner(string: svgPath)
+        scanner.charactersToBeSkipped = CharacterSet(charactersIn: ", \t\n")
+        var cmd: Character = "M"
+        while !scanner.isAtEnd {
+            if let c = scanner.scanCharacter(), c.isLetter { cmd = c }
+            switch cmd {
+            case "M":
+                if let x = scanner.scanDouble(), let y = scanner.scanDouble() {
+                    move(to: NSPoint(x: x, y: y))
+                }
+            case "L":
+                if let x = scanner.scanDouble(), let y = scanner.scanDouble() {
+                    line(to: NSPoint(x: x, y: y))
+                }
+            case "C":
+                if let x1 = scanner.scanDouble(), let y1 = scanner.scanDouble(),
+                   let x2 = scanner.scanDouble(), let y2 = scanner.scanDouble(),
+                   let x  = scanner.scanDouble(), let y  = scanner.scanDouble() {
+                    curve(to: NSPoint(x: x, y: y),
+                          controlPoint1: NSPoint(x: x1, y: y1),
+                          controlPoint2: NSPoint(x: x2, y: y2))
+                }
+            case "Z", "z": close()
+            default: break
             }
         }
+        if elementCount == 0 { return nil }
+    }
+
+    var cgPath: CGPath {
+        let path = CGMutablePath()
+        var points = [NSPoint](repeating: .zero, count: 3)
+        for i in 0..<elementCount {
+            switch element(at: i, associatedPoints: &points) {
+            case .moveTo:    path.move(to: CGPoint(x: points[0].x, y: points[0].y))
+            case .lineTo:    path.addLine(to: CGPoint(x: points[0].x, y: points[0].y))
+            case .curveTo:   path.addCurve(to: CGPoint(x: points[2].x, y: points[2].y),
+                                           control1: CGPoint(x: points[0].x, y: points[0].y),
+                                           control2: CGPoint(x: points[1].x, y: points[1].y))
+            case .closePath: path.closeSubpath()
+            @unknown default: break
+            }
+        }
+        return path
     }
 }
 
