@@ -4,12 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Signed in to Stash</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
-                   "Helvetica Neue", Arial, sans-serif;
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
       background: #000;
       color: #fff;
       min-height: 100vh;
@@ -17,263 +18,111 @@
       align-items: center;
       justify-content: center;
       -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+      position: relative;
     }
 
-    /* ── Card ─────────────────────────────── */
+    /* Background image — rotated decorative graphic, bled off the edges */
+    .bg {
+      position: absolute;
+      width: 1058px;
+      height: 1881.56px;
+      transform: rotate(90deg);
+      right: -185px;
+      bottom: -38px;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    /* Main card */
     .card {
+      position: relative;
+      z-index: 1;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 36px;
-      padding: 0 24px;
+      gap: 48px;
       text-align: center;
       animation: fadeUp 0.5s cubic-bezier(.22,.68,0,1.2) both;
     }
 
     @keyframes fadeUp {
       from { opacity: 0; transform: translateY(16px); }
-      to   { opacity: 1; transform: translateY(0);    }
+      to   { opacity: 1; transform: translateY(0); }
     }
 
-    /* ── Logo ─────────────────────────────── */
-    .logo {
-      width: 64px;
-      height: 64px;
-      background: #fff;
-      border-radius: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 30px;
-      font-weight: 800;
-      color: #000;
-      letter-spacing: -1px;
-      box-shadow: 0 0 0 1px rgba(255,255,255,0.08),
-                  0 8px 32px rgba(0,0,0,0.6);
-    }
-
-    /* ── Headline ─────────────────────────── */
-    .headline h1 {
-      font-size: 26px;
-      font-weight: 600;
-      letter-spacing: -0.4px;
-      color: rgba(255,255,255,0.92);
-      line-height: 1.2;
-    }
-    .headline p {
-      margin-top: 8px;
-      font-size: 14px;
-      color: rgba(255,255,255,0.35);
-      font-weight: 400;
-    }
-
-    /* ── User number ──────────────────────── */
-    .user-number-wrap {
+    /* Text block */
+    .text-block {
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 10px;
-      opacity: 0;
-      transition: opacity 0.4s ease;
-    }
-    .user-number-wrap.visible { opacity: 1; }
-
-    .user-number-label {
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.10em;
-      text-transform: uppercase;
-      color: rgba(255,255,255,0.28);
+      gap: 4px;
     }
 
-    .number-stage {
-      position: relative;
+    h1 {
+      font-size: 24px;
+      font-weight: 500;
+      color: #ffffff;
+      letter-spacing: 0.48px;
+      text-align: center;
+      line-height: normal;
+    }
+
+    .sub {
       display: flex;
-      align-items: baseline;
-      justify-content: center;
-    }
-
-    .number-glow {
-      position: absolute;
-      inset: -30px -60px;
-      background: radial-gradient(ellipse at 50% 60%,
-                    rgba(255,255,255,0.07) 0%,
-                    transparent 70%);
-      pointer-events: none;
-    }
-
-    .number-prefix {
-      font-size: 28px;
-      font-weight: 500;
-      color: rgba(255,255,255,0.3);
-      margin-right: 3px;
-      font-variant-numeric: tabular-nums;
-      font-family: "SF Mono", "Menlo", "Courier New", monospace;
-    }
-
-    #digits {
-      font-size: 58px;
-      font-weight: 700;
-      letter-spacing: -3px;
-      color: #fff;
-      font-variant-numeric: tabular-nums;
-      font-family: "SF Mono", "Menlo", "Courier New", monospace;
-      min-width: 3ch;
-      display: inline-block;
-      text-align: right;
-    }
-
-    /* ── CTA button ───────────────────────── */
-    .btn {
-      display: inline-flex;
+      flex-direction: column;
       align-items: center;
-      gap: 8px;
-      padding: 12px 28px;
-      border-radius: 12px;
-      background: rgba(255,255,255,0.10);
-      border: 1px solid rgba(255,255,255,0.08);
-      color: rgba(255,255,255,0.82);
-      font-size: 14px;
-      font-weight: 500;
-      font-family: inherit;
-      text-decoration: none;
-      cursor: pointer;
-      transition: background 0.15s ease, border-color 0.15s ease;
+      gap: 4px;
     }
-    .btn:hover  { background: rgba(255,255,255,0.16); border-color: rgba(255,255,255,0.14); }
-    .btn:active { background: rgba(255,255,255,0.22); }
-    .btn svg { opacity: 0.6; flex-shrink: 0; }
+
+    .sub p {
+      font-size: 18px;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.40);
+      text-align: center;
+      text-transform: lowercase;
+      line-height: normal;
+    }
   </style>
 </head>
 <body>
 
-<div class="card">
+  <!-- Background decorative image — place image.png in the same folder -->
+  <img class="bg" src="image.png" alt="">
 
-  <!-- Logo -->
-  <div class="logo">S</div>
+  <div class="card">
 
-  <!-- Headline -->
-  <div class="headline">
-    <h1>You're signed in to Stash</h1>
-    <p>Heading back to the app now…</p>
-  </div>
-
-  <!-- Lottery user number -->
-  <div class="user-number-wrap" id="numberSection">
-    <div class="user-number-label">You are user</div>
-    <div class="number-stage">
-      <div class="number-glow"></div>
-      <span class="number-prefix">#</span>
-      <span id="digits">…</span>
-    </div>
-  </div>
-
-  <!-- CTA -->
-  <a class="btn" id="openBtn" href="#">
-    Open Stash
-    <!-- Lucide log-out icon -->
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-         stroke="currentColor" stroke-width="2"
-         stroke-linecap="round" stroke-linejoin="round">
-      <path d="m16 17 5-5-5-5"/>
-      <path d="M21 12H9"/>
-      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+    <!-- Stash logo (SVG, 80×80) -->
+    <svg width="80" height="80" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path fill="#fff" d="M32.0028 7.99534H16.0054L16.0441 3.62087C16.0647 1.45558 18.0876 0 20.1028 0H27.9106C29.9232 0 31.9486 1.45558 31.9667 3.61829L32.0028 7.99276V7.99534Z"/>
+      <path fill="#fff" d="M16.0049 7.99466L15.9714 12.3743C15.9456 14.2454 14.3381 15.6493 12.63 15.9952H8.00879L8.03459 11.6259C8.04749 9.34184 10.2613 7.94304 12.3513 7.96111L16.0075 7.99208L16.0049 7.99466Z"/>
+      <path fill="#fff" d="M40.0012 16.0018L35.5967 15.976C33.8034 15.9656 32.0515 14.1926 32.036 12.4015L32.0024 7.99609L36.1721 8.00384C38.0402 8.00642 39.9676 9.6891 39.9779 11.5963L40.0012 16.0043V16.0018Z"/>
+      <path fill="#fff" d="M8.00646 16.0016V31.9949L3.62265 31.9665C1.70295 31.9536 0.232221 30.2219 0 28.4205L0.016047 19.3386C0.358652 17.6327 1.7752 16.0429 3.62265 16.03L8.00388 15.999L8.00646 16.0016Z"/>
+      <path fill="#fff" d="M40.001 31.9933V16L44.3796 16.0284C46.2297 16.0413 47.6436 17.6362 47.9997 19.337V28.4188C47.7881 30.2306 46.3071 31.952 44.3822 31.9649L40.0036 31.9933H40.001Z"/>
+      <path fill="#fff" d="M16.0051 39.9937L12.3669 40.0324C10.1376 40.0556 8.00377 38.5252 8.00635 36.1173V31.9932H12.6379C14.3228 32.3364 15.9664 33.7481 15.9793 35.614L16.0077 39.9937H16.0051Z"/>
+      <path fill="#fff" d="M40.0012 31.9932V36.1302C40.0037 38.3497 38.0428 40.0195 35.9089 40.0092L32.0024 39.9911L32.0308 35.5831C32.0411 33.9133 33.677 32.0783 35.3722 32.0551L40.0012 31.9957V31.9932Z"/>
+      <path fill="#fff" d="M32.0028 39.9893V44.6012C31.6338 46.4258 30.2431 47.773 28.3828 48.0001H19.6332C17.7703 47.773 16.3537 46.431 16.0054 44.6037V39.9944L32.0028 39.9918V39.9893Z"/>
     </svg>
-  </a>
 
-</div>
+    <div class="text-block">
+      <h1>You've signed in successfully.</h1>
+      <div class="sub">
+        <p>Now you can move your files from here to there.</p>
+        <p>You can close this tab.</p>
+      </div>
+    </div>
 
-<script>
-  const SUPABASE_URL = "https://hlkkmkayjytblvhnatwx.supabase.co";
-  const ANON_KEY     = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhsa2tta2F5anl0Ymx2aG5hdHd4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxMTc0MDQsImV4cCI6MjA4OTY5MzQwNH0.uSu3zj74xfH8yn9z_Drw0HeHJIsQID6lx7ILd9R_ffw";
+  </div>
 
-  // ── 1. Fire the deep link immediately (macOS intercepts; page stays open)
-  const qParams   = new URLSearchParams(window.location.search);
-  const hParams   = new URLSearchParams(window.location.hash.slice(1));
-  const merged    = new URLSearchParams();
-  for (const [k,v] of qParams) merged.set(k,v);
-  for (const [k,v] of hParams) merged.set(k,v);
-  const deepLink  = "quickpanel://auth/callback?" + merged.toString();
-  window.location.href = deepLink;
-  document.getElementById("openBtn").href = deepLink;
-
-  // ── 2. Fetch total user count from Supabase
-  async function fetchUserCount() {
-    try {
-      const res = await fetch(
-        `${SUPABASE_URL}/rest/v1/users?select=id`,
-        {
-          headers: {
-            "apikey":        ANON_KEY,
-            "Authorization": "Bearer " + ANON_KEY,
-            "Prefer":        "count=exact",
-            "Range":         "0-0"
-          }
-        }
-      );
-      // Supabase returns Content-Range: 0-0/<total>
-      const range = res.headers.get("Content-Range");
-      if (range) {
-        const total = parseInt(range.split("/")[1], 10);
-        if (!isNaN(total) && total > 0) return total;
-      }
-    } catch (_) { /* RLS or network — degrade gracefully */ }
-    return null;
-  }
-
-  // ── 3. Lottery animation
-  // Phase 1 (0 → CHAOS_MS):  rapid random numbers — chaotic slot-machine feel
-  // Phase 2 (CHAOS_MS → END): decelerate into the real number
-  function runLottery(target, el) {
-    const TOTAL_MS  = 2400;
-    const CHAOS_MS  = 1100;
-    const start     = performance.now();
-    let   lastFlash = 0;
-
-    function easeOut(t) { return 1 - Math.pow(1 - t, 4); }
-
-    function tick(now) {
-      const elapsed  = now - start;
-      const progress = Math.min(elapsed / TOTAL_MS, 1);
-
-      if (elapsed < CHAOS_MS) {
-        // Flash a new random number every ~55 ms
-        if (now - lastFlash > 55) {
-          const rand = Math.floor(Math.random() * Math.max(target * 2, 50)) + 1;
-          el.textContent = rand.toLocaleString();
-          lastFlash = now;
-        }
-      } else {
-        const phase = (elapsed - CHAOS_MS) / (TOTAL_MS - CHAOS_MS);
-        const val   = Math.round(easeOut(Math.min(phase, 1)) * target);
-        el.textContent = val.toLocaleString();
-      }
-
-      if (progress < 1) requestAnimationFrame(tick);
-      else              el.textContent = target.toLocaleString(); // exact snap
-    }
-
-    requestAnimationFrame(tick);
-  }
-
-  // ── 4. Orchestrate
-  (async () => {
-    const count   = await fetchUserCount();
-    const section = document.getElementById("numberSection");
-    const digits  = document.getElementById("digits");
-
-    if (count !== null) {
-      // Reveal the section then animate
-      section.classList.add("visible");
-      // Tiny delay so the fade-in finishes before we start rolling
-      setTimeout(() => runLottery(count, digits), 120);
-    }
-    // If count is null (RLS blocks anon access) the section stays hidden —
-    // no broken UI, just a slightly simpler page.
-    // To enable the count: add an RLS policy on the `users` table that allows
-    // anon SELECT on the `id` column (read-only; no PII exposed).
-  })();
-</script>
+  <script>
+    // Forward all OAuth params (query + hash) back to the macOS app via deep link.
+    const q = new URLSearchParams(window.location.search);
+    const h = new URLSearchParams(window.location.hash.slice(1));
+    const merged = new URLSearchParams();
+    for (const [k, v] of q) merged.set(k, v);
+    for (const [k, v] of h) merged.set(k, v);
+    window.location.href = "quickpanel://auth/callback?" + merged.toString();
+  </script>
 
 </body>
 </html>
