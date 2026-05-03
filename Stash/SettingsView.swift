@@ -32,8 +32,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         // Show the dock icon while the settings window is open.
         NSApp.setActivationPolicy(.regular)
-        win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        win.makeKeyAndOrderFront(nil)
     }
 
     func windowWillClose(_ notification: Notification) {

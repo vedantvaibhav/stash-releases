@@ -296,7 +296,8 @@ final class AuthService: ObservableObject {
         }
 
         // Create new row
-        let trialEnd = Calendar.current.date(byAdding: .day, value: 30, to: Date())!
+        let trialEnd = Calendar.current.date(byAdding: .day, value: 30, to: Date())
+            ?? Date().addingTimeInterval(30 * 24 * 60 * 60)
         let newUser  = AppUser(
             id: supabaseID, googleId: googleId, email: email, name: name,
             avatarUrl: avatarURL, trialStartDate: Date(), trialEndDate: trialEnd,

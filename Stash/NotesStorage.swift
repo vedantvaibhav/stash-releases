@@ -49,7 +49,8 @@ final class NotesStorage: ObservableObject {
     private var listRefreshDebounce: DispatchWorkItem?
 
     init() {
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         let quickPanelDir = appSupport.appendingPathComponent("QuickPanel")
         try? fileManager.createDirectory(at: quickPanelDir, withIntermediateDirectories: true)
         notesDirectory = quickPanelDir.appendingPathComponent("notes")

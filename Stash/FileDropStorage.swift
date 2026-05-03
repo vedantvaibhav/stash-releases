@@ -10,6 +10,7 @@ struct DroppedFileItem: Identifiable, Codable {
 /// Manages files stored in ~/Documents/QuickPanel/.
 /// Drop-in: moves source into folder (moves atomically when possible; falls back to copy+delete).
 /// Drag-out: removes shelf copy after destination finishes reading.
+@MainActor
 final class FileDropStorage: ObservableObject {
     @Published private(set) var files: [DroppedFileItem] = []
     @Published var lastDropErrorMessage: String?
@@ -22,9 +23,11 @@ final class FileDropStorage: ObservableObject {
     private let jsonURL: URL
 
     init() {
-        let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
         dropFolder = documents.appendingPathComponent("QuickPanel")
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         let appDir = appSupport.appendingPathComponent("QuickPanel")
         try? fileManager.createDirectory(at: appDir, withIntermediateDirectories: true)
         jsonURL = appDir.appendingPathComponent("files.json")
