@@ -248,10 +248,8 @@ struct OnboardingView: View {
                         .foregroundStyle(DesignTokens.Onboarding.bodyColor)
                 }
             }
-            staggered(index: 2) {
-                ctaButton(title: "Open Stash", action: onFinish)
-            }
         }
+        .modifier(DoneStepHotkeyListener(onFinish: onFinish))
     }
 
     // MARK: - CTA
@@ -349,6 +347,41 @@ private struct OnboardingCTAButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Onboarding.ctaCornerRadius))
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+// MARK: - Done-step hotkey listener
+
+/// Local NSEvent monitor active only while the done step is visible. When the
+/// user presses the configured primary hotkey, fires `onFinish` (same path
+/// the old "Open Stash" CTA used to take). Local monitor only fires when the
+/// onboarding window has focus — if focus is elsewhere, the global Carbon
+/// hotkey path takes over and shows the panel as usual.
+private struct DoneStepHotkeyListener: ViewModifier {
+    var onFinish: () -> Void
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { install() }
+            .onDisappear { remove() }
+    }
+
+    private func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let s = AppSettings.shared
+            let carbonMods = nsToCarbonModifiers(event.modifierFlags)
+            if UInt32(event.keyCode) == s.hotKeyCode && carbonMods == s.hotKeyModifiers {
+                onFinish()
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func remove() {
+        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
     }
 }
 
