@@ -112,13 +112,103 @@ final class HotkeyRecorder: ObservableObject {
     deinit { stop() }
 }
 
+// MARK: - Hotkey recorder row (shared by SettingsView and OnboardingView)
+
+/// Self-contained hotkey row: badge + Record/Cancel control. Owns its own
+/// `HotkeyRecorder` and persists writes to AppSettings + posts the right
+/// notifications based on the configured `slot`. Single source of truth so
+/// onboarding inherits Settings' double-tap rendering for free.
+struct HotkeyRecorderRow: View {
+    let label: String
+    let slot: HotkeySlot
+
+    @ObservedObject private var settings = AppSettings.shared
+    @StateObject private var recorder = HotkeyRecorder()
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundColor(.white.opacity(0.75))
+
+            Text(badgeString)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white.opacity(0.75))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color.white.opacity(0.10))
+                .cornerRadius(6)
+
+            Spacer()
+
+            if recorder.isRecording {
+                HStack(spacing: 6) {
+                    PulsingDot()
+                    Text("Recording...")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.55))
+                }
+                Button("Cancel") { recorder.stop() }
+                    .buttonStyle(HoverButtonStyle(hoverOpacity: 0.10))
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.45))
+            } else {
+                Button {
+                    recorder.start()
+                } label: {
+                    Text("Record New")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.75))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                }
+                .buttonStyle(RecordNewButtonStyle())
+            }
+        }
+        .onAppear { wireRecorder() }
+    }
+
+    private var badgeString: String {
+        switch slot {
+        case .primaryPanelToggle:
+            return hotkeyBadgeString(keyCode: settings.hotKeyCode, carbonModifiers: settings.hotKeyModifiers)
+        case .quickRecord:
+            return quickRecordBadgeString(code: settings.quickRecordHotKeyCode, modifiers: settings.quickRecordHotKeyModifiers)
+        }
+    }
+
+    private func wireRecorder() {
+        recorder.onSave = { code, mods in
+            switch slot {
+            case .primaryPanelToggle:
+                AppSettings.shared.hotKeyCode      = code
+                AppSettings.shared.hotKeyModifiers = mods
+                NotificationCenter.default.post(name: .quickPanelHotkeyChanged, object: nil)
+            case .quickRecord:
+                AppSettings.shared.quickRecordHotKeyCode      = code
+                AppSettings.shared.quickRecordHotKeyModifiers = mods
+                if code == 0xFFFE {
+                    if      mods & UInt32(cmdKey)     != 0 { AppSettings.shared.doubleTapQuickRecord = .command }
+                    else if mods & UInt32(optionKey)  != 0 { AppSettings.shared.doubleTapQuickRecord = .option  }
+                    else if mods & UInt32(controlKey) != 0 { AppSettings.shared.doubleTapQuickRecord = .control }
+                    else if mods & UInt32(shiftKey)   != 0 { AppSettings.shared.doubleTapQuickRecord = .shift   }
+                    else                                   { AppSettings.shared.doubleTapQuickRecord = .off     }
+                    NotificationCenter.default.post(name: .doubleTapQuickRecordChanged, object: nil)
+                } else {
+                    AppSettings.shared.doubleTapQuickRecord = .off
+                    NotificationCenter.default.post(name: .quickRecordHotkeyChanged, object: nil)
+                    NotificationCenter.default.post(name: .doubleTapQuickRecordChanged, object: nil)
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Settings view
 
 struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var auth     = AuthService.shared
-    @StateObject private var recorder      = HotkeyRecorder()
-    @StateObject private var quickRecorder = HotkeyRecorder()
 
     // Data section alert state
     @State private var showClearClipboardAlert = false
@@ -146,29 +236,6 @@ struct SettingsView: View {
         .frame(minHeight: 580)
         .background(Color.black)
         .preferredColorScheme(.dark)
-        .onAppear {
-            recorder.onSave = { code, mods in
-                AppSettings.shared.hotKeyCode      = code
-                AppSettings.shared.hotKeyModifiers = mods
-                NotificationCenter.default.post(name: .quickPanelHotkeyChanged, object: nil)
-            }
-            quickRecorder.onSave = { code, mods in
-                AppSettings.shared.quickRecordHotKeyCode      = code
-                AppSettings.shared.quickRecordHotKeyModifiers = mods
-                if code == 0xFFFE {
-                    if      mods & UInt32(cmdKey)     != 0 { AppSettings.shared.doubleTapQuickRecord = .command }
-                    else if mods & UInt32(optionKey)  != 0 { AppSettings.shared.doubleTapQuickRecord = .option  }
-                    else if mods & UInt32(controlKey) != 0 { AppSettings.shared.doubleTapQuickRecord = .control }
-                    else if mods & UInt32(shiftKey)   != 0 { AppSettings.shared.doubleTapQuickRecord = .shift   }
-                    else                                   { AppSettings.shared.doubleTapQuickRecord = .off     }
-                    NotificationCenter.default.post(name: .doubleTapQuickRecordChanged, object: nil)
-                } else {
-                    AppSettings.shared.doubleTapQuickRecord = .off
-                    NotificationCenter.default.post(name: .quickRecordHotkeyChanged, object: nil)
-                    NotificationCenter.default.post(name: .doubleTapQuickRecordChanged, object: nil)
-                }
-            }
-        }
     }
 
     // MARK: - Account card
@@ -242,20 +309,6 @@ struct SettingsView: View {
 
     // MARK: - Hotkeys section
 
-    private func quickRecordBadge() -> String {
-        let code = settings.quickRecordHotKeyCode
-        let mods = settings.quickRecordHotKeyModifiers
-        if code == 0     { return "Not set" }
-        if code == 0xFFFE {
-            if mods & UInt32(cmdKey)     != 0 { return "⌘⌘" }
-            if mods & UInt32(optionKey)  != 0 { return "⌥⌥" }
-            if mods & UInt32(controlKey) != 0 { return "⌃⌃" }
-            if mods & UInt32(shiftKey)   != 0 { return "⇧⇧" }
-            return "Double-tap"
-        }
-        return hotkeyBadgeString(keyCode: code, carbonModifiers: mods)
-    }
-
     private var hotkeySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Hotkeys")
@@ -263,62 +316,8 @@ struct SettingsView: View {
                 .foregroundColor(.white.opacity(0.45))
 
             VStack(spacing: 16) {
-                settingsHotkeyRow(
-                    label: "Open/Close Tray",
-                    badgeString: hotkeyBadgeString(keyCode: settings.hotKeyCode,
-                                                   carbonModifiers: settings.hotKeyModifiers),
-                    recorder: recorder
-                )
-
-                settingsHotkeyRow(
-                    label: "Quick Record",
-                    badgeString: quickRecordBadge(),
-                    recorder: quickRecorder
-                )
-
-            }
-        }
-    }
-
-    private func settingsHotkeyRow(label: String, badgeString: String,
-                                   recorder: HotkeyRecorder) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(.system(size: 14, weight: .regular))
-                .foregroundColor(.white.opacity(0.75))
-
-            Text(badgeString)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.white.opacity(0.75))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.white.opacity(0.10))
-                .cornerRadius(6)
-
-            Spacer()
-
-            if recorder.isRecording {
-                HStack(spacing: 6) {
-                    PulsingDot()
-                    Text("Recording...")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.55))
-                }
-                Button("Cancel") { recorder.stop() }
-                    .buttonStyle(HoverButtonStyle(hoverOpacity: 0.10))
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.45))
-            } else {
-                Button {
-                    recorder.start()
-                } label: {
-                    Text("Record New")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white.opacity(0.75))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                }
-                .buttonStyle(RecordNewButtonStyle())
+                HotkeyRecorderRow(label: "Open/Close Tray", slot: .primaryPanelToggle)
+                HotkeyRecorderRow(label: "Quick Record",    slot: .quickRecord)
             }
         }
     }

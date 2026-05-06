@@ -169,7 +169,33 @@ final class AppSettings: ObservableObject {
     }
 }
 
+// MARK: - Hotkey slot identity
+
+/// Identifies which hotkey slot a recorder/row is operating on. Used by the
+/// shared `HotkeyRecorderRow` to wire persistence + badge generation per slot
+/// from a single embeddable view.
+enum HotkeySlot {
+    case primaryPanelToggle
+    case quickRecord
+}
+
 // MARK: - Hotkey display helpers
+
+/// Render the quick-record badge for all states: regular Carbon hotkey,
+/// double-tap modifier (0xFFFE sentinel), or not configured (0). Mirrors the
+/// shape of SettingsView's previous private quickRecordBadge() so onboarding
+/// can render the same string without duplicating the logic.
+func quickRecordBadgeString(code: UInt32, modifiers: UInt32) -> String {
+    if code == 0 { return "Not set" }
+    if code == 0xFFFE {
+        if modifiers & UInt32(cmdKey)     != 0 { return "⌘⌘" }
+        if modifiers & UInt32(optionKey)  != 0 { return "⌥⌥" }
+        if modifiers & UInt32(controlKey) != 0 { return "⌃⌃" }
+        if modifiers & UInt32(shiftKey)   != 0 { return "⇧⇧" }
+        return "Double-tap"
+    }
+    return hotkeyBadgeString(keyCode: code, carbonModifiers: modifiers)
+}
 
 /// Format a hotkey as a human-readable badge string, e.g. "⌘⇧Space".
 func hotkeyBadgeString(keyCode: UInt32, carbonModifiers: UInt32) -> String {
