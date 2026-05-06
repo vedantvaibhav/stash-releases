@@ -86,6 +86,46 @@ enum DesignTokens {
         /// Panel ends 6 pt above its start y on close.
         static let closeSlideOffset: CGFloat = 6
     }
+
+    enum Onboarding {
+        // Window — opaque black, centered on the main screen, no traffic-lights.
+        static let windowSize = NSSize(width: 720, height: 560)
+        static let background = Color.black
+        static let foreground = Color.white
+
+        // Spacing
+        static let outerPadding: CGFloat = 56
+        static let stepGap: CGFloat = 24
+        static let chipGap: CGFloat = 12
+        static let cardArtSize: CGFloat = 96
+
+        // Hotkey chip
+        static let chipPaddingH: CGFloat = 14
+        static let chipPaddingV: CGFloat = 8
+        static let chipCornerRadius: CGFloat = 10
+        static let chipFont = Font.system(size: 17, weight: .medium, design: .rounded)
+        static let chipBackground = Color.white.opacity(0.08)
+        static let chipBorder = Color.white.opacity(0.16)
+
+        // CTA button
+        static let ctaPaddingH: CGFloat = 22
+        static let ctaPaddingV: CGFloat = 12
+        static let ctaCornerRadius: CGFloat = 12
+        static let ctaFont = Font.system(size: 14, weight: .semibold)
+        static let ctaBackgroundRest = Color.white.opacity(0.10)
+        static let ctaBackgroundHover = Color.white.opacity(0.16)
+
+        // Typography
+        static let titleFont = Font.system(size: 28, weight: .semibold)
+        static let bodyFont  = Font.system(size: 15, weight: .regular)
+        static let bodyColor = Color.white.opacity(0.78)
+
+        // Entrance animation — mirrors docs/auth/success.html
+        static let entranceDuration: Double = 0.7
+        static let entranceTranslate: CGFloat = 12
+        static let entranceStaggerSeconds: Double = 0.15
+        static let entranceCurve: Animation = .easeOut(duration: 0.7)
+    }
 }
 
 // MARK: - Color(hex:) helper
