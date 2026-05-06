@@ -190,11 +190,11 @@ struct OnboardingView: View {
     // MARK: - Staggered entrance
 
     @ViewBuilder
-    private func staggered<Content: View>(index: Int, @ViewBuilder _ content: () -> Content) -> some View {
+    private func staggered<Content: View>(index: Int, @ViewBuilder _ content: @escaping () -> Content) -> some View {
         if reduceMotion {
             content()
         } else {
-            StaggeredAppear(index: index) { content() }
+            StaggeredAppear(index: index, content: content)
         }
     }
 
@@ -245,7 +245,7 @@ private struct OnboardingCTAButtonStyle: ButtonStyle {
 
 private struct StaggeredAppear<Content: View>: View {
     let index: Int
-    let content: () -> Content
+    @ViewBuilder let content: () -> Content
 
     @State private var visible = false
 
