@@ -120,13 +120,17 @@ final class AppSettings: ObservableObject {
         hotKeyCode = UInt32(savedCode ?? kVK_Space)
 
         let savedMods = ud.object(forKey: Keys.hotKeyModifiers) as? Int
-        hotKeyModifiers = UInt32(savedMods ?? (cmdKey | shiftKey))
+        hotKeyModifiers = UInt32(savedMods ?? (cmdKey | optionKey))
 
         let savedQRCode = ud.object(forKey: Keys.quickRecordHotKeyCode) as? Int
-        quickRecordHotKeyCode = UInt32(savedQRCode ?? kVK_ANSI_R)
+        // 0xFFFE = double-tap sentinel — paired with quickRecordHotKeyModifiers
+        // (the modifier the user double-taps) and AppSettings.doubleTapQuickRecord.
+        // AppDelegate.registerHotkeyFromSettings skips the Carbon hotkey path for
+        // 0xFFFE, leaving installDoubleTapMonitor to drive quick-record entirely.
+        quickRecordHotKeyCode = UInt32(savedQRCode ?? 0xFFFE)
 
         let savedQRMods = ud.object(forKey: Keys.quickRecordHotKeyModifiers) as? Int
-        quickRecordHotKeyModifiers = UInt32(savedQRMods ?? (cmdKey | shiftKey))
+        quickRecordHotKeyModifiers = UInt32(savedQRMods ?? cmdKey)
 
         let savedHide = ud.object(forKey: Keys.autoHideSeconds) as? Double
         autoHideSeconds = savedHide ?? 7.0
@@ -143,8 +147,8 @@ final class AppSettings: ObservableObject {
         let savedOnboarding = ud.object(forKey: Keys.hasCompletedOnboarding) as? Bool
         hasCompletedOnboarding = savedOnboarding ?? false
 
-        let savedDTQR = ud.string(forKey: Keys.doubleTapQuickRecord) ?? "off"
-        doubleTapQuickRecord = DoubleTapQuickRecord(rawValue: savedDTQR) ?? .off
+        let savedDTQR = ud.string(forKey: Keys.doubleTapQuickRecord) ?? "command"
+        doubleTapQuickRecord = DoubleTapQuickRecord(rawValue: savedDTQR) ?? .command
 
         if let raw = ud.string(forKey: Keys.layoutStyle),
            let style = QuickPanelLayoutStyle(rawValue: raw) {
