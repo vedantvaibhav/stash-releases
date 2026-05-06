@@ -6,4 +6,5 @@ import Foundation
 enum OnboardingMedia {
     static let recordingDemo: URL? = nil
     static let clipboardDemo: URL? = nil
+    static let filesDemo: URL? = nil
 }
