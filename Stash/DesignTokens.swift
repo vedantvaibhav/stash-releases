@@ -145,6 +145,7 @@ enum DesignTokens {
 
         // Auth screen (screen 1) — full-bleed background with welcome card
         static let authIconSize: CGFloat = 64
+        static let authContentTopPadding: CGFloat = 100
         static let authContentSpacing: CGFloat = 18
         static let authTitleSubtitleGap: CGFloat = 10
         static let authButtonTopGap: CGFloat = 32
