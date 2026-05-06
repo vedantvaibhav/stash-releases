@@ -377,7 +377,7 @@ private struct OnboardingAuthView: View {
     @State private var hovering = false
 
     var body: some View {
-        ZStack(alignment: .center) {
+        ZStack(alignment: .top) {
             backgroundView
 
             VStack(spacing: 0) {
@@ -402,6 +402,7 @@ private struct OnboardingAuthView: View {
                 statusLine
                     .padding(.top, 12)
             }
+            .padding(.top, DesignTokens.Onboarding.authContentTopPadding)
             .padding(.horizontal, DesignTokens.Onboarding.authContentHorizontalPadding)
         }
     }
