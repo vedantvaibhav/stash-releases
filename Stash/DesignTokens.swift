@@ -88,8 +88,9 @@ enum DesignTokens {
     }
 
     enum Onboarding {
-        // Window — opaque black, centered on the main screen, no traffic-lights.
+        // Window — rounded, transparent, no traffic-lights, OS drop shadow.
         static let windowSize = NSSize(width: 720, height: 560)
+        static let windowCornerRadius: CGFloat = 24
         static let background = Color.black
         static let foreground = Color.white
 

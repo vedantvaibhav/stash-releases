@@ -1,9 +1,16 @@
 import AppKit
 import SwiftUI
 
-/// Owns the lifecycle of the onboarding NSWindow. Opaque, centered, close-only
-/// (close button active; miniaturize and zoom absent because their style flags
-/// aren't set). Content is a SwiftUI `OnboardingView` hosted via `NSHostingView`.
+/// Owns the lifecycle of the onboarding NSWindow. Rounded corners, transparent
+/// background with OS drop shadow, traffic-lights hidden. Content is a SwiftUI
+/// `OnboardingView` hosted via `NSHostingView`.
+///
+/// `.titled` + `.closable` stay in the styleMask so ⌘W still routes through the
+/// system's standard close path. The title bar is made invisible via
+/// `titlebarAppearsTransparent` + `titleVisibility = .hidden` and all three
+/// standard buttons are hidden — the rounded contentView paints over the area.
+/// `.miniaturizable` and `.resizable` are deliberately absent so ⌘M and ⌘+
+/// no-op.
 ///
 /// State lives on `OnboardingViewModel`, owned by this controller, so the user
 /// can ⌘W mid-flow and re-open via the menu-bar status item without losing
@@ -36,9 +43,16 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
         window.isReleasedWhenClosed = false
-        window.backgroundColor = NSColor.black
-        window.isOpaque = true
+        // Transparent window so the rounded content layer's edge is the visible
+        // boundary; `hasShadow = true` makes the OS render a drop shadow that
+        // follows the rounded shape.
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = true
         window.level = .normal
 
         super.init(window: window)
@@ -65,6 +79,11 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
             }
             let hosting = NSHostingView(rootView: view)
             hosting.translatesAutoresizingMaskIntoConstraints = false
+            // Round the content view's corners. Clipping happens at the layer
+            // level so child SwiftUI content paints inside the rounded shape.
+            hosting.wantsLayer = true
+            hosting.layer?.cornerRadius = DesignTokens.Onboarding.windowCornerRadius
+            hosting.layer?.masksToBounds = true
             window?.contentView = hosting
             hasInstalledHosting = true
         }
