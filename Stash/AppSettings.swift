@@ -249,7 +249,7 @@ func keyCodeDisplayName(_ code: UInt32) -> String {
         kVK_ANSI_Slash:        "/",
         kVK_ANSI_Grave:        "`",
     ]
-    return map[Int(code)] ?? "Key\(code)"
+    return map[Int(code)] ?? "?"
 }
 
 /// Convert NSEvent modifier flags → Carbon modifier bitmask.
