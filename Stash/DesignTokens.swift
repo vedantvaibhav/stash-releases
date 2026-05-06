@@ -131,6 +131,13 @@ enum DesignTokens {
         static let entranceTranslate: CGFloat = 12
         static let entranceStaggerSeconds: Double = 0.15
         static let entranceCurve: Animation = .easeOut(duration: 0.7)
+
+        // Media slot — fixed 16:9 placeholder for demo videos
+        static let mediaSlotWidth: CGFloat = 480
+        static let mediaSlotHeight: CGFloat = 270
+        static let mediaSlotCornerRadius: CGFloat = 12
+        static let mediaSlotBackground = Color.white.opacity(0.04)
+        static let mediaSlotBorder = Color.white.opacity(0.08)
     }
 }
 

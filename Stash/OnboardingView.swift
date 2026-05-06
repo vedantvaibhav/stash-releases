@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVKit
 import Carbon.HIToolbox
 
 struct OnboardingView: View {
@@ -46,12 +47,61 @@ struct OnboardingView: View {
         case 0: authStep
         case 1: hotkeyStep
         case 2: recordingStep
-        case 3: featureCard(
-            title: "Clipboard history",
-            body: "Everything you copy lives one hotkey away. Pin the snippets you keep coming back to so they don't fall off the bottom.",
-            glyph: "📋"
-        )
+        case 3: clipboardStep
         default: doneStep
+        }
+    }
+
+    // MARK: - Clipboard (screen 4)
+
+    private var clipboardStep: some View {
+        VStack(spacing: DesignTokens.Onboarding.stepGap) {
+            staggered(index: 0) {
+                Text("Clipboard history")
+                    .font(DesignTokens.Onboarding.titleFont)
+            }
+            staggered(index: 1) {
+                mediaSlot(OnboardingMedia.clipboardDemo)
+            }
+            staggered(index: 2) {
+                Text("Everything you copy lives one hotkey away. Pin the snippets you keep coming back to so they don't fall off the bottom.")
+                    .font(DesignTokens.Onboarding.bodyFont)
+                    .foregroundStyle(DesignTokens.Onboarding.bodyColor)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
+            }
+            staggered(index: 3) {
+                ctaButton(title: "Next", action: advance)
+            }
+        }
+    }
+
+    // MARK: - Media slot
+
+    /// Renders the demo video if `url` is non-nil; otherwise a styled
+    /// placeholder block (deliberate negative space, not a broken-state look).
+    /// When assets ship, swap the URL in `OnboardingMedia` — autoplay/looping
+    /// wiring lives at the call site of `VideoPlayer` once a real URL exists.
+    @ViewBuilder
+    private func mediaSlot(_ url: URL?) -> some View {
+        if let url {
+            VideoPlayer(player: AVPlayer(url: url))
+                .frame(
+                    width: DesignTokens.Onboarding.mediaSlotWidth,
+                    height: DesignTokens.Onboarding.mediaSlotHeight
+                )
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Onboarding.mediaSlotCornerRadius))
+        } else {
+            RoundedRectangle(cornerRadius: DesignTokens.Onboarding.mediaSlotCornerRadius)
+                .fill(DesignTokens.Onboarding.mediaSlotBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DesignTokens.Onboarding.mediaSlotCornerRadius)
+                        .strokeBorder(DesignTokens.Onboarding.mediaSlotBorder, lineWidth: 1)
+                )
+                .frame(
+                    width: DesignTokens.Onboarding.mediaSlotWidth,
+                    height: DesignTokens.Onboarding.mediaSlotHeight
+                )
         }
     }
 
@@ -80,6 +130,9 @@ struct OnboardingView: View {
                     .font(DesignTokens.Onboarding.titleFont)
             }
             staggered(index: 1) {
+                mediaSlot(OnboardingMedia.recordingDemo)
+            }
+            staggered(index: 2) {
                 VStack(alignment: .leading, spacing: 10) {
                     recordingBullet(
                         prefix: "Under 5 min →",
@@ -91,13 +144,6 @@ struct OnboardingView: View {
                     )
                 }
                 .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
-            }
-            staggered(index: 2) {
-                Text("Press \(quickRecordChipText) to start. Press it again to stop.")
-                    .font(DesignTokens.Onboarding.bodyFont)
-                    .foregroundStyle(DesignTokens.Onboarding.bodyColor)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
             }
             staggered(index: 3) {
                 ctaButton(title: "Next", action: advance)
