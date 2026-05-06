@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyObserver: NSObjectProtocol?
     private var quickRecordHotkeyObserver: NSObjectProtocol?
     private var doubleTapObserver: NSObjectProtocol?
+    private var authObserver: NSObjectProtocol?
     private var doubleTapMonitor: Any?
     private var doubleTapLocalMonitor: Any?
     private var doubleTapPressTime: Date?
@@ -105,6 +106,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in self?.installDoubleTapMonitor() }
 
+        authObserver = NotificationCenter.default.addObserver(
+            forName: .authCompleted,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleAuthReady() }
+        }
+
         panelController?.setup()
 
         installDoubleTapMonitor()
@@ -120,8 +129,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let obs = hotkeyObserver { NotificationCenter.default.removeObserver(obs) }
         if let obs = quickRecordHotkeyObserver { NotificationCenter.default.removeObserver(obs) }
         if let obs = doubleTapObserver { NotificationCenter.default.removeObserver(obs) }
+        if let obs = authObserver { NotificationCenter.default.removeObserver(obs) }
         if let m = doubleTapMonitor { NSEvent.removeMonitor(m); doubleTapMonitor = nil }
         if let m = doubleTapLocalMonitor { NSEvent.removeMonitor(m); doubleTapLocalMonitor = nil }
+    }
+
+    // MARK: - Auth routing (onboarding gate)
+
+    /// Called on `.authCompleted`. Decides whether to present the onboarding
+    /// window or do nothing. Panel auto-show on fresh sign-in is handled by
+    /// AuthService's wrapped showPanel(); session-restore intentionally does
+    /// not auto-show the panel.
+    private func handleAuthReady() {
+        guard AuthService.shared.isSignedIn else { return }
+        if AppSettings.shared.hasCompletedOnboarding {
+            return
+        }
+        OnboardingWindowController.shared.present { [weak self] in
+            AppSettings.shared.hasCompletedOnboarding = true
+            self?.panelController?.togglePanel()
+        }
     }
 
     // MARK: - Hotkey registration
