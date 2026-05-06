@@ -371,30 +371,15 @@ final class TranscriptionService: NSObject, ObservableObject {
                         try await self.callWhisper(audioData: audioData)
                     }.value
                 } catch {
-                    isProcessing = false
-                    let friendly = userFacingMessage(for: error)
-                    lastErrorForBanner = friendly
-                    reportToSlack(error: friendly, durationSeconds: durationSeconds)
-                    showCompletion("Failed")
-                    clearBannerAfterDelay()
+                    reportFailure(error, durationSeconds: durationSeconds)
                     return
                 }
             } else {
-                isProcessing = false
-                let friendly = userFacingMessage(for: firstError)
-                lastErrorForBanner = friendly
-                reportToSlack(error: friendly, durationSeconds: durationSeconds)
-                showCompletion("Failed")
-                clearBannerAfterDelay()
+                reportFailure(firstError, durationSeconds: durationSeconds)
                 return
             }
         } catch {
-            isProcessing = false
-            let friendly = userFacingMessage(for: error)
-            lastErrorForBanner = friendly
-            reportToSlack(error: friendly, durationSeconds: durationSeconds)
-            showCompletion("Failed")
-            clearBannerAfterDelay()
+            reportFailure(error, durationSeconds: durationSeconds)
             return
         }
 
@@ -517,13 +502,9 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
     }
 
-    /// Maps any thrown error into a banner-safe string. Errors thrown by `callWhisper`
-    /// and `callChat` already carry a friendly message (built via `friendlyError`),
-    /// so those pass through unchanged. URLSession-level failures (timeout, no
-    /// network, DNS, TLS, cancellation) reach us as raw `URLError` and would
-    /// otherwise surface CFNetwork wording — they get short, plain replacements.
-    /// Anything else falls back to a generic message rather than leaking the
-    /// system's `localizedDescription`.
+    /// Errors from `callWhisper`/`callChat` already carry friendly messages built
+    /// by `friendlyError`. URLSession failures arrive as raw `URLError` and would
+    /// otherwise leak CFNetwork wording into the banner.
     private func userFacingMessage(for error: Error) -> String {
         let nsError = error as NSError
         if nsError.domain == "Whisper" || nsError.domain == "LLM" || nsError.domain == "Chat" {
@@ -549,7 +530,16 @@ final class TranscriptionService: NSObject, ObservableObject {
                 return "Network error — try again"
             }
         }
-        return "Something went wrong — try again."
+        return "Something went wrong — try again"
+    }
+
+    private func reportFailure(_ error: Error, durationSeconds: Int) {
+        isProcessing = false
+        let friendly = userFacingMessage(for: error)
+        lastErrorForBanner = friendly
+        reportToSlack(error: friendly, durationSeconds: durationSeconds)
+        showCompletion("Failed")
+        clearBannerAfterDelay()
     }
 
     private func isTransientWhisperError(status: Int) -> Bool {
