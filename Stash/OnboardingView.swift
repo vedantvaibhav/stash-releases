@@ -39,17 +39,9 @@ struct OnboardingView: View {
     @ViewBuilder
     private var content: some View {
         switch model.step {
-        case 0: hotkeyStep
-        case 1: featureCard(
-            title: "Quick voice notes",
-            body: "Press \(quickRecordChipText), talk for under 5 minutes. Stash transcribes, cleans up the filler, and drops the result on your clipboard.",
-            glyph: "🎙️"
-        )
-        case 2: featureCard(
-            title: "Meeting notes",
-            body: "Press \(quickRecordChipText) for anything over 5 minutes. Stash records, transcribes, cleans, and saves a structured overview alongside the full transcript.",
-            glyph: "📝"
-        )
+        case 0: authStep
+        case 1: hotkeyStep
+        case 2: recordingStep
         case 3: featureCard(
             title: "Clipboard history",
             body: "Everything you copy lives one hotkey away. Pin the snippets you keep coming back to so they don't fall off the bottom.",
@@ -59,12 +51,73 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Welcome / hotkeys
+    // MARK: - Auth (screen 1)
+
+    /// Reuses the existing `AuthGateView` from PanelController.swift. The view
+    /// observes `AuthService.shared.$isSignedIn`; once auth completes we
+    /// advance to the hotkey step. AppDelegate's `.authCompleted` observer
+    /// also drives routing, but in-window advancement here keeps the screen
+    /// transition immediate rather than waiting for the notification round-trip.
+    private var authStep: some View {
+        AuthGateView()
+            .onReceive(AuthService.shared.$isSignedIn) { signedIn in
+                if signedIn && model.step == 0 {
+                    model.advance(totalSteps: Self.totalSteps)
+                }
+            }
+    }
+
+    // MARK: - Recording (screen 3 — combined voice + meeting)
+
+    private var recordingStep: some View {
+        VStack(spacing: DesignTokens.Onboarding.stepGap) {
+            staggered(index: 0) {
+                Text("Recording")
+                    .font(DesignTokens.Onboarding.titleFont)
+            }
+            staggered(index: 1) {
+                VStack(alignment: .leading, spacing: 10) {
+                    recordingBullet(
+                        prefix: "Under 5 min →",
+                        text: "cleaned text lands on your clipboard."
+                    )
+                    recordingBullet(
+                        prefix: "Over 5 min →",
+                        text: "Stash saves a transcript with a structured overview."
+                    )
+                }
+                .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
+            }
+            staggered(index: 2) {
+                Text("Press \(quickRecordChipText) to start. Press it again to stop.")
+                    .font(DesignTokens.Onboarding.bodyFont)
+                    .foregroundStyle(DesignTokens.Onboarding.bodyColor)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
+            }
+            staggered(index: 3) {
+                ctaButton(title: "Next", action: advance)
+            }
+        }
+    }
+
+    private func recordingBullet(prefix: String, text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(prefix)
+                .font(DesignTokens.Onboarding.bodyFont.weight(.semibold))
+                .foregroundStyle(DesignTokens.Onboarding.foreground)
+            Text(text)
+                .font(DesignTokens.Onboarding.bodyFont)
+                .foregroundStyle(DesignTokens.Onboarding.bodyColor)
+        }
+    }
+
+    // MARK: - Hotkeys (screen 2)
 
     private var hotkeyStep: some View {
         VStack(spacing: DesignTokens.Onboarding.stepGap) {
             staggered(index: 0) {
-                Text("Welcome to Stash")
+                Text("Your hotkeys")
                     .font(DesignTokens.Onboarding.titleFont)
             }
             staggered(index: 1) {
@@ -74,14 +127,14 @@ struct OnboardingView: View {
                 }
             }
             staggered(index: 2) {
-                Text("These are your two hotkeys. You can change them anytime in Settings.")
+                Text("These are the defaults. You can change them anytime in Settings.")
                     .font(DesignTokens.Onboarding.bodyFont)
                     .foregroundStyle(DesignTokens.Onboarding.bodyColor)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthShort)
             }
             staggered(index: 3) {
-                ctaButton(title: "Got it, next", action: advance)
+                ctaButton(title: "Continue", action: advance)
             }
         }
     }
