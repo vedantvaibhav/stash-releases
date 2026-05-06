@@ -98,6 +98,12 @@ enum DesignTokens {
         static let stepGap: CGFloat = 24
         static let chipGap: CGFloat = 12
         static let cardArtSize: CGFloat = 96
+        static let hotkeyRowGap: CGFloat = 14
+        static let hotkeyLabelWidth: CGFloat = 140
+        static let bodyMaxWidthShort: CGFloat = 420
+        static let bodyMaxWidthLong: CGFloat = 460
+        static let progressDotSize: CGFloat = 6
+        static let progressDotGap: CGFloat = 8
 
         // Hotkey chip
         static let chipPaddingH: CGFloat = 14

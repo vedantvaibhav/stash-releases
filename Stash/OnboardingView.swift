@@ -1,10 +1,6 @@
 import SwiftUI
 import AppKit
 
-/// Five-step onboarding flow shown in a dedicated NSWindow after fresh sign-in
-/// or session-restore for first-time users. The owning OnboardingWindowController
-/// presents this view via NSHostingView and listens for `onFinish` to close the
-/// window and transition to the panel.
 struct OnboardingView: View {
 
     var onFinish: () -> Void
@@ -72,7 +68,7 @@ struct OnboardingView: View {
                     .font(DesignTokens.Onboarding.titleFont)
             }
             staggered(index: 1) {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: DesignTokens.Onboarding.hotkeyRowGap) {
                     hotkeyRow(label: "Open Stash", chip: primaryChipText)
                     hotkeyRow(label: "Quick record", chip: quickRecordChipText)
                 }
@@ -82,7 +78,7 @@ struct OnboardingView: View {
                     .font(DesignTokens.Onboarding.bodyFont)
                     .foregroundStyle(DesignTokens.Onboarding.bodyColor)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
+                    .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthShort)
             }
             staggered(index: 3) {
                 ctaButton(title: "Got it, next", action: advance)
@@ -95,7 +91,7 @@ struct OnboardingView: View {
             Text(label)
                 .font(DesignTokens.Onboarding.bodyFont)
                 .foregroundStyle(DesignTokens.Onboarding.bodyColor)
-                .frame(width: 140, alignment: .leading)
+                .frame(width: DesignTokens.Onboarding.hotkeyLabelWidth, alignment: .leading)
             chipView(chip)
         }
     }
@@ -130,7 +126,7 @@ struct OnboardingView: View {
                     .font(DesignTokens.Onboarding.bodyFont)
                     .foregroundStyle(DesignTokens.Onboarding.bodyColor)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 460)
+                    .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
             }
             staggered(index: 3) {
                 ctaButton(title: "Next", action: advance)
@@ -178,11 +174,14 @@ struct OnboardingView: View {
     // MARK: - Progress dots
 
     private var progressDots: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DesignTokens.Onboarding.progressDotGap) {
             ForEach(0..<Self.totalSteps, id: \.self) { i in
                 Circle()
                     .fill(i == step ? Color.white.opacity(0.85) : Color.white.opacity(0.18))
-                    .frame(width: 6, height: 6)
+                    .frame(
+                        width: DesignTokens.Onboarding.progressDotSize,
+                        height: DesignTokens.Onboarding.progressDotSize
+                    )
             }
         }
     }
@@ -255,10 +254,8 @@ private struct StaggeredAppear<Content: View>: View {
             .offset(y: visible ? 0 : DesignTokens.Onboarding.entranceTranslate)
             .onAppear {
                 let delay = Double(index) * DesignTokens.Onboarding.entranceStaggerSeconds
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    withAnimation(DesignTokens.Onboarding.entranceCurve) {
-                        visible = true
-                    }
+                withAnimation(DesignTokens.Onboarding.entranceCurve.delay(delay)) {
+                    visible = true
                 }
             }
     }

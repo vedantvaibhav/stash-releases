@@ -111,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.handleAuthReady() }
+            self?.handleAuthReady()
         }
 
         panelController?.setup()
@@ -142,9 +142,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// not auto-show the panel.
     private func handleAuthReady() {
         guard AuthService.shared.isSignedIn else { return }
-        if AppSettings.shared.hasCompletedOnboarding {
-            return
-        }
+        if AppSettings.shared.hasCompletedOnboarding { return }
+        presentOnboarding()
+    }
+
+    private func presentOnboarding() {
         OnboardingWindowController.shared.present { [weak self] in
             AppSettings.shared.hasCompletedOnboarding = true
             self?.panelController?.togglePanel()
@@ -346,10 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #if DEBUG
     @objc private func resetOnboardingDebug() {
         AppSettings.shared.hasCompletedOnboarding = false
-        OnboardingWindowController.shared.present { [weak self] in
-            AppSettings.shared.hasCompletedOnboarding = true
-            self?.panelController?.togglePanel()
-        }
+        presentOnboarding()
     }
     #endif
 }
