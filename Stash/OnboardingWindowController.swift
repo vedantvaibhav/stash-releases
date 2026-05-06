@@ -42,6 +42,10 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         )
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
+        // Remove the 1pt separator line macOS draws under the title bar by
+        // default — without this the rounded panel reads as having a subtle
+        // top border. macOS 11+; deployment target is 13+ so unconditional.
+        window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
         // Close (red) stays visible as the user's escape hatch. miniaturize
         // and zoom are absent from the styleMask so they grey out automatically.

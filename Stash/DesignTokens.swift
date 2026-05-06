@@ -88,9 +88,9 @@ enum DesignTokens {
     }
 
     enum Onboarding {
-        // Window — rounded, transparent, no traffic-lights, OS drop shadow.
+        // Window — rounded, transparent, OS drop shadow.
         static let windowSize = NSSize(width: 720, height: 560)
-        static let windowCornerRadius: CGFloat = 24
+        static let windowCornerRadius: CGFloat = 16
         static let background = Color.black
         static let foreground = Color.white
 
@@ -145,7 +145,7 @@ enum DesignTokens {
 
         // Auth screen (screen 1) — full-bleed background with welcome card
         static let authIconSize: CGFloat = 64
-        static let authContentTopPadding: CGFloat = 100
+        static let authContentTopPadding: CGFloat = 56
         static let authContentSpacing: CGFloat = 18
         static let authTitleSubtitleGap: CGFloat = 10
         static let authButtonTopGap: CGFloat = 32
