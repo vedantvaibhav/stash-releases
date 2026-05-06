@@ -133,7 +133,7 @@ struct OnboardingView: View {
                 mediaSlot(OnboardingMedia.recordingDemo)
             }
             staggered(index: 2) {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: DesignTokens.Onboarding.recordingBulletGap) {
                     recordingBullet(
                         prefix: "Under 5 min →",
                         text: "cleaned text lands on your clipboard."
@@ -152,7 +152,7 @@ struct OnboardingView: View {
     }
 
     private func recordingBullet(prefix: String, text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Onboarding.recordingBulletInline) {
             Text(prefix)
                 .font(DesignTokens.Onboarding.bodyFont.weight(.semibold))
                 .foregroundStyle(DesignTokens.Onboarding.foreground)
@@ -268,31 +268,6 @@ struct OnboardingView: View {
                     .stroke(DesignTokens.Onboarding.chipBorder, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Onboarding.chipCornerRadius))
-    }
-
-    // MARK: - Feature card
-
-    private func featureCard(title: String, body: String, glyph: String) -> some View {
-        VStack(spacing: DesignTokens.Onboarding.stepGap) {
-            staggered(index: 0) {
-                Text(glyph)
-                    .font(.system(size: DesignTokens.Onboarding.cardArtSize))
-            }
-            staggered(index: 1) {
-                Text(title)
-                    .font(DesignTokens.Onboarding.titleFont)
-            }
-            staggered(index: 2) {
-                Text(body)
-                    .font(DesignTokens.Onboarding.bodyFont)
-                    .foregroundStyle(DesignTokens.Onboarding.bodyColor)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
-            }
-            staggered(index: 3) {
-                ctaButton(title: "Next", action: advance)
-            }
-        }
     }
 
     // MARK: - Done
