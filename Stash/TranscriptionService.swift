@@ -148,7 +148,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             if let t = maxDurationTimer { RunLoop.main.add(t, forMode: .common) }
 
         } catch {
-            errorMessage = "Could not start recording: \(error.localizedDescription)"
+            errorMessage = "Could not start recording — check your microphone and try again"
         }
     }
 
@@ -372,24 +372,27 @@ final class TranscriptionService: NSObject, ObservableObject {
                     }.value
                 } catch {
                     isProcessing = false
-                    lastErrorForBanner = error.localizedDescription
-                    reportToSlack(error: lastErrorForBanner ?? errorMessage ?? "Unknown error", durationSeconds: durationSeconds)
+                    let friendly = userFacingMessage(for: error)
+                    lastErrorForBanner = friendly
+                    reportToSlack(error: friendly, durationSeconds: durationSeconds)
                     showCompletion("Failed")
                     clearBannerAfterDelay()
                     return
                 }
             } else {
                 isProcessing = false
-                lastErrorForBanner = firstError.localizedDescription
-                reportToSlack(error: lastErrorForBanner ?? errorMessage ?? "Unknown error", durationSeconds: durationSeconds)
+                let friendly = userFacingMessage(for: firstError)
+                lastErrorForBanner = friendly
+                reportToSlack(error: friendly, durationSeconds: durationSeconds)
                 showCompletion("Failed")
                 clearBannerAfterDelay()
                 return
             }
         } catch {
             isProcessing = false
-            lastErrorForBanner = error.localizedDescription
-            reportToSlack(error: lastErrorForBanner ?? errorMessage ?? "Unknown error", durationSeconds: durationSeconds)
+            let friendly = userFacingMessage(for: error)
+            lastErrorForBanner = friendly
+            reportToSlack(error: friendly, durationSeconds: durationSeconds)
             showCompletion("Failed")
             clearBannerAfterDelay()
             return
@@ -512,6 +515,41 @@ final class TranscriptionService: NSObject, ObservableObject {
             if status < 0 { return "No internet connection" }
             return "\(domain) error (\(status))"
         }
+    }
+
+    /// Maps any thrown error into a banner-safe string. Errors thrown by `callWhisper`
+    /// and `callChat` already carry a friendly message (built via `friendlyError`),
+    /// so those pass through unchanged. URLSession-level failures (timeout, no
+    /// network, DNS, TLS, cancellation) reach us as raw `URLError` and would
+    /// otherwise surface CFNetwork wording — they get short, plain replacements.
+    /// Anything else falls back to a generic message rather than leaking the
+    /// system's `localizedDescription`.
+    private func userFacingMessage(for error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == "Whisper" || nsError.domain == "LLM" || nsError.domain == "Chat" {
+            return nsError.localizedDescription
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut:
+                return "Network timed out — try again"
+            case .notConnectedToInternet:
+                return "No internet connection"
+            case .cannotFindHost, .dnsLookupFailed:
+                return "Couldn't reach the server — check your connection"
+            case .cannotConnectToHost:
+                return "Couldn't reach the server — try again in a moment"
+            case .networkConnectionLost:
+                return "Network dropped — try again"
+            case .secureConnectionFailed:
+                return "Secure connection failed — try again"
+            case .cancelled:
+                return "Request cancelled"
+            default:
+                return "Network error — try again"
+            }
+        }
+        return "Something went wrong — try again."
     }
 
     private func isTransientWhisperError(status: Int) -> Bool {
