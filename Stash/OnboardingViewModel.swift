@@ -14,4 +14,9 @@ final class OnboardingViewModel: ObservableObject {
         guard step < totalSteps - 1 else { return }
         step += 1
     }
+
+    func goBack() {
+        guard step > 0 else { return }
+        step -= 1
+    }
 }
