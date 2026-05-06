@@ -142,6 +142,28 @@ enum DesignTokens {
         // Recording step — bullet rows
         static let recordingBulletGap: CGFloat = 10
         static let recordingBulletInline: CGFloat = 6
+
+        // Auth screen (screen 1) — full-bleed background with welcome card
+        static let authIconSize: CGFloat = 64
+        static let authContentSpacing: CGFloat = 18
+        static let authTitleSubtitleGap: CGFloat = 10
+        static let authButtonTopGap: CGFloat = 32
+        static let authButtonHeight: CGFloat = 56
+        static let authButtonMaxWidth: CGFloat = 480
+        static let authContentHorizontalPadding: CGFloat = 64
+        static let authTitleFont = Font.custom("Inter-SemiBold", size: 32)
+        static let authSubtitleFont = Font.custom("Inter-Regular", size: 18)
+        static let authButtonFont = Font.custom("Inter-SemiBold", size: 16)
+        static let authTitleColor = Color.black
+        static let authSubtitleColor = Color.black.opacity(0.55)
+        static let authButtonRest = Color.white
+        static let authButtonHover = Color(white: 0.94)
+        static let authStatusColor = Color.black.opacity(0.55)
+
+        // Asset name for the full-bleed background image. Drop a matching
+        // image set into Assets.xcassets to enable; until then the auth
+        // screen renders a sky→grass gradient placeholder.
+        static let authBackgroundAssetName = "OnboardingAuthBackground"
     }
 }
 

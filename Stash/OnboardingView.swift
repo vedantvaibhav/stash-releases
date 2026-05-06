@@ -23,16 +23,27 @@ struct OnboardingView: View {
                     .id(model.step)
                     .transition(.opacity)
                 Spacer(minLength: 0)
-                progressDots
-                    .padding(.bottom, DesignTokens.Onboarding.outerPadding)
+                if showsProgressDots {
+                    progressDots
+                        .padding(.bottom, DesignTokens.Onboarding.outerPadding)
+                }
             }
-            .padding(.horizontal, DesignTokens.Onboarding.outerPadding)
+            .padding(.horizontal, contentHorizontalPadding)
         }
         .foregroundStyle(DesignTokens.Onboarding.foreground)
         .frame(
             minWidth: DesignTokens.Onboarding.windowSize.width,
             minHeight: DesignTokens.Onboarding.windowSize.height
         )
+    }
+
+    /// Auth screen (step 0) takes over the full window with its own background
+    /// image and visual style — so the standard parent black bg, horizontal
+    /// padding, and progress-dot strip would all conflict with the design.
+    private var isAuthStep: Bool { model.step == 0 }
+    private var showsProgressDots: Bool { !isAuthStep }
+    private var contentHorizontalPadding: CGFloat {
+        isAuthStep ? 0 : DesignTokens.Onboarding.outerPadding
     }
 
     // MARK: - Step content
@@ -128,18 +139,22 @@ struct OnboardingView: View {
 
     // MARK: - Auth (screen 1)
 
-    /// Reuses the existing `AuthGateView` from PanelController.swift. The view
-    /// observes `AuthService.shared.$isSignedIn`; once auth completes we
-    /// advance to the hotkey step. AppDelegate's `.authCompleted` observer
-    /// also drives routing, but in-window advancement here keeps the screen
-    /// transition immediate rather than waiting for the notification round-trip.
+    /// Onboarding's auth screen. Full-bleed background image with a centered
+    /// icon + title + subtitle + Continue with Google button. Distinct from
+    /// `AuthGateView` (PanelController.swift) which is reused for sign-out
+    /// re-auth in the panel context — that one is small/dense and lives over
+    /// the panel's black chrome; this one is the marketing-grade welcome
+    /// surface for first-time users.
     private var authStep: some View {
-        AuthGateView()
-            .onReceive(AuthService.shared.$isSignedIn) { signedIn in
-                if signedIn && model.step == 0 {
-                    model.advance(totalSteps: Self.totalSteps)
-                }
+        OnboardingAuthView(
+            onSignIn: { Task { await AuthService.shared.signInWithGoogle() } }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onReceive(AuthService.shared.$isSignedIn) { signedIn in
+            if signedIn && model.step == 0 {
+                model.advance(totalSteps: Self.totalSteps)
             }
+        }
     }
 
     // MARK: - Recording (screen 3 — combined voice + meeting)
@@ -347,6 +362,129 @@ private struct OnboardingCTAButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Onboarding.ctaCornerRadius))
             .onHover { hovering = $0 }
             .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+// MARK: - Auth screen view
+
+/// Full-bleed welcome surface with the Continue with Google button. Used as
+/// step 0 of onboarding only. The panel's sign-out re-auth path keeps using
+/// the original `AuthGateView` from PanelController.swift.
+private struct OnboardingAuthView: View {
+    var onSignIn: () -> Void
+
+    @ObservedObject private var auth = AuthService.shared
+    @State private var hovering = false
+
+    var body: some View {
+        ZStack(alignment: .center) {
+            backgroundView
+
+            VStack(spacing: 0) {
+                appIcon
+                    .padding(.bottom, DesignTokens.Onboarding.authContentSpacing)
+
+                Text("welcome to stash")
+                    .font(DesignTokens.Onboarding.authTitleFont)
+                    .foregroundStyle(DesignTokens.Onboarding.authTitleColor)
+
+                Spacer().frame(height: DesignTokens.Onboarding.authTitleSubtitleGap)
+
+                Text("Clipboard, Files & Notes, always available")
+                    .font(DesignTokens.Onboarding.authSubtitleFont)
+                    .foregroundStyle(DesignTokens.Onboarding.authSubtitleColor)
+                    .multilineTextAlignment(.center)
+
+                Spacer().frame(height: DesignTokens.Onboarding.authButtonTopGap)
+
+                continueButton
+
+                statusLine
+                    .padding(.top, 12)
+            }
+            .padding(.horizontal, DesignTokens.Onboarding.authContentHorizontalPadding)
+        }
+    }
+
+    // MARK: - Subviews
+
+    @ViewBuilder
+    private var backgroundView: some View {
+        if let nsImage = NSImage(named: DesignTokens.Onboarding.authBackgroundAssetName) {
+            Image(nsImage: nsImage)
+                .resizable()
+                .scaledToFill()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .ignoresSafeArea()
+        } else {
+            // Sky → grass placeholder until the asset ships. Approximates the
+            // photographic background visually so dev builds aren't broken.
+            LinearGradient(
+                gradient: Gradient(stops: [
+                    .init(color: Color(red: 0.55, green: 0.78, blue: 0.95), location: 0.00),
+                    .init(color: Color(red: 0.65, green: 0.85, blue: 0.97), location: 0.45),
+                    .init(color: Color(red: 0.60, green: 0.83, blue: 0.62), location: 0.78),
+                    .init(color: Color(red: 0.32, green: 0.66, blue: 0.34), location: 1.00)
+                ]),
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+        }
+    }
+
+    private var appIcon: some View {
+        Image(nsImage: NSApp.applicationIconImage)
+            .resizable()
+            .scaledToFit()
+            .frame(
+                width: DesignTokens.Onboarding.authIconSize,
+                height: DesignTokens.Onboarding.authIconSize
+            )
+    }
+
+    private var continueButton: some View {
+        Button(action: onSignIn) {
+            HStack(spacing: 12) {
+                Image("Social Icons")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 22, height: 22)
+                Text("Continue with Google")
+                    .font(DesignTokens.Onboarding.authButtonFont)
+                    .foregroundStyle(DesignTokens.Onboarding.authTitleColor)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: DesignTokens.Onboarding.authButtonHeight)
+            .background(hovering ? DesignTokens.Onboarding.authButtonHover
+                                 : DesignTokens.Onboarding.authButtonRest)
+            .clipShape(Capsule())
+            .animation(.easeInOut(duration: 0.15), value: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .frame(maxWidth: DesignTokens.Onboarding.authButtonMaxWidth)
+    }
+
+    /// Inline status: sign-in error (tap to dismiss) takes precedence; otherwise
+    /// "Waiting for browser to complete sign-in…" while in-flight. Inherits the
+    /// pattern shipped in the OAuth abandoned-flow PR.
+    @ViewBuilder
+    private var statusLine: some View {
+        if let error = auth.errorMessage {
+            Text(error)
+                .font(.system(size: 12))
+                .foregroundStyle(Color.orange.opacity(0.95))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+                .onTapGesture { AuthService.shared.errorMessage = nil }
+        } else if auth.isLoading {
+            Text("Waiting for browser to complete sign-in…")
+                .font(.system(size: 12))
+                .foregroundStyle(DesignTokens.Onboarding.authStatusColor)
+                .multilineTextAlignment(.center)
+        }
     }
 }
 
