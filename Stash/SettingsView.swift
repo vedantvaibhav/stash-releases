@@ -45,19 +45,37 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
 // MARK: - Hotkey recorder
 
+/// Recorder behavior per slot. Panel toggle uses Carbon hotkeys which require
+/// a non-modifier key + at least one modifier; quick record additionally
+/// supports a double-tap-modifier sentinel (`0xFFFE`) for the floating-pill
+/// gesture.
+enum HotkeyRecordingMode {
+    case keyComboOnly
+    case keyComboOrDoubleTap
+}
+
 /// Manages key-event monitoring during hotkey recording.
 /// Takes a save callback so the same class can record for any hotkey slot.
 /// Internal access (was `private`) — reused by OnboardingView's hotkey screen.
 final class HotkeyRecorder: ObservableObject {
     @Published var isRecording = false
+
+    /// Held modifier flags during recording. Drives the in-progress display
+    /// in the row so the user sees what they're about to commit. Cleared on
+    /// stop().
+    @Published var liveModifiers: NSEvent.ModifierFlags = []
+
+    private var mode: HotkeyRecordingMode = .keyComboOrDoubleTap
     private var monitor: Any?
 
     /// Called with (keyCode, carbonModifiers) when a valid combo is pressed.
     var onSave: ((UInt32, UInt32) -> Void)?
 
-    func start() {
+    func start(mode: HotkeyRecordingMode = .keyComboOrDoubleTap) {
         guard !isRecording else { return }
+        self.mode = mode
         isRecording = true
+        liveModifiers = []
 
         var prevModFlags: NSEvent.ModifierFlags = NSEvent.modifierFlags
         var lastModReleaseTime: [UInt32: Date] = [:]
@@ -74,6 +92,11 @@ final class HotkeyRecorder: ObservableObject {
 
             if event.type == .keyDown {
                 if event.keyCode == UInt16(kVK_Escape) { self.stop(); return nil }
+                if Self.isModifierKeyCode(UInt32(event.keyCode)) {
+                    // Bare modifier press fires a keyDown on some keyboards; ignore
+                    // and let flagsChanged drive the display update.
+                    return nil
+                }
                 let carbonMods = nsToCarbonModifiers(event.modifierFlags)
                 guard carbonMods != 0 else { return event }
                 self.onSave?(UInt32(event.keyCode), carbonMods)
@@ -83,20 +106,25 @@ final class HotkeyRecorder: ObservableObject {
 
             if event.type == .flagsChanged {
                 let curr = event.modifierFlags
-                for pair in modMap {
-                    let wasDown = prevModFlags.contains(pair.flag)
-                    let isDown  = curr.contains(pair.flag)
-                    if wasDown && !isDown {
-                        let now = Date()
-                        if let last = lastModReleaseTime[pair.carbon],
-                           now.timeIntervalSince(last) < 0.45 {
-                            self.onSave?(0xFFFE, pair.carbon)
-                            self.stop()
-                            return nil
+                self.liveModifiers = curr.intersection([.command, .option, .control, .shift])
+
+                if self.mode == .keyComboOrDoubleTap {
+                    for pair in modMap {
+                        let wasDown = prevModFlags.contains(pair.flag)
+                        let isDown  = curr.contains(pair.flag)
+                        if wasDown && !isDown {
+                            let now = Date()
+                            if let last = lastModReleaseTime[pair.carbon],
+                               now.timeIntervalSince(last) < 0.45 {
+                                self.onSave?(0xFFFE, pair.carbon)
+                                self.stop()
+                                return nil
+                            }
+                            lastModReleaseTime[pair.carbon] = now
                         }
-                        lastModReleaseTime[pair.carbon] = now
                     }
                 }
+
                 prevModFlags = curr
             }
 
@@ -106,10 +134,28 @@ final class HotkeyRecorder: ObservableObject {
 
     func stop() {
         isRecording = false
+        liveModifiers = []
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
     }
 
     deinit { stop() }
+
+    /// Carbon keyCodes for the four common modifiers and their right-hand
+    /// counterparts. Bare modifier presses sometimes fire `keyDown` on certain
+    /// hardware (e.g. some Bluetooth keyboards) — treat them as no-op recording
+    /// events so they don't end up in `event.keyCode → onSave`.
+    private static func isModifierKeyCode(_ code: UInt32) -> Bool {
+        switch Int(code) {
+        case kVK_Command, kVK_RightCommand,
+             kVK_Option, kVK_RightOption,
+             kVK_Control, kVK_RightControl,
+             kVK_Shift, kVK_RightShift,
+             kVK_CapsLock, kVK_Function:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 // MARK: - Hotkey recorder row (shared by SettingsView and OnboardingView)
@@ -131,7 +177,7 @@ struct HotkeyRecorderRow: View {
                 .font(.system(size: 14, weight: .regular))
                 .foregroundColor(.white.opacity(0.75))
 
-            Text(badgeString)
+            Text(recorder.isRecording ? liveBadge : badgeString)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.white.opacity(0.75))
                 .padding(.horizontal, 8)
@@ -154,7 +200,7 @@ struct HotkeyRecorderRow: View {
                     .foregroundColor(.white.opacity(0.45))
             } else {
                 Button {
-                    recorder.start()
+                    recorder.start(mode: recordingMode)
                 } label: {
                     Text("Record New")
                         .font(.system(size: 12, weight: .medium))
@@ -168,6 +214,13 @@ struct HotkeyRecorderRow: View {
         .onAppear { wireRecorder() }
     }
 
+    private var recordingMode: HotkeyRecordingMode {
+        switch slot {
+        case .primaryPanelToggle: return .keyComboOnly
+        case .quickRecord:        return .keyComboOrDoubleTap
+        }
+    }
+
     private var badgeString: String {
         switch slot {
         case .primaryPanelToggle:
@@ -175,6 +228,19 @@ struct HotkeyRecorderRow: View {
         case .quickRecord:
             return quickRecordBadgeString(code: settings.quickRecordHotKeyCode, modifiers: settings.quickRecordHotKeyModifiers)
         }
+    }
+
+    /// In-progress capture: held modifier glyphs + `…` placeholder for the
+    /// not-yet-pressed key. Avoids ever showing a raw integer.
+    private var liveBadge: String {
+        var s = ""
+        let mods = recorder.liveModifiers
+        if mods.contains(.control) { s += "⌃" }
+        if mods.contains(.option)  { s += "⌥" }
+        if mods.contains(.shift)   { s += "⇧" }
+        if mods.contains(.command) { s += "⌘" }
+        s += "…"
+        return s
     }
 
     private func wireRecorder() {
