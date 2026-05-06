@@ -3,9 +3,9 @@ import AppKit
 
 struct OnboardingView: View {
 
+    @ObservedObject var model: OnboardingViewModel
     var onFinish: () -> Void
 
-    @State private var step: Int = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @ObservedObject private var settings = AppSettings.shared
@@ -19,7 +19,7 @@ struct OnboardingView: View {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 content
-                    .id(step)
+                    .id(model.step)
                     .transition(.opacity)
                 Spacer(minLength: 0)
                 progressDots
@@ -38,7 +38,7 @@ struct OnboardingView: View {
 
     @ViewBuilder
     private var content: some View {
-        switch step {
+        switch model.step {
         case 0: hotkeyStep
         case 1: featureCard(
             title: "Quick voice notes",
@@ -177,7 +177,7 @@ struct OnboardingView: View {
         HStack(spacing: DesignTokens.Onboarding.progressDotGap) {
             ForEach(0..<Self.totalSteps, id: \.self) { i in
                 Circle()
-                    .fill(i == step ? Color.white.opacity(0.85) : Color.white.opacity(0.18))
+                    .fill(i == model.step ? Color.white.opacity(0.85) : Color.white.opacity(0.18))
                     .frame(
                         width: DesignTokens.Onboarding.progressDotSize,
                         height: DesignTokens.Onboarding.progressDotSize
@@ -214,8 +214,8 @@ struct OnboardingView: View {
     // MARK: - Step advance
 
     private func advance() {
-        if step < Self.totalSteps - 1 {
-            step += 1
+        if model.step < Self.totalSteps - 1 {
+            model.advance(totalSteps: Self.totalSteps)
         } else {
             onFinish()
         }

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0FE9E933CE26FE9658571623 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6936EAC02E35E905B68947 /* OnboardingViewModel.swift */; };
 		15B0D4CD953CAD05728D230C /* OnboardingWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0519B42CA9511064669E43F /* OnboardingWindowController.swift */; };
 		A10000000000000000000001 /* StashApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* StashApp.swift */; };
 		A10000000000000000000002 /* PanelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* PanelController.swift */; };
@@ -41,6 +42,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		2D6936EAC02E35E905B68947 /* OnboardingViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
 		8EDE6F3AA0830AF7CE2A5E8C /* OnboardingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		A0519B42CA9511064669E43F /* OnboardingWindowController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingWindowController.swift; sourceTree = "<group>"; };
 		A20000000000000000000001 /* StashApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StashApp.swift; sourceTree = "<group>"; };
@@ -130,6 +132,7 @@
 				A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */,
 				8EDE6F3AA0830AF7CE2A5E8C /* OnboardingView.swift */,
 				A0519B42CA9511064669E43F /* OnboardingWindowController.swift */,
+				2D6936EAC02E35E905B68947 /* OnboardingViewModel.swift */,
 			);
 			path = Stash;
 			sourceTree = "<group>";
@@ -250,6 +253,7 @@
 				A10000000000000000000028 /* NotesInlineCodeLayoutManager.swift in Sources */,
 				D9E043017A6345D76AC5A2BC /* OnboardingView.swift in Sources */,
 				15B0D4CD953CAD05728D230C /* OnboardingWindowController.swift in Sources */,
+				0FE9E933CE26FE9658571623 /* OnboardingViewModel.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
