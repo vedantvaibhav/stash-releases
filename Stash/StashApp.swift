@@ -357,9 +357,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     #if DEBUG
     @objc private func resetOnboardingDebug() {
-        AppSettings.shared.hasCompletedOnboarding = false
-        OnboardingWindowController.shared.reset()
-        presentOnboarding(startStep: 0)
+        // Sign the user out too so the reset reproduces the full first-launch
+        // path: onboarding lands at screen 1 (auth) every time. Without this,
+        // hasCompletedOnboarding=false + isSignedIn=true would route to
+        // screen 2 (hotkeys), skipping the auth screen we want to test.
+        Task { @MainActor in
+            await AuthService.shared.signOut()
+            AppSettings.shared.hasCompletedOnboarding = false
+            OnboardingWindowController.shared.reset()
+            presentOnboarding(startStep: 0)
+        }
     }
     #endif
 }
