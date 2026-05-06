@@ -918,7 +918,8 @@ struct SharedFilesColumn: View {
                 gridHover: fileGridHover,
                 fileQuickLook: fileQuickLook
             )),
-            onDrop: { fileDropStorage.addFiles($0) }
+            onDrop: { fileDropStorage.addFiles($0) },
+            selection: fileSelection
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, forCardsMode ? 4 : 0)

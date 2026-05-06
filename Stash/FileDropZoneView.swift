@@ -75,19 +75,61 @@ func fileDropRelativeTime(since date: Date) -> String {
 final class FileSelectionState: ObservableObject {
     @Published var selectedIDs: Set<String> = []
 
-    /// Shift/Cmd+click — add or remove from the multi-selection.
-    func toggle(_ id: String) {
-        if selectedIDs.contains(id) { selectedIDs.remove(id) }
-        else { selectedIDs.insert(id) }
-    }
-    /// Regular click — select only this one, clear everything else.
+    /// Anchor for shift+click range selection. Set on plain click, on a Cmd
+    /// click that lands on an unselected file (so the new item becomes the
+    /// natural anchor), and cleared when selection becomes empty. Nil means
+    /// "no anchor — treat next shift+click as a plain click".
+    private(set) var anchorID: String?
+
+    /// Order of files currently displayed by the grid. The grid pushes this
+    /// on every render so range computation always uses the same order the
+    /// user is looking at. Plain `var` (not `@Published`) so assignment
+    /// doesn't trigger a re-render.
+    var displayedIDs: [String] = []
+
+    /// Plain click — select only this one, set the anchor.
     func selectOnly(_ id: String) {
         selectedIDs = [id]
+        anchorID = id
     }
-    func clear() { selectedIDs.removeAll() }
+
+    /// Cmd+click — toggle membership. If becoming the only selected item,
+    /// reset the anchor to it. If selection is now empty, clear the anchor.
+    func toggle(_ id: String) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+            if selectedIDs.isEmpty { anchorID = nil }
+        } else {
+            selectedIDs.insert(id)
+            if selectedIDs.count == 1 { anchorID = id }
+        }
+    }
+
+    /// Shift+click — select the inclusive range from `anchorID` to `id` in
+    /// `displayedIDs` order. If anchor is nil or either id is missing from
+    /// the current order, falls back to plain click and seeds the anchor.
+    /// Anchor stays put on shift+click.
+    func selectRange(to id: String) {
+        guard let anchor = anchorID,
+              let from = displayedIDs.firstIndex(of: anchor),
+              let to   = displayedIDs.firstIndex(of: id) else {
+            selectOnly(id)
+            return
+        }
+        let lo = min(from, to)
+        let hi = max(from, to)
+        selectedIDs = Set(displayedIDs[lo...hi])
+        // Anchor unchanged.
+    }
+
+    func clear() {
+        selectedIDs.removeAll()
+        anchorID = nil
+    }
 
     func removeFromSelection(_ id: String) {
         selectedIDs.remove(id)
+        if selectedIDs.isEmpty { anchorID = nil }
     }
 
     func isSelected(_ id: String) -> Bool { selectedIDs.contains(id) }
@@ -134,10 +176,15 @@ struct FileDropListContent: View {
                         .onAppear {
                             fileQuickLook.currentColumns =
                                 numColumns(for: geo.size.width - outerPadding * 2)
+                            selection.displayedIDs = displayedFiles.map(\.id)
                         }
                         .onChange(of: geo.size.width) { newWidth in
                             fileQuickLook.currentColumns =
                                 numColumns(for: newWidth - outerPadding * 2)
+                        }
+                        .onChange(of: storage.files.map(\.id)) { newIDs in
+                            // Cap with maxItems exactly the same way `displayedFiles` does.
+                            selection.displayedIDs = (maxItems.map { Array(newIDs.prefix($0)) }) ?? newIDs
                         }
                 }
             }
@@ -217,6 +264,15 @@ final class FileDropCardContentView: NSView {
     private let imageView = NSImageView()
     private let nameLabel = NSTextField(wrappingLabelWithString: "")
 
+    /// Sublayer painting a subtle accent halo behind the icon when the card
+    /// is selected. Inset from the icon's frame by `iconBackdropInset` so
+    /// the icon shows over the halo, Finder-style.
+    private let iconSelectionLayer = CALayer()
+    /// Sublayer painting an accent fill behind the filename label when the
+    /// card is selected. The label's `textColor` flips to alternate-selected
+    /// (typically white) for contrast.
+    private let nameSelectionLayer = CALayer()
+
     private var fileExists = true
     private var isHovering = false
     private var isSelected = false
@@ -236,6 +292,16 @@ final class FileDropCardContentView: NSView {
         layer?.cornerRadius = 8
         layer?.masksToBounds = true
         layer?.backgroundColor = NSColor.clear.cgColor
+
+        // Selection backdrops sit behind imageView and nameLabel. Insert at
+        // the bottom of the sublayer stack so they never paint over the icon
+        // or label.
+        iconSelectionLayer.cornerRadius = DesignTokens.FileShelf.iconBackdropCornerRadius
+        iconSelectionLayer.backgroundColor = NSColor.clear.cgColor
+        nameSelectionLayer.cornerRadius = DesignTokens.FileShelf.labelBackdropCornerRadius
+        nameSelectionLayer.backgroundColor = NSColor.clear.cgColor
+        layer?.insertSublayer(iconSelectionLayer, at: 0)
+        layer?.insertSublayer(nameSelectionLayer, at: 0)
 
         // 48×48 icon/thumbnail, centred, layer-backed for corner radius
         imageView.imageScaling = .scaleAxesIndependently   // fills 48×48 after we pre-crop
@@ -447,13 +513,29 @@ final class FileDropCardContentView: NSView {
         return out
     }
 
-    /// Selection visuals. The cell-level layer.backgroundColor is no longer
-    /// used for hover OR selection — selection paints into the icon and label
-    /// sublayers added in `init`. The QuickLook-focused border stays here,
-    /// since it's a card-level overlay.
+    /// Selection visuals. Three layers participate:
+    /// - Cell layer: clear fill, optional 1.5pt blue border for QuickLook focus.
+    /// - iconSelectionLayer: subtle accent halo behind the imageView.
+    /// - nameSelectionLayer: accent fill behind the nameLabel + label
+    ///   `textColor` flips for contrast.
+    /// All accent colors come from system NSColor so user accent + light/dark
+    /// appearance are auto-respected.
     private func updateSelectionVisuals() {
         guard let layer else { return }
         layer.backgroundColor = NSColor.clear.cgColor
+
+        if isSelected {
+            iconSelectionLayer.backgroundColor =
+                NSColor.unemphasizedSelectedContentBackgroundColor.cgColor
+            nameSelectionLayer.backgroundColor =
+                NSColor.selectedContentBackgroundColor.cgColor
+            nameLabel.textColor = NSColor.alternateSelectedControlTextColor
+        } else {
+            iconSelectionLayer.backgroundColor = NSColor.clear.cgColor
+            nameSelectionLayer.backgroundColor = NSColor.clear.cgColor
+            // Restore the default white-85% from applyContent's existing logic.
+            nameLabel.textColor = NSColor.white.withAlphaComponent(0.85)
+        }
 
         if isQuickLookSelected {
             layer.borderWidth = 1.5
@@ -471,6 +553,19 @@ final class FileDropCardContentView: NSView {
     override func layout() {
         super.layout()
         nameLabel.preferredMaxLayoutWidth = nameLabel.bounds.width
+
+        // Position the selection sublayers under their respective subviews.
+        // Disable implicit animation so frame changes during layout don't
+        // animate alongside selection-state transitions (which DO animate).
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let iconInset = DesignTokens.FileShelf.iconBackdropInset
+        iconSelectionLayer.frame = imageView.frame.insetBy(dx: -iconInset, dy: -iconInset)
+        let labelPadH = DesignTokens.FileShelf.labelBackdropPaddingH
+        let labelPadV = DesignTokens.FileShelf.labelBackdropPaddingV
+        nameSelectionLayer.frame = nameLabel.frame.insetBy(dx: -labelPadH, dy: -labelPadV)
+        CATransaction.commit()
+
         updateSelectionVisuals()
     }
 
@@ -590,10 +685,16 @@ final class DraggableFileView: NSView, NSDraggingSource {
             onRequestDelete?()
         }
 
-        // Shift/Cmd → toggle multi-selection in `mouseDown` so drag sees the new set.
+        // Modifier-aware selection. Shift extends a range from the anchor;
+        // Cmd toggles membership. Both run in mouseDown (not mouseUp) so a
+        // subsequent drag sees the post-click selection set.
         let mods = event.modifierFlags
-        usedModifierClickForSelection = mods.contains(.shift) || mods.contains(.command)
-        if usedModifierClickForSelection {
+        let isShift = mods.contains(.shift)
+        let isCmd   = mods.contains(.command)
+        usedModifierClickForSelection = isShift || isCmd
+        if isShift {
+            selection?.selectRange(to: item.id)
+        } else if isCmd {
             selection?.toggle(item.id)
         }
     }
@@ -970,6 +1071,10 @@ struct FileDropCardRepresentable: NSViewRepresentable {
 final class FileDropContainerView: NSView {
     var onDrop: (([URL]) -> Void)?
     weak var contentHostingView: NSView?
+    /// Set by FileDropZoneRepresentable so a click on the empty grid area can
+    /// clear the file selection. Weak so we don't keep the panel's long-lived
+    /// selection state alive past container teardown.
+    weak var selectionState: FileSelectionState?
 
     private let borderLayer    = CALayer()
     private let uploadIconView = NSImageView()
@@ -1016,6 +1121,19 @@ final class FileDropContainerView: NSView {
         registerForDraggedTypes(StashFileDragPasteboard.types)
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override func mouseDown(with event: NSEvent) {
+        // File cards win the hit test via DraggableFileView.hitTest (returns
+        // self for any point inside their bounds), so this handler only fires
+        // when the click lands on truly empty grid area — exactly the
+        // deselect target.
+        //
+        // Drop handling routes through NSDraggingDestination
+        // (draggingEntered/performDragOperation), not mouseDown, so this does
+        // not interfere with drag-in or drag-out.
+        selectionState?.clear()
+        super.mouseDown(with: event)
+    }
 
     /// Called by makeNSView after the hosting view is added — ensures chrome sits above SwiftUI.
     func liftOverlay() {
@@ -1147,6 +1265,11 @@ final class FileDropContainerView: NSView {
 struct FileDropZoneRepresentable: NSViewRepresentable {
     let content: AnyView
     let onDrop: ([URL]) -> Void
+    /// Optional: when provided, a click on the empty grid area clears the
+    /// file selection. Optional so call sites that don't host a file grid
+    /// (e.g. the clipboard or notes tabs that still use FileDropZone for its
+    /// drop-target chrome) don't have to thread an unused param.
+    var selection: FileSelectionState? = nil
 
     func makeNSView(context: Context) -> FileDropContainerView {
         let container = FileDropContainerView()
@@ -1158,6 +1281,7 @@ struct FileDropZoneRepresentable: NSViewRepresentable {
         container.addSubview(hosting, positioned: .below, relativeTo: nil)
         container.contentHostingView = hosting
         container.onDrop = onDrop
+        container.selectionState = selection
         container.liftOverlay()
 
         return container
@@ -1165,6 +1289,7 @@ struct FileDropZoneRepresentable: NSViewRepresentable {
 
     func updateNSView(_ container: FileDropContainerView, context: Context) {
         container.onDrop = onDrop
+        container.selectionState = selection
         // Push fresh bindings into the hosted SwiftUI view every time the parent re-renders.
         // Without this, @Binding changes (editingNoteId, showTranscriptionPage, etc.) never
         // reach SharedNotesColumn — the NSHostingView stays frozen on its initial state.

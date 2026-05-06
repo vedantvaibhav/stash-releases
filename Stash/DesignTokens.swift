@@ -142,6 +142,17 @@ enum DesignTokens {
         static let recordingBulletGap: CGFloat = 10
         static let recordingBulletInline: CGFloat = 6
     }
+
+    enum FileShelf {
+        // Finder-style selection visual. Colors come from system NSColor at
+        // render time so the user's accent setting + light/dark appearance
+        // are honored automatically.
+        static let iconBackdropInset: CGFloat = 4
+        static let iconBackdropCornerRadius: CGFloat = 6
+        static let labelBackdropCornerRadius: CGFloat = 4
+        static let labelBackdropPaddingH: CGFloat = 4
+        static let labelBackdropPaddingV: CGFloat = 2
+    }
 }
 
 // MARK: - Color(hex:) helper

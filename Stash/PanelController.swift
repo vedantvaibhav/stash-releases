@@ -1149,7 +1149,8 @@ struct PanelContentView: View {
                                         fileQuickLook: fileQuickLook
                                     )
                                 ),
-                                onDrop: { fileDropStorage.addFiles($0) }
+                                onDrop: { fileDropStorage.addFiles($0) },
+                                selection: fileSelection
                             )
                         case .clipboard:
                             FileDropZoneRepresentable(
