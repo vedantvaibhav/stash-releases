@@ -68,7 +68,7 @@ struct OnboardingView: View {
                     .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
             }
             staggered(index: 3) {
-                ctaButton(title: "Next", action: advance)
+                backNextButtons()
             }
         }
     }
@@ -92,7 +92,7 @@ struct OnboardingView: View {
                     .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
             }
             staggered(index: 3) {
-                ctaButton(title: "Next", action: advance)
+                backNextButtons()
             }
         }
     }
@@ -167,7 +167,7 @@ struct OnboardingView: View {
                 .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
             }
             staggered(index: 3) {
-                ctaButton(title: "Next", action: advance)
+                backNextButtons()
             }
         }
     }
@@ -264,6 +264,24 @@ struct OnboardingView: View {
                 .padding(.vertical, DesignTokens.Onboarding.ctaPaddingV)
         }
         .buttonStyle(OnboardingCTAButtonStyle())
+    }
+
+    /// [Back] [Next] pair used on the feature-education screens. Back is the
+    /// secondary action (lower visual weight via the plain button style); Next
+    /// keeps the primary CTA styling so the forward path stays prominent.
+    private func backNextButtons() -> some View {
+        HStack(spacing: 12) {
+            Button(action: { model.goBack() }) {
+                Text("Back")
+                    .font(DesignTokens.Onboarding.ctaFont)
+                    .foregroundStyle(DesignTokens.Onboarding.bodyColor)
+                    .padding(.horizontal, DesignTokens.Onboarding.ctaPaddingH)
+                    .padding(.vertical, DesignTokens.Onboarding.ctaPaddingV)
+            }
+            .buttonStyle(.plain)
+
+            ctaButton(title: "Next", action: advance)
+        }
     }
 
     // MARK: - Progress dots
