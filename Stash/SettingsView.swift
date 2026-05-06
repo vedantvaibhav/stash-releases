@@ -47,7 +47,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
 /// Manages key-event monitoring during hotkey recording.
 /// Takes a save callback so the same class can record for any hotkey slot.
-private final class HotkeyRecorder: ObservableObject {
+/// Internal access (was `private`) — reused by OnboardingView's hotkey screen.
+final class HotkeyRecorder: ObservableObject {
     @Published var isRecording = false
     private var monitor: Any?
 

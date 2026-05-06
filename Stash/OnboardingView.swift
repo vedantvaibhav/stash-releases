@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Carbon.HIToolbox
 
 struct OnboardingView: View {
 
@@ -9,6 +10,9 @@ struct OnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @ObservedObject private var settings = AppSettings.shared
+
+    @StateObject private var primaryRecorder = HotkeyRecorder()
+    @StateObject private var quickRecorder   = HotkeyRecorder()
 
     private static let totalSteps = 5
 
@@ -122,12 +126,20 @@ struct OnboardingView: View {
             }
             staggered(index: 1) {
                 VStack(alignment: .leading, spacing: DesignTokens.Onboarding.hotkeyRowGap) {
-                    hotkeyRow(label: "Open Stash", chip: primaryChipText)
-                    hotkeyRow(label: "Quick record", chip: quickRecordChipText)
+                    interactiveHotkeyRow(
+                        label: "Open Stash",
+                        chip: primaryChipText,
+                        recorder: primaryRecorder
+                    )
+                    interactiveHotkeyRow(
+                        label: "Quick record",
+                        chip: quickRecordChipText,
+                        recorder: quickRecorder
+                    )
                 }
             }
             staggered(index: 2) {
-                Text("These are the defaults. You can change them anytime in Settings.")
+                Text("These are the defaults. Click Record to set your own, or hit Continue.")
                     .font(DesignTokens.Onboarding.bodyFont)
                     .foregroundStyle(DesignTokens.Onboarding.bodyColor)
                     .multilineTextAlignment(.center)
@@ -137,15 +149,65 @@ struct OnboardingView: View {
                 ctaButton(title: "Continue", action: advance)
             }
         }
+        .onAppear { wireHotkeyRecorderCallbacks() }
     }
 
-    private func hotkeyRow(label: String, chip: String) -> some View {
+    private func interactiveHotkeyRow(label: String, chip: String, recorder: HotkeyRecorder) -> some View {
         HStack(spacing: DesignTokens.Onboarding.chipGap) {
             Text(label)
                 .font(DesignTokens.Onboarding.bodyFont)
                 .foregroundStyle(DesignTokens.Onboarding.bodyColor)
                 .frame(width: DesignTokens.Onboarding.hotkeyLabelWidth, alignment: .leading)
             chipView(chip)
+            Spacer()
+            hotkeyRecordButton(recorder: recorder)
+        }
+    }
+
+    @ViewBuilder
+    private func hotkeyRecordButton(recorder: HotkeyRecorder) -> some View {
+        if recorder.isRecording {
+            Button(action: { recorder.stop() }) {
+                Text("Listening… esc to cancel")
+                    .font(DesignTokens.Onboarding.bodyFont)
+                    .foregroundStyle(DesignTokens.Onboarding.bodyColor)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Button(action: { recorder.start() }) {
+                Text("Record")
+                    .font(DesignTokens.Onboarding.ctaFont)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(OnboardingCTAButtonStyle())
+        }
+    }
+
+    /// Persistence path mirrors SettingsView (lines 149–169 in SettingsView.swift) so
+    /// hotkeys recorded here flow through the same AppSettings + Notification.Name
+    /// channels — no duplicate persistence layer.
+    private func wireHotkeyRecorderCallbacks() {
+        primaryRecorder.onSave = { code, mods in
+            AppSettings.shared.hotKeyCode      = code
+            AppSettings.shared.hotKeyModifiers = mods
+            NotificationCenter.default.post(name: .quickPanelHotkeyChanged, object: nil)
+        }
+        quickRecorder.onSave = { code, mods in
+            AppSettings.shared.quickRecordHotKeyCode      = code
+            AppSettings.shared.quickRecordHotKeyModifiers = mods
+            if code == 0xFFFE {
+                if      mods & UInt32(cmdKey)     != 0 { AppSettings.shared.doubleTapQuickRecord = .command }
+                else if mods & UInt32(optionKey)  != 0 { AppSettings.shared.doubleTapQuickRecord = .option  }
+                else if mods & UInt32(controlKey) != 0 { AppSettings.shared.doubleTapQuickRecord = .control }
+                else if mods & UInt32(shiftKey)   != 0 { AppSettings.shared.doubleTapQuickRecord = .shift   }
+                else                                   { AppSettings.shared.doubleTapQuickRecord = .off     }
+                NotificationCenter.default.post(name: .doubleTapQuickRecordChanged, object: nil)
+            } else {
+                AppSettings.shared.doubleTapQuickRecord = .off
+                NotificationCenter.default.post(name: .quickRecordHotkeyChanged, object: nil)
+                NotificationCenter.default.post(name: .doubleTapQuickRecordChanged, object: nil)
+            }
         }
     }
 
