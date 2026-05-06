@@ -15,7 +15,7 @@ struct OnboardingView: View {
     @StateObject private var primaryRecorder = HotkeyRecorder()
     @StateObject private var quickRecorder   = HotkeyRecorder()
 
-    private static let totalSteps = 5
+    private static let totalSteps = 6
 
     var body: some View {
         ZStack {
@@ -48,7 +48,32 @@ struct OnboardingView: View {
         case 1: hotkeyStep
         case 2: recordingStep
         case 3: clipboardStep
+        case 4: filesStep
         default: doneStep
+        }
+    }
+
+    // MARK: - File shelf (screen 5)
+
+    private var filesStep: some View {
+        VStack(spacing: DesignTokens.Onboarding.stepGap) {
+            staggered(index: 0) {
+                Text("File shelf")
+                    .font(DesignTokens.Onboarding.titleFont)
+            }
+            staggered(index: 1) {
+                mediaSlot(OnboardingMedia.filesDemo)
+            }
+            staggered(index: 2) {
+                Text("Drag any file in, drag it out into any app. Hit space for Quick Look. Your desktop stays clean.")
+                    .font(DesignTokens.Onboarding.bodyFont)
+                    .foregroundStyle(DesignTokens.Onboarding.bodyColor)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
+            }
+            staggered(index: 3) {
+                ctaButton(title: "Next", action: advance)
+            }
         }
     }
 
