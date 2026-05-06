@@ -311,15 +311,17 @@ final class FileDropCardContentView: NSView {
         applyContent(item: item, fileURL: fileURL, relativeTime: relativeTime)
     }
 
+    /// Hover-driven UI affordance: shows the delete (×) button when the user
+    /// hovers a card. The cell-level background tint that used to live here
+    /// was Finder-mismatched and was removed as part of the selection-visual
+    /// pass — only the delete-button fade remains.
     func setCardHover(_ hovering: Bool) {
         guard isHovering != hovering else { return }
         isHovering = hovering
-        // Animate background at 0.1s — allowsImplicitAnimation lets CALayer interpolate the colour.
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.1
             ctx.allowsImplicitAnimation = true
             ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            updateHoverAppearance()
             deleteButton.animator().alphaValue = (hovering && fileExists) ? 1 : 0
         }
     }
@@ -330,7 +332,7 @@ final class FileDropCardContentView: NSView {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
             ctx.allowsImplicitAnimation = true
-            updateHoverAppearance()
+            updateSelectionVisuals()
         }
     }
 
@@ -340,7 +342,7 @@ final class FileDropCardContentView: NSView {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.12
             ctx.allowsImplicitAnimation = true
-            updateHoverAppearance()
+            updateSelectionVisuals()
         }
     }
 
@@ -418,7 +420,7 @@ final class FileDropCardContentView: NSView {
             nameLabel.stringValue = item.fileName
             nameLabel.textColor = NSColor(white: 0.4, alpha: 1)
         }
-        updateHoverAppearance()
+        updateSelectionVisuals()
     }
 
     private func setThumbnail(_ image: NSImage?, isImage: Bool) {
@@ -445,18 +447,14 @@ final class FileDropCardContentView: NSView {
         return out
     }
 
-    private func updateHoverAppearance() {
+    /// Selection visuals. The cell-level layer.backgroundColor is no longer
+    /// used for hover OR selection — selection paints into the icon and label
+    /// sublayers added in `init`. The QuickLook-focused border stays here,
+    /// since it's a card-level overlay.
+    private func updateSelectionVisuals() {
         guard let layer else { return }
-        // Default: clear. Hover: light fill. Selected (incl. multi-select): slightly stronger, persists without hover.
-        if isSelected {
-            layer.backgroundColor = NSColor.white.withAlphaComponent(0.12).cgColor
-        } else if isHovering {
-            layer.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
-        } else {
-            layer.backgroundColor = NSColor.clear.cgColor
-        }
+        layer.backgroundColor = NSColor.clear.cgColor
 
-        // Blue ring overlays the fill when this is the Quick-Look-focused file.
         if isQuickLookSelected {
             layer.borderWidth = 1.5
             layer.borderColor = NSColor.systemBlue.cgColor
@@ -473,7 +471,7 @@ final class FileDropCardContentView: NSView {
     override func layout() {
         super.layout()
         nameLabel.preferredMaxLayoutWidth = nameLabel.bounds.width
-        updateHoverAppearance()
+        updateSelectionVisuals()
     }
 
     @objc private func deleteClicked() { onDelete?() }
