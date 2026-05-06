@@ -1232,14 +1232,14 @@ struct PanelContentView: View {
             Text("This note will be permanently deleted.")
         }
         .onChange(of: fileToDelete?.id) { _ in
-            // Replaces the prior SwiftUI .alert(...) chain. SwiftUI's stock
-            // alert rendered OS-default light chrome against the panel's
-            // dark theme; presentFileDeleteConfirmAlert (CardsModeAppKit.swift)
-            // builds a dark-chromed NSAlert instead.
+            // Replaces the prior SwiftUI .alert(...) chain. The helper
+            // (CardsModeAppKit.swift) presents a dark-chromed NSAlert as a
+            // sheet on the panel; the completion fires after the user picks.
             guard let item = fileToDelete else { return }
-            let confirmed = presentFileDeleteConfirmAlert()
-            if confirmed { fileDropStorage.removeFile(item) }
-            fileToDelete = nil
+            presentFileDeleteConfirmAlert { confirmed in
+                if confirmed { fileDropStorage.removeFile(item) }
+                fileToDelete = nil
+            }
         }
     }
 }
