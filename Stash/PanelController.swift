@@ -1245,6 +1245,12 @@ struct PanelContentView: View {
         } message: {
             Text("The file will be removed from the list and deleted from your Mac.")
         }
+        // Force dark scheme on the alert chain so macOS doesn't render NSAlert's
+        // chrome with the default light wash that otherwise reads as off-color
+        // against the panel's dark theme. May not propagate to all NSAlert
+        // chrome on every macOS version — if it doesn't take, escalate to
+        // path 2 (NSAlert with NSAppearance(named: .darkAqua) forced).
+        .preferredColorScheme(.dark)
     }
 }
 
