@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import AVKit
-import Carbon.HIToolbox
 
 struct OnboardingView: View {
 
@@ -11,9 +10,6 @@ struct OnboardingView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @ObservedObject private var settings = AppSettings.shared
-
-    @StateObject private var primaryRecorder = HotkeyRecorder()
-    @StateObject private var quickRecorder   = HotkeyRecorder()
 
     private static let totalSteps = 6
 
@@ -189,6 +185,11 @@ struct OnboardingView: View {
 
     // MARK: - Hotkeys (screen 2)
 
+    /// Reuses the shared `HotkeyRecorderRow` from SettingsView.swift so onboarding
+    /// inherits Settings' double-tap badge rendering and persistence wiring.
+    /// The visual style is Settings-ish (small chip + Record New button) — a
+    /// deliberate aesthetic mismatch with the rest of onboarding, accepted for
+    /// now. Visual polish lands in a later pass.
     private var hotkeyStep: some View {
         VStack(spacing: DesignTokens.Onboarding.stepGap) {
             staggered(index: 0) {
@@ -197,20 +198,13 @@ struct OnboardingView: View {
             }
             staggered(index: 1) {
                 VStack(alignment: .leading, spacing: DesignTokens.Onboarding.hotkeyRowGap) {
-                    interactiveHotkeyRow(
-                        label: "Open Stash",
-                        chip: primaryChipText,
-                        recorder: primaryRecorder
-                    )
-                    interactiveHotkeyRow(
-                        label: "Quick record",
-                        chip: quickRecordChipText,
-                        recorder: quickRecorder
-                    )
+                    HotkeyRecorderRow(label: "Open Stash",   slot: .primaryPanelToggle)
+                    HotkeyRecorderRow(label: "Quick record", slot: .quickRecord)
                 }
+                .frame(maxWidth: DesignTokens.Onboarding.bodyMaxWidthLong)
             }
             staggered(index: 2) {
-                Text("These are the defaults. Click Record to set your own, or hit Continue.")
+                Text("These are the defaults. Click Record New to set your own, or hit Continue.")
                     .font(DesignTokens.Onboarding.bodyFont)
                     .foregroundStyle(DesignTokens.Onboarding.bodyColor)
                     .multilineTextAlignment(.center)
@@ -218,66 +212,6 @@ struct OnboardingView: View {
             }
             staggered(index: 3) {
                 ctaButton(title: "Continue", action: advance)
-            }
-        }
-        .onAppear { wireHotkeyRecorderCallbacks() }
-    }
-
-    private func interactiveHotkeyRow(label: String, chip: String, recorder: HotkeyRecorder) -> some View {
-        HStack(spacing: DesignTokens.Onboarding.chipGap) {
-            Text(label)
-                .font(DesignTokens.Onboarding.bodyFont)
-                .foregroundStyle(DesignTokens.Onboarding.bodyColor)
-                .frame(width: DesignTokens.Onboarding.hotkeyLabelWidth, alignment: .leading)
-            chipView(chip)
-            Spacer()
-            hotkeyRecordButton(recorder: recorder)
-        }
-    }
-
-    @ViewBuilder
-    private func hotkeyRecordButton(recorder: HotkeyRecorder) -> some View {
-        if recorder.isRecording {
-            Button(action: { recorder.stop() }) {
-                Text("Listening… esc to cancel")
-                    .font(DesignTokens.Onboarding.bodyFont)
-                    .foregroundStyle(DesignTokens.Onboarding.bodyColor)
-            }
-            .buttonStyle(.plain)
-        } else {
-            Button(action: { recorder.start() }) {
-                Text("Record")
-                    .font(DesignTokens.Onboarding.ctaFont)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-            }
-            .buttonStyle(OnboardingCTAButtonStyle())
-        }
-    }
-
-    /// Persistence path mirrors SettingsView (lines 149–169 in SettingsView.swift) so
-    /// hotkeys recorded here flow through the same AppSettings + Notification.Name
-    /// channels — no duplicate persistence layer.
-    private func wireHotkeyRecorderCallbacks() {
-        primaryRecorder.onSave = { code, mods in
-            AppSettings.shared.hotKeyCode      = code
-            AppSettings.shared.hotKeyModifiers = mods
-            NotificationCenter.default.post(name: .quickPanelHotkeyChanged, object: nil)
-        }
-        quickRecorder.onSave = { code, mods in
-            AppSettings.shared.quickRecordHotKeyCode      = code
-            AppSettings.shared.quickRecordHotKeyModifiers = mods
-            if code == 0xFFFE {
-                if      mods & UInt32(cmdKey)     != 0 { AppSettings.shared.doubleTapQuickRecord = .command }
-                else if mods & UInt32(optionKey)  != 0 { AppSettings.shared.doubleTapQuickRecord = .option  }
-                else if mods & UInt32(controlKey) != 0 { AppSettings.shared.doubleTapQuickRecord = .control }
-                else if mods & UInt32(shiftKey)   != 0 { AppSettings.shared.doubleTapQuickRecord = .shift   }
-                else                                   { AppSettings.shared.doubleTapQuickRecord = .off     }
-                NotificationCenter.default.post(name: .doubleTapQuickRecordChanged, object: nil)
-            } else {
-                AppSettings.shared.doubleTapQuickRecord = .off
-                NotificationCenter.default.post(name: .quickRecordHotkeyChanged, object: nil)
-                NotificationCenter.default.post(name: .doubleTapQuickRecordChanged, object: nil)
             }
         }
     }
@@ -365,11 +299,10 @@ struct OnboardingView: View {
     }
 
     private var quickRecordChipText: String {
-        let code = settings.quickRecordHotKeyCode
-        if code == 0 || code == 0xFFFE {
-            return "⌘⇧R"
-        }
-        return hotkeyBadgeString(keyCode: code, carbonModifiers: settings.quickRecordHotKeyModifiers)
+        quickRecordBadgeString(
+            code: settings.quickRecordHotKeyCode,
+            modifiers: settings.quickRecordHotKeyModifiers
+        )
     }
 
     // MARK: - Step advance
