@@ -537,13 +537,14 @@ final class FileDropCardContentView: NSView {
             nameLabel.textColor = NSColor.white.withAlphaComponent(0.85)
         }
 
-        if isQuickLookSelected {
-            layer.borderWidth = 1.5
-            layer.borderColor = NSColor.systemBlue.cgColor
-        } else {
-            layer.borderWidth = 0
-            layer.borderColor = NSColor.clear.cgColor
-        }
+        // No border on selection. The QuickLook-focused 1.5pt blue ring that
+        // used to live here added stroke on top of the Finder backdrop + label
+        // fill — visually noisy. Both states already use the same backdrop
+        // visual; the spacebar QuickLook path (`fileQuickLook.selectedFileID`)
+        // doesn't need its own card-level outline. Explicit zeros so any
+        // latent borderWidth from older binaries gets cleared on update.
+        layer.borderWidth = 0
+        layer.borderColor = NSColor.clear.cgColor
     }
 
     override var intrinsicContentSize: NSSize {
