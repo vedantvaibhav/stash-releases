@@ -132,6 +132,9 @@ private struct CardsFilesRoot: View {
         } message: {
             Text("The file will be removed from the list and deleted from your Mac.")
         }
+        // See PanelController's matching alert: force dark on the SwiftUI
+        // subtree so the NSAlert chrome doesn't render with a light wash.
+        .preferredColorScheme(.dark)
     }
 }
 
