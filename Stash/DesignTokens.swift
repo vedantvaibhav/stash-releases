@@ -97,7 +97,6 @@ enum DesignTokens {
         static let outerPadding: CGFloat = 56
         static let stepGap: CGFloat = 24
         static let chipGap: CGFloat = 12
-        static let cardArtSize: CGFloat = 96
         static let hotkeyRowGap: CGFloat = 14
         static let hotkeyLabelWidth: CGFloat = 140
         static let bodyMaxWidthShort: CGFloat = 420
@@ -138,6 +137,10 @@ enum DesignTokens {
         static let mediaSlotCornerRadius: CGFloat = 12
         static let mediaSlotBackground = Color.white.opacity(0.04)
         static let mediaSlotBorder = Color.white.opacity(0.08)
+
+        // Recording step — bullet rows
+        static let recordingBulletGap: CGFloat = 10
+        static let recordingBulletInline: CGFloat = 6
     }
 }
 
