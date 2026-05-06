@@ -42,7 +42,35 @@ final class AuthService: ObservableObject {
     /// (once via `application(_:open:)` and once via the Apple Event handler).
     private var isExchangingCode = false
 
-    private init() {}
+    /// Set when `signInWithGoogle()` opens the browser; cleared at the top of
+    /// `handleOAuthCallback(...)` (so the activation observer no-ops during the
+    /// successful URL-callback path) and by the activation observer when the
+    /// app becomes active mid-flow without a callback (i.e. user closed the
+    /// browser tab — abandoned flow).
+    private var oauthFlowStartTime: Date?
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleAppActivation()
+        }
+    }
+
+    /// Called when the app becomes active. If an OAuth flow is in-flight AND
+    /// more than 1.5s have passed since `signInWithGoogle()` opened the
+    /// browser, assume the user abandoned — clear in-flight state so the UI
+    /// stops showing "Waiting…". The 1.5s buffer plus `handleOAuthCallback`'s
+    /// first-line clear together ensure the URL handler wins races during
+    /// successful flows (where the activation IS the callback delivery).
+    private func handleAppActivation() {
+        guard let start = oauthFlowStartTime else { return }
+        guard Date().timeIntervalSince(start) > 1.5 else { return }
+        oauthFlowStartTime = nil
+        isLoading = false
+    }
 
     // MARK: - Check session on launch
 
@@ -71,6 +99,10 @@ final class AuthService: ObservableObject {
             errorMessage = "Bad URL"
             return
         }
+
+        // Mark in-flight AFTER the URL builds successfully, so the activation
+        // observer doesn't spuriously fire on a bad-URL early-return path.
+        oauthFlowStartTime = Date()
 
         PanelController.shared?.hidePanel()
         // Open in existing browser — no new window
@@ -106,6 +138,13 @@ final class AuthService: ObservableObject {
     // MARK: - Handle OAuth callback (called from AppDelegate URL handlers)
 
     func handleOAuthCallback(url: URL) async {
+        // First line: clear the in-flight flag so the activation observer
+        // (which fires whenever the app becomes active, INCLUDING during this
+        // very URL-callback delivery) sees no flow and no-ops. This eliminates
+        // the race between the activation listener's abandonment branch and
+        // the URL handler during successful flows.
+        oauthFlowStartTime = nil
+
         // macOS occasionally delivers the callback twice (application(_:open:)
         // AND the Apple Event handler). Without this guard, the second exchange
         // reuses the consumed code and overwrites the successful state.

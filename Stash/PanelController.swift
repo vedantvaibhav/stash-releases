@@ -902,7 +902,13 @@ struct AuthGateView: View {
                     .buttonStyle(.plain)
                     .onHover { isHoveringCTA = $0 }
                     .frame(maxWidth: 500)
-                    .disabled(auth.isLoading)
+                    // Intentionally NOT disabled while isLoading: standard pattern
+                    // (VS Code, Linear, Slack, Notion) keeps the OAuth CTA clickable
+                    // throughout. If the user closes the browser tab without signing
+                    // in, clicking again starts a fresh PKCE challenge — Supabase
+                    // silently invalidates the prior code_verifier server-side, so
+                    // there's no race. Disabling the button is what creates the
+                    // dead-end recoverable only by quitting the app.
 
                     if let error = auth.errorMessage {
                         Text(error)
@@ -912,6 +918,13 @@ struct AuthGateView: View {
                             .frame(width: 300)
                             .padding(.top, 12)
                             .onTapGesture { AuthService.shared.errorMessage = nil }
+                    } else if auth.isLoading {
+                        Text("Waiting for browser to complete sign-in…")
+                            .font(.system(size: 12))
+                            .foregroundColor(.white.opacity(0.55))
+                            .multilineTextAlignment(.center)
+                            .frame(width: 300)
+                            .padding(.top, 12)
                     }
                 }
             }
