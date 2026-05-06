@@ -311,6 +311,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(quitItem)
 
+        #if DEBUG
+        let resetItem = NSMenuItem(
+            title: "Reset onboarding (debug)",
+            action: #selector(resetOnboardingDebug),
+            keyEquivalent: ""
+        )
+        resetItem.target = self
+        menu.addItem(.separator())
+        menu.addItem(resetItem)
+        #endif
+
         statusItem?.menu = menu
         statusItem?.button?.performClick(nil)
         statusItem?.menu = nil
@@ -331,4 +342,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quitApp() {
         NSApp.terminate(nil)
     }
+
+    #if DEBUG
+    @objc private func resetOnboardingDebug() {
+        AppSettings.shared.hasCompletedOnboarding = false
+        OnboardingWindowController.shared.present { [weak self] in
+            AppSettings.shared.hasCompletedOnboarding = true
+            self?.panelController?.togglePanel()
+        }
+    }
+    #endif
 }
