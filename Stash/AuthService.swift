@@ -55,6 +55,7 @@ final class AuthService: ObservableObject {
                                                       avatarURL: su.avatarURL, accessToken: token)
             self.currentUser = appUser
             self.isSignedIn  = true
+            NotificationCenter.default.post(name: .authCompleted, object: nil)
         } catch {
             clearTokens()
         }
@@ -174,7 +175,9 @@ final class AuthService: ObservableObject {
                 self.currentUser = appUser
                 self.isSignedIn  = true
                 self.isLoading   = false
-                PanelController.shared?.showPanel()
+                if AppSettings.shared.hasCompletedOnboarding {
+                    PanelController.shared?.showPanel()
+                }
             }
             NotificationCenter.default.post(name: .authCompleted, object: nil)
         } catch {
