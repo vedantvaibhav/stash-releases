@@ -41,18 +41,26 @@ final class PanelInteractionState: ObservableObject {
 
 // MARK: - File delete confirmation alert
 
-/// Present a dark-chromed NSAlert as the file delete confirmation. Replaces
-/// the SwiftUI `.alert(...)` modifier on the panel + cards-mode call sites
-/// because SwiftUI's stock alert renders OS-default chrome that washes out
-/// against the panel's dark theme. `alert.window.appearance = darkAqua`
-/// forces dark chrome regardless of system Light/Dark setting.
+/// Present a dark-chromed NSAlert as the file delete confirmation, attached
+/// as a sheet to the key window (the Stash panel). Replaces the SwiftUI
+/// `.alert(...)` modifier because SwiftUI's stock alert rendered OS-default
+/// chrome that washed out against the panel's dark theme.
+///
+/// Sheet presentation (vs. `runModal()`) avoids two problems:
+/// - Custom NSPanel z-order: a free-standing modal alert can end up behind
+///   the panel depending on window levels. A sheet is rendered as a child
+///   of the parent and inherits its ordering.
+/// - SwiftUI update cycle: `runModal()` blocks the main thread synchronously,
+///   which doesn't always cooperate with `.onChange` closures fired during
+///   SwiftUI's commit phase.
 ///
 /// First button (Cancel) is the default (Return) — preserves SwiftUI's prior
 /// behavior where `role: .cancel` made Cancel the default for destructive
 /// confirmations. NSAlert auto-binds Esc to a button titled "Cancel".
-/// Returns true when the user confirmed Delete; false on Cancel/Esc/dismiss.
+/// `completion` runs on the main actor with `true` for Delete, `false` for
+/// Cancel/Esc/dismiss.
 @MainActor
-func presentFileDeleteConfirmAlert() -> Bool {
+func presentFileDeleteConfirmAlert(completion: @escaping (Bool) -> Void) {
     let alert = NSAlert()
     alert.messageText = "Delete file?"
     alert.informativeText = "The file will be removed from the list and deleted from your Mac."
@@ -60,7 +68,15 @@ func presentFileDeleteConfirmAlert() -> Bool {
     alert.window.appearance = NSAppearance(named: .darkAqua)
     alert.addButton(withTitle: "Cancel")
     alert.addButton(withTitle: "Delete")
-    return alert.runModal() == .alertSecondButtonReturn
+
+    if let parent = NSApp.keyWindow {
+        alert.beginSheetModal(for: parent) { response in
+            completion(response == .alertSecondButtonReturn)
+        }
+    } else {
+        // Fallback: free-standing modal if no key window is available.
+        completion(alert.runModal() == .alertSecondButtonReturn)
+    }
 }
 
 // MARK: - SwiftUI roots (ObservedObject so NSHostingView refreshes on model changes)
@@ -143,13 +159,14 @@ private struct CardsFilesRoot: View {
         .frame(width: ExpandableCardView.innerWidth)
         .fixedSize(horizontal: false, vertical: true)
         .onChange(of: interaction.fileToDelete?.id) { _ in
-            // Fires only when the active file-delete target changes (incl.
+            // Fires when the active file-delete target changes (including
             // becoming nil). The id-projection avoids re-firing on every
             // identity-equal update.
             guard let item = interaction.fileToDelete else { return }
-            let confirmed = presentFileDeleteConfirmAlert()
-            if confirmed { fileStorage.removeFile(item) }
-            interaction.fileToDelete = nil
+            presentFileDeleteConfirmAlert { confirmed in
+                if confirmed { fileStorage.removeFile(item) }
+                interaction.fileToDelete = nil
+            }
         }
     }
 }
