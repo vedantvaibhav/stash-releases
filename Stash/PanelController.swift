@@ -1231,26 +1231,16 @@ struct PanelContentView: View {
         } message: {
             Text("This note will be permanently deleted.")
         }
-        .alert("Delete file?", isPresented: Binding(
-            get: { fileToDelete != nil },
-            set: { if !$0 { fileToDelete = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { fileToDelete = nil }
-            Button("Delete", role: .destructive) {
-                if let item = fileToDelete {
-                    fileDropStorage.removeFile(item)
-                    fileToDelete = nil
-                }
-            }
-        } message: {
-            Text("The file will be removed from the list and deleted from your Mac.")
+        .onChange(of: fileToDelete?.id) { _ in
+            // Replaces the prior SwiftUI .alert(...) chain. SwiftUI's stock
+            // alert rendered OS-default light chrome against the panel's
+            // dark theme; presentFileDeleteConfirmAlert (CardsModeAppKit.swift)
+            // builds a dark-chromed NSAlert instead.
+            guard let item = fileToDelete else { return }
+            let confirmed = presentFileDeleteConfirmAlert()
+            if confirmed { fileDropStorage.removeFile(item) }
+            fileToDelete = nil
         }
-        // Force dark scheme on the alert chain so macOS doesn't render NSAlert's
-        // chrome with the default light wash that otherwise reads as off-color
-        // against the panel's dark theme. May not propagate to all NSAlert
-        // chrome on every macOS version — if it doesn't take, escalate to
-        // path 2 (NSAlert with NSAppearance(named: .darkAqua) forced).
-        .preferredColorScheme(.dark)
     }
 }
 

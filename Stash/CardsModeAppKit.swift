@@ -39,6 +39,30 @@ final class PanelInteractionState: ObservableObject {
     @Published var requestedTab: PanelMainTab? = nil
 }
 
+// MARK: - File delete confirmation alert
+
+/// Present a dark-chromed NSAlert as the file delete confirmation. Replaces
+/// the SwiftUI `.alert(...)` modifier on the panel + cards-mode call sites
+/// because SwiftUI's stock alert renders OS-default chrome that washes out
+/// against the panel's dark theme. `alert.window.appearance = darkAqua`
+/// forces dark chrome regardless of system Light/Dark setting.
+///
+/// First button (Cancel) is the default (Return) — preserves SwiftUI's prior
+/// behavior where `role: .cancel` made Cancel the default for destructive
+/// confirmations. NSAlert auto-binds Esc to a button titled "Cancel".
+/// Returns true when the user confirmed Delete; false on Cancel/Esc/dismiss.
+@MainActor
+func presentFileDeleteConfirmAlert() -> Bool {
+    let alert = NSAlert()
+    alert.messageText = "Delete file?"
+    alert.informativeText = "The file will be removed from the list and deleted from your Mac."
+    alert.alertStyle = .warning
+    alert.window.appearance = NSAppearance(named: .darkAqua)
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Delete")
+    return alert.runModal() == .alertSecondButtonReturn
+}
+
 // MARK: - SwiftUI roots (ObservedObject so NSHostingView refreshes on model changes)
 
 private struct CardsClipboardRoot: View {
@@ -118,23 +142,15 @@ private struct CardsFilesRoot: View {
         )
         .frame(width: ExpandableCardView.innerWidth)
         .fixedSize(horizontal: false, vertical: true)
-        .alert("Delete file?", isPresented: Binding(
-            get: { interaction.fileToDelete != nil },
-            set: { if !$0 { interaction.fileToDelete = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { interaction.fileToDelete = nil }
-            Button("Delete", role: .destructive) {
-                if let f = interaction.fileToDelete {
-                    fileStorage.removeFile(f)
-                    interaction.fileToDelete = nil
-                }
-            }
-        } message: {
-            Text("The file will be removed from the list and deleted from your Mac.")
+        .onChange(of: interaction.fileToDelete?.id) { _ in
+            // Fires only when the active file-delete target changes (incl.
+            // becoming nil). The id-projection avoids re-firing on every
+            // identity-equal update.
+            guard let item = interaction.fileToDelete else { return }
+            let confirmed = presentFileDeleteConfirmAlert()
+            if confirmed { fileStorage.removeFile(item) }
+            interaction.fileToDelete = nil
         }
-        // See PanelController's matching alert: force dark on the SwiftUI
-        // subtree so the NSAlert chrome doesn't render with a light wash.
-        .preferredColorScheme(.dark)
     }
 }
 
