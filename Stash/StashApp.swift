@@ -141,13 +141,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// AuthService's wrapped showPanel(); session-restore intentionally does
     /// not auto-show the panel.
     private func handleAuthReady() {
-        guard AuthService.shared.isSignedIn else { return }
         if AppSettings.shared.hasCompletedOnboarding { return }
-        presentOnboarding()
+        // Signed in here = "advance past auth screen straight to hotkeys";
+        // not signed in = "start at auth screen" (only reachable via the
+        // status-item-click path, since handleAuthReady is fired by
+        // .authCompleted which implies signed-in by the time we arrive).
+        let start = AuthService.shared.isSignedIn ? 1 : 0
+        presentOnboarding(startStep: start)
     }
 
-    private func presentOnboarding() {
-        OnboardingWindowController.shared.present { [weak self] in
+    private func presentOnboarding(startStep: Int = 0) {
+        OnboardingWindowController.shared.present(startStep: startStep) { [weak self] in
             AppSettings.shared.hasCompletedOnboarding = true
             self?.panelController?.togglePanel()
         }
@@ -282,6 +286,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        if !AppSettings.shared.hasCompletedOnboarding {
+            let start = AuthService.shared.isSignedIn ? 1 : 0
+            presentOnboarding(startStep: start)
+            return
+        }
+
         panelController?.togglePanel()
     }
 
@@ -348,7 +358,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     #if DEBUG
     @objc private func resetOnboardingDebug() {
         AppSettings.shared.hasCompletedOnboarding = false
-        presentOnboarding()
+        OnboardingWindowController.shared.reset()
+        presentOnboarding(startStep: 0)
     }
     #endif
 }
