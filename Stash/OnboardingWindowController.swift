@@ -43,7 +43,8 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
-        window.standardWindowButton(.closeButton)?.isHidden = true
+        // Close (red) stays visible as the user's escape hatch. miniaturize
+        // and zoom are absent from the styleMask so they grey out automatically.
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
         window.isReleasedWhenClosed = false
