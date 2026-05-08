@@ -66,8 +66,16 @@ final class TranscriptionService: NSObject, ObservableObject {
     // MARK: - Start
 
     func startRecording() {
+        // Clear all transient post-recording state before starting a new
+        // recording. Without this, an active shortTranscriptResult or
+        // completionMessage causes the controller's first sync() to render
+        // the previous result-phase or completion view briefly during the
+        // takeover ("ghost flash"). The existing showCompletion / banner
+        // snapshot guards (commits 681bb97, 886d20b) handle their own clears
+        // gracefully when their @Published source flips out from under them.
         errorMessage = nil
         completionMessage = nil
+        shortTranscriptResult = nil
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
         #endif
