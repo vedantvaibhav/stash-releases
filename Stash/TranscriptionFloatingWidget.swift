@@ -142,15 +142,21 @@ struct TranscriptionPillView: View {
         }
     }
 
-    /// Default MM:SS; only expand to H:MM:SS once a recording crosses one hour
-    /// (rare for voice notes — no point padding a leading zero for the common case).
     private func formatDuration(_ seconds: Int) -> String {
-        let h = seconds / 3600
-        let m = (seconds % 3600) / 60
-        let s = seconds % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%02d:%02d", m, s)
+        formatPillDuration(seconds)
     }
+}
+
+/// Pill duration format. Default MM:SS (zero-padded minutes); only expand to
+/// H:MM:SS once a recording crosses one hour. Shared by the collapsed
+/// `TranscriptionPillView` and the expanded `TranscriptionPillExpandedView`
+/// so both surfaces agree on `02:31` vs `2:31`.
+fileprivate func formatPillDuration(_ seconds: Int) -> String {
+    let h = seconds / 3600
+    let m = (seconds % 3600) / 60
+    let s = seconds % 60
+    if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+    return String(format: "%02d:%02d", m, s)
 }
 
 // MARK: - Stop button (10×10 solid red dot, 32×32 tap target)
@@ -218,7 +224,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// Hosting view for the expanded SwiftUI root, kept in a SEPARATE ivar from
     /// `hosting: NSHostingView<TranscriptionPillView>?` so the typed collapsed-host
     /// reference stays valid across the lifecycle. Nil when not expanded.
-    private var expandedHosting: NSHostingView<TranscriptionPillExpandedView>?
+    /// Type-erased to `AnyView` because the controller wraps the inner view in
+    /// `.onHover` (which changes the static type).
+    private var expandedHosting: NSHostingView<AnyView>?
     /// Auto-dismiss timer (30s default; reset on hover-end and on interaction).
     private var autoDismissWorkItem: DispatchWorkItem?
     /// Global monitor: clicks landing in OTHER applications. Installed on expand.
@@ -228,8 +236,8 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private var localClickOutsideMonitor: Any?
     /// Local monitor for ⌘C and Esc while expanded. Installed on expand.
     private var expandedKeyMonitor: Any?
-    /// True for ~1.2s after Copy is clicked — drives the "Copied ✓" flash.
-    private var copyFlashActive: Bool = false
+    /// Non-nil for ~1.2s after Copy is clicked — drives the "Copied ✓" flash.
+    /// Used as the source of truth: `copyFlashWorkItem != nil` ⇒ flashing.
     private var copyFlashWorkItem: DispatchWorkItem?
     /// Change-detection guard — `TranscriptionService.audioLevel` ticks ~10×/s,
     /// firing `objectWillChange`. We only need to rebuild the hosted SwiftUI tree
@@ -255,6 +263,20 @@ final class TranscriptionFloatingWidgetController: NSObject {
         sync()
     }
 
+    deinit {
+        // NSEvent monitors are NOT auto-removed on deallocation; they hold
+        // references to their handler closure and stay live until removed.
+        // DispatchWorkItem closures use weak self so they're benign, but
+        // explicit cancellation is cheap and aids reasoning.
+        if let m = globalClickOutsideMonitor { NSEvent.removeMonitor(m) }
+        if let m = localClickOutsideMonitor { NSEvent.removeMonitor(m) }
+        if let m = expandedKeyMonitor { NSEvent.removeMonitor(m) }
+        if let m = dragMonitor { NSEvent.removeMonitor(m) }
+        autoDismissWorkItem?.cancel()
+        copyFlashWorkItem?.cancel()
+        completionWorkItem?.cancel()
+    }
+
     func setPanelOpenForWidget(_ open: Bool) {
         panelOpenForWidget = open
         sync()
@@ -264,6 +286,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
         guard let ts = transcription else { hidePanel(); return }
 
         if panelOpenForWidget {
+            // If we're expanded, tear down monitors/timers/host before hiding —
+            // otherwise NSEvent monitors and the expanded NSHostingView leak.
+            if phase == .expanded { collapseExpansion(clearResultOnService: true, animated: false) }
             cancelAllPendingWork()
             hidePanel()
             phase = .none
@@ -554,7 +579,6 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private func presentExpansion(for result: ShortTranscriptResult) {
         autoDismissWorkItem?.cancel(); autoDismissWorkItem = nil
         copyFlashWorkItem?.cancel(); copyFlashWorkItem = nil
-        copyFlashActive = false
         completionWorkItem?.cancel(); completionWorkItem = nil
 
         if panel == nil { buildPanel() }
@@ -584,16 +608,18 @@ final class TranscriptionFloatingWidgetController: NSObject {
         scheduleAutoDismiss()
     }
 
-    /// Construct a fresh `TranscriptionPillExpandedView`. Used both at present
-    /// time and on every state-update path that needs to rebuild the SwiftUI
-    /// tree (e.g., after Copy flips `copyFlashActive`).
-    private func makeExpandedRootView(result: ShortTranscriptResult) -> TranscriptionPillExpandedView {
-        TranscriptionPillExpandedView(
+    /// Build the expanded root + apply `.onHover` for auto-dismiss reset.
+    /// Returns `AnyView` because `.onHover` changes the static View type and
+    /// the host needs a stable type across rebuilds.
+    private func makeExpandedRootView(result: ShortTranscriptResult) -> AnyView {
+        let inner = TranscriptionPillExpandedView(
             result: result,
             onCopy: { [weak self] in self?.handleCopy() },
             onDismiss: { [weak self] in self?.handleDismiss() },
-            copyFlashActive: copyFlashActive,
-            onHoverChanged: { [weak self] hovering in self?.handleHoverChanged(hovering) }
+            copyFlashActive: copyFlashWorkItem != nil
+        )
+        return AnyView(
+            inner.onHover { [weak self] hovering in self?.handleHoverChanged(hovering) }
         )
     }
 
@@ -608,15 +634,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
         guard phase == .expanded, let result = activeExpandedResult else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(result.text, forType: .string)
-        copyFlashActive = true
-        updateExpandedHostedRootIfPresent()
         copyFlashWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.copyFlashActive = false
-            self.collapseExpansion(clearResultOnService: true, animated: true)
+            self?.collapseExpansion(clearResultOnService: true, animated: true)
         }
         copyFlashWorkItem = work
+        // Push the "Copied ✓" label into the SwiftUI tree now that the work
+        // item exists (so `copyFlashWorkItem != nil` ⇒ flashing).
+        updateExpandedHostedRootIfPresent()
         DispatchQueue.main.asyncAfter(
             deadline: .now() + DesignTokens.Pill.expandedCopyFlashSeconds,
             execute: work
@@ -660,17 +685,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
         removeClickOutsideMonitors()
         removeExpandedKeyMonitor()
 
+        // Flip phase out of `.expanded` synchronously so a new
+        // shortTranscriptResult landing during the collapse animation can call
+        // presentExpansion cleanly (it gates on `phase != .expanded`).
+        phase = .none
         activeExpandedResult = nil
-        copyFlashActive = false
         expandedHosting = nil
-        // Clear `lastMode` so the next `updateHosted(mode:)` call from sync()
-        // unconditionally pushes its mode into the freshly-rebuilt collapsed
-        // hosting view (the rebuild below uses `.processing` as a placeholder;
-        // the next sync() decides the real mode).
         lastMode = nil
 
-        // Rebuild the collapsed hosting view so subsequent phase transitions
-        // can update it normally via updateHosted(mode:).
         if let panel {
             panel.allowsKeyStatus = false
             let initial = TranscriptionPillView(
@@ -690,15 +712,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
         resizePanelToCollapsed(animated: animated)
 
-        // Hide the panel after the resize completes if no other phase claims it.
+        // Hide the panel after the resize completes if no other phase claimed
+        // it during the animation window.
         let delay = animated ? DesignTokens.Pill.expandedAnimationDuration : 0
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self else { return }
-            // Only finalize if no other phase took over during the resize.
-            if self.phase == .expanded {
-                self.hidePanel()
-                self.phase = .none
-            }
+            guard let self, self.phase == .none else { return }
+            self.hidePanel()
         }
 
         if clearResultOnService {
@@ -753,12 +772,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
     // is made key in presentExpansion. Local monitors then receive keyDown
     // events delivered to our key panel.
 
+    private static let escKeyCode: UInt16 = 53
+
     private func installExpandedKeyMonitor() {
         guard expandedKeyMonitor == nil else { return }
         expandedKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
             guard let self, self.phase == .expanded, let panel = self.panel else { return event }
             guard event.window === panel else { return event }
-            if event.keyCode == 53 {
+            if event.keyCode == Self.escKeyCode {
                 self.handleDismiss()
                 return nil
             }
@@ -791,9 +812,6 @@ struct TranscriptionPillExpandedView: View {
     /// True for ~1.2s after the user clicks Copy. Replaces the Copy button
     /// label with a "Copied ✓" affordance before the pill collapses.
     let copyFlashActive: Bool
-    /// Fired when the cursor enters/exits the expanded pill. The controller
-    /// uses this to cancel the auto-dismiss timer on enter and restart it on exit.
-    let onHoverChanged: (Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -810,7 +828,6 @@ struct TranscriptionPillExpandedView: View {
             RoundedRectangle(cornerRadius: DesignTokens.Pill.expandedCornerRadius, style: .continuous)
                 .fill(Color.black)
         )
-        .onHover { hovering in onHoverChanged(hovering) }
     }
 
     private var eyebrow: some View {
@@ -819,7 +836,7 @@ struct TranscriptionPillExpandedView: View {
                 .font(DesignTokens.Pill.expandedEyebrowFont)
                 .foregroundStyle(DesignTokens.Pill.expandedEyebrowColor)
             Spacer(minLength: 8)
-            Text(formatDuration(result.durationSeconds))
+            Text(formatPillDuration(result.durationSeconds))
                 .font(DesignTokens.Pill.expandedEyebrowFont.monospacedDigit())
                 .foregroundStyle(DesignTokens.Pill.expandedEyebrowColor)
         }
@@ -848,15 +865,6 @@ struct TranscriptionPillExpandedView: View {
             )
         }
         .frame(height: DesignTokens.Pill.expandedButtonHeight)
-    }
-
-    /// MM:SS for sub-hour, H:MM:SS otherwise (mirrors `TranscriptionPillView`).
-    private func formatDuration(_ seconds: Int) -> String {
-        let h = seconds / 3600
-        let m = (seconds % 3600) / 60
-        let s = seconds % 60
-        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
-        return String(format: "%d:%02d", m, s)
     }
 }
 
