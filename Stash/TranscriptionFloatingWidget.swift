@@ -214,30 +214,27 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private var cancellables = Set<AnyCancellable>()
     private var panelOpenForWidget = false
 
-    private enum Phase { case none, recording, processing, completion, expanded }
+    private enum Phase { case none, recording, processing, completion, expandedReady, minimizedReady }
     private var phase: Phase = .none
     private var completionWorkItem: DispatchWorkItem?
 
-    // MARK: Expanded-state state
-    /// Currently-expanded result. `nil` means we're not in `.expanded` phase.
+    // MARK: Expanded / minimized state
+    /// Currently-attached result. Non-nil for both `.expandedReady` and
+    /// `.minimizedReady`; nil otherwise.
     private var activeExpandedResult: ShortTranscriptResult?
-    /// Hosting view for the expanded SwiftUI root, kept in a SEPARATE ivar from
-    /// `hosting: NSHostingView<TranscriptionPillView>?` so the typed collapsed-host
-    /// reference stays valid across the lifecycle. Nil when not expanded.
-    /// Type-erased to `AnyView` because the controller wraps the inner view in
-    /// `.onHover` (which changes the static type).
+    /// Hosting view for the expanded SwiftUI root. Type-erased to `AnyView`
+    /// because the controller wraps the inner view in `.onHover` (which
+    /// changes the static type).
     private var expandedHosting: NSHostingView<AnyView>?
-    /// Auto-dismiss timer (30s default; reset on hover-end and on interaction).
-    private var autoDismissWorkItem: DispatchWorkItem?
-    /// Global monitor: clicks landing in OTHER applications. Installed on expand.
-    private var globalClickOutsideMonitor: Any?
-    /// Local monitor: clicks landing in OUR application (whether on the pill or
-    /// another window of ours). Installed on expand.
-    private var localClickOutsideMonitor: Any?
-    /// Local monitor for ⌘C and Esc while expanded. Installed on expand.
+    /// Hosting view for the minimized Ready pill. Nil when not in `.minimizedReady`.
+    private var minimizedHosting: NSHostingView<MinimizedReadyPillView>?
+    /// Auto-minimize timer (10s). Resets on hover-end and on interaction.
+    private var autoMinimizeWorkItem: DispatchWorkItem?
+    /// Local NSEvent monitor for ⌘C and Esc while expanded. Removed in
+    /// `.minimizedReady` (no keyboard shortcuts there) and on full hide.
     private var expandedKeyMonitor: Any?
     /// Non-nil for ~1.2s after Copy is clicked — drives the "Copied ✓" flash.
-    /// Used as the source of truth: `copyFlashWorkItem != nil` ⇒ flashing.
+    /// `copyFlashWorkItem != nil` ⇒ flashing.
     private var copyFlashWorkItem: DispatchWorkItem?
     /// Change-detection guard — `TranscriptionService.audioLevel` ticks ~10×/s,
     /// firing `objectWillChange`. We only need to rebuild the hosted SwiftUI tree
@@ -266,13 +263,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
     deinit {
         // NSEvent monitors are NOT auto-removed on deallocation; they hold
         // references to their handler closure and stay live until removed.
-        // DispatchWorkItem closures use weak self so they're benign, but
-        // explicit cancellation is cheap and aids reasoning.
-        if let m = globalClickOutsideMonitor { NSEvent.removeMonitor(m) }
-        if let m = localClickOutsideMonitor { NSEvent.removeMonitor(m) }
         if let m = expandedKeyMonitor { NSEvent.removeMonitor(m) }
         if let m = dragMonitor { NSEvent.removeMonitor(m) }
-        autoDismissWorkItem?.cancel()
+        autoMinimizeWorkItem?.cancel()
         copyFlashWorkItem?.cancel()
         completionWorkItem?.cancel()
     }
@@ -286,20 +279,22 @@ final class TranscriptionFloatingWidgetController: NSObject {
         guard let ts = transcription else { hidePanel(); return }
 
         if panelOpenForWidget {
-            // If we're expanded, tear down monitors/timers/host before hiding —
-            // otherwise NSEvent monitors and the expanded NSHostingView leak.
-            if phase == .expanded { collapseExpansion(clearResultOnService: true, animated: false) }
+            // Tear down any expansion / minimized state; full hide.
+            if phase == .expandedReady || phase == .minimizedReady {
+                hideAllResultPhases(clearResultOnService: true, animated: false)
+            }
             cancelAllPendingWork()
             hidePanel()
             phase = .none
             return
         }
 
-        // Recording supersedes everything else: a new recording while the pill
-        // is expanded must collapse it immediately and hand the transcript
-        // back to the service so it isn't re-triggered.
+        // Recording supersedes everything: a new recording while the pill is
+        // expanded or minimized must hide that state immediately.
         if ts.isRecording {
-            if phase == .expanded { collapseExpansion(clearResultOnService: true, animated: false) }
+            if phase == .expandedReady || phase == .minimizedReady {
+                hideAllResultPhases(clearResultOnService: true, animated: false)
+            }
             cancelAllPendingWork(except: .recording)
             phase = .recording
             showCollapsedPanelIfNeeded()
@@ -307,9 +302,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        // Short-recording handoff — present the expanded pill.
+        // Short-recording handoff — present (or re-present) the expanded pill.
         if let result = ts.shortTranscriptResult {
-            if phase != .expanded || activeExpandedResult?.id != result.id {
+            // Already showing this exact result (expanded or minimized) →
+            // let the user's interaction drive transitions. Different result
+            // id (or no result phase active) → present fresh.
+            if activeExpandedResult?.id != result.id {
+                presentExpansion(for: result)
+            } else if phase != .expandedReady && phase != .minimizedReady {
                 presentExpansion(for: result)
             }
             return
@@ -339,7 +339,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        if phase != .completion && phase != .expanded {
+        // No state claimed us; if we're in expandedReady/minimizedReady,
+        // leave them alone (they're driven by interaction, not service state).
+        if phase != .completion && phase != .expandedReady && phase != .minimizedReady {
             hidePanel()
             phase = .none
         }
@@ -350,9 +352,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
             completionWorkItem?.cancel()
             completionWorkItem = nil
         }
-        if keep != .expanded {
-            autoDismissWorkItem?.cancel()
-            autoDismissWorkItem = nil
+        if keep != .expandedReady && keep != .minimizedReady {
+            autoMinimizeWorkItem?.cancel()
+            autoMinimizeWorkItem = nil
             copyFlashWorkItem?.cancel()
             copyFlashWorkItem = nil
         }
@@ -371,16 +373,13 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private func showCollapsedPanelIfNeeded() {
         if panel == nil { buildPanel() }
         // No resize here: the panel was either built at collapsed size, or has
-        // already been resized to collapsed by `collapseExpansion` before sync()
-        // calls back into us. Computing an `animated` flag from `phase` here is
-        // racy — sync() mutates `phase` BEFORE invoking us, so the flag would
-        // always be wrong by the time it's read.
+        // already been resized to collapsed by `hideAllResultPhases` /
+        // `collapseToMinimizedReady` before sync() calls back into us.
         panel?.orderFrontRegardless()
     }
 
     /// Resize the panel back to capsule dimensions, anchored at the persisted
-    /// snap zone. Called by `collapseExpansion` and (after the redesign) by
-    /// `collapseToMinimizedReady`.
+    /// snap zone. Called by `hideAllResultPhases` and `collapseToMinimizedReady`.
     private func resizePanelToCollapsed(animated: Bool) {
         let size = NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
         applyPhaseAwareFrame(size: size, animated: animated)
@@ -538,20 +537,23 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
     /// Build (or rebuild) the expanded host, attach as contentView, lay out,
     /// then animate the panel frame to the measured fitting size.
+    /// Re-presenting from `.minimizedReady` reuses the same lifecycle — the
+    /// `minimizedHosting` is torn down here.
     private func presentExpansion(for result: ShortTranscriptResult) {
-        autoDismissWorkItem?.cancel(); autoDismissWorkItem = nil
+        autoMinimizeWorkItem?.cancel(); autoMinimizeWorkItem = nil
         copyFlashWorkItem?.cancel(); copyFlashWorkItem = nil
         completionWorkItem?.cancel(); completionWorkItem = nil
 
         if panel == nil { buildPanel() }
         guard let panel else { return }
 
+        // If transitioning from minimizedReady, drop that hosting view first.
+        minimizedHosting = nil
+
         activeExpandedResult = result
-        phase = .expanded
+        phase = .expandedReady
         lastMode = nil
 
-        // Order matters: build host → assign as contentView → resize (which
-        // measures fittingSize on the now-attached host).
         let expanded = makeExpandedRootView(result: result)
         let host = NSHostingView(rootView: expanded)
         host.autoresizingMask = [.width, .height]
@@ -565,12 +567,11 @@ final class TranscriptionFloatingWidgetController: NSObject {
         panel.makeKey()
 
         resizePanelToExpanded(animated: true)
-        installClickOutsideMonitors()
         installExpandedKeyMonitor()
-        scheduleAutoDismiss()
+        scheduleAutoMinimize()
     }
 
-    /// Build the expanded root + apply `.onHover` for auto-dismiss reset.
+    /// Build the expanded root + apply `.onHover` for auto-minimize reset.
     /// Returns `AnyView` because `.onHover` changes the static View type and
     /// the host needs a stable type across rebuilds.
     private func makeExpandedRootView(result: ShortTranscriptResult) -> AnyView {
@@ -588,17 +589,17 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// Push a fresh root view into the expanded NSHostingView (no panel resize).
     /// Used for in-place updates like the Copy → "Copied ✓" flash.
     private func updateExpandedHostedRootIfPresent() {
-        guard phase == .expanded, let result = activeExpandedResult, let host = expandedHosting else { return }
+        guard phase == .expandedReady, let result = activeExpandedResult, let host = expandedHosting else { return }
         host.rootView = makeExpandedRootView(result: result)
     }
 
     private func handleCopy() {
-        guard phase == .expanded, let result = activeExpandedResult else { return }
+        guard phase == .expandedReady, let result = activeExpandedResult else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(result.text, forType: .string)
         copyFlashWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.collapseExpansion(clearResultOnService: true, animated: true)
+            self?.hideAllResultPhases(clearResultOnService: true, animated: true)
         }
         copyFlashWorkItem = work
         // Push the "Copied ✓" label into the SwiftUI tree now that the work
@@ -611,48 +612,92 @@ final class TranscriptionFloatingWidgetController: NSObject {
     }
 
     private func handleDismiss() {
-        guard phase == .expanded else { return }
-        collapseExpansion(clearResultOnService: true, animated: true)
+        guard phase == .expandedReady else { return }
+        hideAllResultPhases(clearResultOnService: true, animated: true)
     }
 
-    private func scheduleAutoDismiss() {
-        autoDismissWorkItem?.cancel()
+    private func scheduleAutoMinimize() {
+        autoMinimizeWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.collapseExpansion(clearResultOnService: true, animated: true)
+            self?.collapseToMinimizedReady()
         }
-        autoDismissWorkItem = work
+        autoMinimizeWorkItem = work
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + DesignTokens.Pill.expandedAutoDismissSeconds,
+            deadline: .now() + DesignTokens.Pill.expandedAutoMinimizeSeconds,
             execute: work
         )
     }
 
     private func handleHoverChanged(_ hovering: Bool) {
-        guard phase == .expanded else { return }
-        if hovering {
-            autoDismissWorkItem?.cancel()
-            autoDismissWorkItem = nil
-        } else {
-            scheduleAutoDismiss()
+        switch phase {
+        case .expandedReady:
+            if hovering {
+                autoMinimizeWorkItem?.cancel()
+                autoMinimizeWorkItem = nil
+            } else {
+                scheduleAutoMinimize()
+            }
+        case .minimizedReady:
+            // Re-expand on hover-enter is handled directly by
+            // MinimizedReadyPillView's onHoverEnter closure → handleMinimizedHoverEnter.
+            // Hover-exit is a no-op — the user can't lose the result by mousing away.
+            break
+        default:
+            break
         }
     }
 
-    /// Tear down expanded state and rebuild the collapsed pill hosting view.
-    /// `clearResultOnService` should be true unless `sync()` is collapsing us
-    /// because a new recording is starting (in which case sync() also clears
-    /// the published result on the next tick).
-    private func collapseExpansion(clearResultOnService: Bool, animated: Bool) {
-        autoDismissWorkItem?.cancel(); autoDismissWorkItem = nil
+    /// Auto-minimize fires after 10s of no interaction. Tears down the
+    /// expanded host + key monitor, swaps in the small Ready pill, resizes
+    /// the panel to 130×32. Result stays on the service for hover-to-reexpand.
+    private func collapseToMinimizedReady() {
+        guard phase == .expandedReady, let result = activeExpandedResult else { return }
+        autoMinimizeWorkItem?.cancel(); autoMinimizeWorkItem = nil
         copyFlashWorkItem?.cancel(); copyFlashWorkItem = nil
-        removeClickOutsideMonitors()
         removeExpandedKeyMonitor()
 
-        // Flip phase out of `.expanded` synchronously so a new
-        // shortTranscriptResult landing during the collapse animation can call
-        // presentExpansion cleanly (it gates on `phase != .expanded`).
+        expandedHosting = nil
+        lastMode = nil
+        phase = .minimizedReady
+
+        if let panel {
+            panel.allowsKeyStatus = false
+            let view = MinimizedReadyPillView(
+                onHoverEnter: { [weak self] in self?.handleMinimizedHoverEnter() }
+            )
+            let host = NSHostingView(rootView: view)
+            host.frame = NSRect(
+                x: 0, y: 0,
+                width: DesignTokens.Pill.width,
+                height: DesignTokens.Pill.height
+            )
+            host.autoresizingMask = [.width, .height]
+            panel.contentView = host
+            minimizedHosting = host
+        }
+
+        resizePanelToCollapsed(animated: true)
+        // Service-side result stays — hovering the minimized pill re-expands
+        // using `activeExpandedResult` directly.
+        _ = result
+    }
+
+    private func handleMinimizedHoverEnter() {
+        guard phase == .minimizedReady, let result = activeExpandedResult else { return }
+        presentExpansion(for: result)
+    }
+
+    /// Tear down BOTH expanded and minimized state and fully hide the panel.
+    /// Used by Copy / Dismiss / Esc / new-recording.
+    private func hideAllResultPhases(clearResultOnService: Bool, animated: Bool) {
+        autoMinimizeWorkItem?.cancel(); autoMinimizeWorkItem = nil
+        copyFlashWorkItem?.cancel(); copyFlashWorkItem = nil
+        removeExpandedKeyMonitor()
+
         phase = .none
         activeExpandedResult = nil
         expandedHosting = nil
+        minimizedHosting = nil
         lastMode = nil
 
         if let panel {
@@ -674,8 +719,6 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
         resizePanelToCollapsed(animated: animated)
 
-        // Hide the panel after the resize completes if no other phase claimed
-        // it during the animation window.
         let delay = animated ? DesignTokens.Pill.expandedAnimationDuration : 0
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.phase == .none else { return }
@@ -684,47 +727,6 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
         if clearResultOnService {
             transcription?.clearShortTranscriptResult()
-        }
-    }
-
-    // MARK: Click-outside detection
-    //
-    // Local monitors only fire for events delivered to OUR application. A click
-    // in Safari or Finder triggers no local monitor — we need a global monitor
-    // for those. Global monitors can't return events (can't swallow), but for
-    // dismissal that's fine: we only need to know the click happened.
-
-    private func installClickOutsideMonitors() {
-        if globalClickOutsideMonitor == nil {
-            globalClickOutsideMonitor = NSEvent.addGlobalMonitorForEvents(
-                matching: [.leftMouseDown, .rightMouseDown]
-            ) { [weak self] _ in
-                self?.handleDismiss()
-            }
-        }
-        if localClickOutsideMonitor == nil {
-            localClickOutsideMonitor = NSEvent.addLocalMonitorForEvents(
-                matching: [.leftMouseDown, .rightMouseDown]
-            ) { [weak self] event in
-                guard let self, let panel = self.panel else { return event }
-                if event.window !== panel {
-                    self.handleDismiss()
-                } else {
-                    self.scheduleAutoDismiss()
-                }
-                return event
-            }
-        }
-    }
-
-    private func removeClickOutsideMonitors() {
-        if let m = globalClickOutsideMonitor {
-            NSEvent.removeMonitor(m)
-            globalClickOutsideMonitor = nil
-        }
-        if let m = localClickOutsideMonitor {
-            NSEvent.removeMonitor(m)
-            localClickOutsideMonitor = nil
         }
     }
 
@@ -739,7 +741,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private func installExpandedKeyMonitor() {
         guard expandedKeyMonitor == nil else { return }
         expandedKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
-            guard let self, self.phase == .expanded, let panel = self.panel else { return event }
+            guard let self, self.phase == .expandedReady, let panel = self.panel else { return event }
             guard event.window === panel else { return event }
             if event.keyCode == Self.escKeyCode {
                 self.handleDismiss()
@@ -893,6 +895,42 @@ private struct PillFilledButton: View {
         isHovering
             ? DesignTokens.Pill.expandedFilledBackgroundHover
             : DesignTokens.Pill.expandedFilledBackgroundRest
+    }
+}
+
+// MARK: - Minimized Ready pill (the resting form after auto-minimize)
+
+/// Same 130×32 capsule geometry as TranscriptionPillView, but shows
+/// `[✓] Ready` instead of recording/processing/completion content.
+/// Hover triggers re-expansion via the controller's onHoverEnter callback.
+struct MinimizedReadyPillView: View {
+    let onHoverEnter: () -> Void
+
+    var body: some View {
+        HStack(spacing: DesignTokens.Pill.contentSpacing) {
+            ZStack {
+                Circle().fill(DesignTokens.Icon.backgroundRest)
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: DesignTokens.Pill.iconGlyphSize, weight: .regular))
+                    .foregroundStyle(DesignTokens.Icon.tintMuted)
+            }
+            .frame(width: DesignTokens.Pill.iconDiscSize, height: DesignTokens.Pill.iconDiscSize)
+
+            Text("Ready")
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(DesignTokens.Typography.itemColor)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, DesignTokens.Pill.leadingPadding)
+        .padding(.trailing, DesignTokens.Pill.trailingPadding)
+        .padding(.vertical, DesignTokens.Pill.verticalPadding)
+        .frame(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+        .background(Color.black, in: Capsule())
+        .onHover { hovering in if hovering { onHoverEnter() } }
+        .accessibilityLabel("Transcription ready — hover to view")
     }
 }
 
