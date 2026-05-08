@@ -18,6 +18,7 @@
 		A10000000000000000000008 /* NotesStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* NotesStorage.swift */; };
 		A10000000000000000000009 /* NotesEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* NotesEditorView.swift */; };
 		A1000000000000000000000B /* FileDropStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000B /* FileDropStorage.swift */; };
+		A3EBA5E6D38F418DAE2DAB9D /* AutoPasteService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72C22EB592AD44098D9DD5CD /* AutoPasteService.swift */; };
 		A1000000000000000000000C /* FileDropZoneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* FileDropZoneView.swift */; };
 		A1000000000000000000000D /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* AppSettings.swift */; };
 		A1000000000000000000000E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* SettingsView.swift */; };
@@ -58,6 +59,7 @@
 		A20000000000000000000009 /* NotesStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesStorage.swift; sourceTree = "<group>"; };
 		A2000000000000000000000A /* NotesEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesEditorView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000B /* FileDropStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDropStorage.swift; sourceTree = "<group>"; };
+		72C22EB592AD44098D9DD5CD /* AutoPasteService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoPasteService.swift; sourceTree = "<group>"; };
 		A2000000000000000000000C /* FileDropZoneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDropZoneView.swift; sourceTree = "<group>"; };
 		A2000000000000000000000D /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
 		A2000000000000000000000E /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -114,6 +116,7 @@
 				A2000000000000000000000A /* NotesEditorView.swift */,
 				A2000000000000000000000B /* FileDropStorage.swift */,
 				A2000000000000000000000C /* FileDropZoneView.swift */,
+				72C22EB592AD44098D9DD5CD /* AutoPasteService.swift */,
 				A20000000000000000000023 /* APIConstants.swift */,
 				A20000000000000000000022 /* APIKeys.swift */,
 				A2000000000000000000000D /* AppSettings.swift */,
@@ -238,6 +241,7 @@
 				A10000000000000000000009 /* NotesEditorView.swift in Sources */,
 				A1000000000000000000000B /* FileDropStorage.swift in Sources */,
 				A1000000000000000000000C /* FileDropZoneView.swift in Sources */,
+				A3EBA5E6D38F418DAE2DAB9D /* AutoPasteService.swift in Sources */,
 				A10000000000000000000022 /* APIKeys.swift in Sources */,
 				A10000000000000000000023 /* APIConstants.swift in Sources */,
 				A1000000000000000000000D /* AppSettings.swift in Sources */,
