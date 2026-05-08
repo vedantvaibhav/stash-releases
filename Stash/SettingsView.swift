@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 import Carbon.HIToolbox
 import ServiceManagement
+import AVFoundation
+import ApplicationServices
 
 // MARK: - Window controller
 
@@ -283,6 +285,12 @@ struct SettingsView: View {
 
     @State private var isHoveringSignOut = false
 
+    // Permission status. Refreshed on appear and when the app becomes active
+    // (so toggling a permission in System Settings shows up when the user
+    // returns to this window).
+    @State private var micGranted: Bool = false
+    @State private var accessibilityGranted: Bool = false
+
     private let autoHideOptions: [(label: String, value: Double)] = [
         ("5s", 5), ("7s", 7), ("10s", 10), ("15s", 15), ("30s", 30), ("Never", 0)
     ]
@@ -293,6 +301,7 @@ struct SettingsView: View {
                 accountCard
                 hotkeySection
                 autoHideSection
+                permissionsSection
                 launchAtLoginSection
                 dangerZoneSection
             }
@@ -302,6 +311,15 @@ struct SettingsView: View {
         .frame(minHeight: 580)
         .background(Color.black)
         .preferredColorScheme(.dark)
+        .onAppear { refreshPermissionStatus() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshPermissionStatus()
+        }
+    }
+
+    private func refreshPermissionStatus() {
+        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        accessibilityGranted = AXIsProcessTrusted()
     }
 
     // MARK: - Account card
@@ -403,6 +421,66 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Permissions section
+
+    private var permissionsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Permissions")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundColor(.white.opacity(0.45))
+
+            VStack(spacing: 8) {
+                PermissionRow(
+                    title: "Microphone",
+                    subtitle: "Required to record voice notes",
+                    granted: micGranted,
+                    primaryAction: { requestMicPermission() },
+                    openSettingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+                )
+                PermissionRow(
+                    title: "Accessibility",
+                    subtitle: "Required to paste transcripts directly into the focused app",
+                    granted: accessibilityGranted,
+                    primaryAction: { requestAccessibilityPermission() },
+                    openSettingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                )
+            }
+        }
+    }
+
+    private func requestMicPermission() {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        switch status {
+        case .notDetermined:
+            // Native prompt — only available the first time. After that it's
+            // a no-op and the user has to go through System Settings.
+            AVCaptureDevice.requestAccess(for: .audio) { _ in
+                DispatchQueue.main.async { refreshPermissionStatus() }
+            }
+        default:
+            // Already determined (granted/denied/restricted) — open System
+            // Settings so the user can flip it.
+            openURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        }
+    }
+
+    private func requestAccessibilityPermission() {
+        if AXIsProcessTrusted() {
+            // Already granted — opening System Settings here is just a way
+            // for the user to revoke if they want to.
+            openURL("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+            return
+        }
+        // Trigger the native prompt-with-options call. macOS shows the
+        // permission prompt; user-toggling Stash on in System Settings
+        // grants it. Refresh status when the app becomes active again.
+        AutoPasteService.shared.requestAccessibilityPermission()
+    }
+
+    private func openURL(_ string: String) {
+        if let url = URL(string: string) { NSWorkspace.shared.open(url) }
+    }
+
     // MARK: - Launch at login section
 
     private var launchAtLoginSection: some View {
@@ -494,6 +572,77 @@ struct SettingsView: View {
 }
 
 // MARK: - Reusable sub-views
+
+private struct PermissionRow: View {
+    let title: String
+    let subtitle: String
+    let granted: Bool
+    let primaryAction: () -> Void
+    let openSettingsURL: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(.white.opacity(0.85))
+                Text(subtitle)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(.white.opacity(0.45))
+            }
+            Spacer()
+            statusPill
+            actionButton
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.07))
+        .cornerRadius(12)
+    }
+
+    private var statusPill: some View {
+        Text(granted ? "Granted" : "Not granted")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundColor(granted ? Color(red: 0.27, green: 0.85, blue: 0.42) : .white.opacity(0.55))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                granted
+                    ? Color(red: 0.27, green: 0.85, blue: 0.42).opacity(0.15)
+                    : Color.white.opacity(0.10)
+            )
+            .cornerRadius(6)
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        if granted {
+            Button {
+                if let url = URL(string: openSettingsURL) { NSWorkspace.shared.open(url) }
+            } label: {
+                Text("Manage")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.65))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Color.white.opacity(0.10))
+                    .cornerRadius(6)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Button(action: primaryAction) {
+                Text("Grant")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(Color.white.opacity(0.20))
+                    .cornerRadius(6)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+}
 
 private struct SettingsSegmentedPicker: View {
     let options: [(label: String, value: Double)]
