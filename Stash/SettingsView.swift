@@ -445,6 +445,19 @@ struct SettingsView: View {
                     openSettingsURL: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
                 )
             }
+
+            // Diagnostic line — shows which bundle is currently running so
+            // the user can verify it matches the entry they granted in
+            // System Settings. macOS Accessibility is per-bundle-path; an
+            // older Stash entry from a different path won't grant
+            // permission to a newly-installed copy at /Applications.
+            Text("Running: \(Bundle.main.bundlePath)")
+                .font(.system(size: 10, weight: .regular))
+                .foregroundColor(.white.opacity(0.30))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.top, 4)
+                .textSelection(.enabled)
         }
     }
 
