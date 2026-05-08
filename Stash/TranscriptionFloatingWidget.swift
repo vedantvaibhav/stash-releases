@@ -225,6 +225,12 @@ final class PillDisplayState: ObservableObject {
     }
     @Published var mode: Mode = .collapsed(.processing)
     @Published var copyFlashActive: Bool = false
+    /// Mirrors the AppKit-side snap zone so SwiftUI can align mode-content
+    /// to the same edge AppKit anchors the panel to. Without this, an
+    /// expanded view (520×280) inside a small host (130×32) would center its
+    /// content visually — making it appear to "slide" sideways during the
+    /// morph rather than expanding from the snap-corner.
+    @Published var snapZone: PanelSnapZone = .topCenter
 }
 
 struct PillRootView: View {
@@ -232,11 +238,9 @@ struct PillRootView: View {
     let onStop: () -> Void
     let onCopy: () -> Void
     let onDismiss: () -> Void
-    let onMinimizedHoverEnter: () -> Void
-    let onExpandedHoverChanged: (Bool) -> Void
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: alignmentForSnapZone) {
             switch state.mode {
             case .collapsed(let pillMode):
                 TranscriptionPillView(mode: pillMode, onStop: onStop)
@@ -248,14 +252,66 @@ struct PillRootView: View {
                     onDismiss: onDismiss,
                     copyFlashActive: state.copyFlashActive
                 )
-                .onHover(perform: onExpandedHoverChanged)
                 .transition(.opacity)
             case .minimizedReady:
-                MinimizedReadyPillView(onHoverEnter: onMinimizedHoverEnter)
+                MinimizedReadyPillView(onHoverEnter: {})
                     .transition(.opacity)
             }
         }
         .animation(.easeInOut(duration: DesignTokens.Pill.expandedAnimationDuration), value: state.mode)
+    }
+
+    /// Match SwiftUI ZStack alignment to the AppKit snap zone so content
+    /// edges line up across the morph (no horizontal/vertical glide).
+    private var alignmentForSnapZone: Alignment {
+        switch state.snapZone {
+        case .topLeft:      return .topLeading
+        case .topCenter:    return .top
+        case .topRight:     return .topTrailing
+        case .bottomLeft:   return .bottomLeading
+        case .bottomCenter: return .bottom
+        case .bottomRight:  return .bottomTrailing
+        }
+    }
+}
+
+// MARK: - AppKit hover tracking
+//
+// SwiftUI's `.onHover` is unreliable when the cursor is already inside the
+// view's tracking area at the moment the view is rendered (common during
+// our morph: cursor lands on the pill before the SwiftUI tree has its first
+// hover event). NSTrackingArea with `.assumeInside` correctly reports the
+// initial-hover state and fires reliably across mode changes.
+
+final class HoverTrackingView: NSView {
+    var onHoverChanged: ((Bool) -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach { removeTrackingArea($0) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect, .assumeInside],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHoverChanged?(false)
+    }
+
+    /// Pass clicks through to subviews; this view only observes hover.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let hit = super.hitTest(point), hit !== self { return hit }
+        return nil
     }
 }
 
@@ -503,15 +559,23 @@ final class TranscriptionFloatingWidgetController: NSObject {
             state: displayState,
             onStop: { [weak self] in self?.transcription?.stopRecording() },
             onCopy: { [weak self] in self?.handleCopy() },
-            onDismiss: { [weak self] in self?.handleDismiss() },
-            onMinimizedHoverEnter: { [weak self] in self?.handleMinimizedHoverEnter() },
-            onExpandedHoverChanged: { [weak self] hovering in self?.handleHoverChanged(hovering) }
+            onDismiss: { [weak self] in self?.handleDismiss() }
         )
         let host = NSHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: w, height: h)
         host.autoresizingMask = [.width, .height]
 
-        p.contentView = host
+        // Wrap the SwiftUI host in an AppKit tracking view so cursor enter/exit
+        // is detected reliably even when the cursor was already inside at the
+        // moment the SwiftUI tree changed mode.
+        let wrapper = HoverTrackingView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        wrapper.autoresizesSubviews = true
+        wrapper.addSubview(host)
+        wrapper.onHoverChanged = { [weak self] hovering in
+            self?.handleAppKitHover(hovering)
+        }
+
+        p.contentView = wrapper
         hosting = host
         panel = p
 
@@ -519,10 +583,13 @@ final class TranscriptionFloatingWidgetController: NSObject {
         installDragMonitor()
     }
 
-    /// First launch uses the menu-bar default (8 pt below the bar). Subsequent
+    /// First launch uses the menu-bar default (top-center). Subsequent
     /// launches restore whichever corner the user last snapped the pill into.
     private func restorePosition() {
         let size = NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+        // Seed SwiftUI alignment to match the persisted (or default) zone so
+        // the very first render aligns correctly.
+        displayState.snapZone = currentSnapZone()
         applyPhaseAwareFrame(size: size, animated: false)
     }
 
@@ -564,6 +631,8 @@ final class TranscriptionFloatingWidgetController: NSObject {
         let size = panel.frame.size
         let zone = PanelSnapZone.nearest(to: panel.frame, size: size, screen: vf)
         UserDefaults.standard.set(zone.rawValue, forKey: Self.snapZoneDefaultsKey)
+        // Mirror to SwiftUI so ZStack alignment follows the new corner.
+        displayState.snapZone = zone
         applyPhaseAwareFrame(size: size, animated: true)
     }
 
@@ -664,24 +733,40 @@ final class TranscriptionFloatingWidgetController: NSObject {
         )
     }
 
+    /// Single AppKit-driven hover handler. Routes to the right per-phase
+    /// behavior based on `phase`. Replaces SwiftUI .onHover (which was
+    /// unreliable across the morph because the cursor was often already
+    /// inside when the new SwiftUI tree mounted).
+    private func handleAppKitHover(_ hovering: Bool) {
+        switch phase {
+        case .expandedReady:
+            if hovering {
+                autoMinimizeWorkItem?.cancel()
+                autoMinimizeWorkItem = nil
+            } else if expandedViaHover {
+                // Cursor leaving an expansion that was triggered by hover →
+                // collapse immediately back to minimized.
+                collapseToMinimizedReady()
+            } else {
+                // Initial post-recording expansion: cursor leaving restarts
+                // the 30s grace.
+                scheduleAutoMinimize()
+            }
+        case .minimizedReady:
+            if hovering {
+                handleMinimizedHoverEnter()
+            }
+            // Hover-exit on minimized is a no-op; the pill stays.
+        default:
+            break
+        }
+    }
+
+    /// Kept for the internal call sites that already invoke handleHoverChanged
+    /// (none after this refactor, but the function name is referenced in
+    /// historical code paths if any survive).
     private func handleHoverChanged(_ hovering: Bool) {
-        guard phase == .expandedReady else { return }
-        if hovering {
-            autoMinimizeWorkItem?.cancel()
-            autoMinimizeWorkItem = nil
-            return
-        }
-        // Hover-leave behavior depends on how we entered .expandedReady:
-        //   - via hover on the minimized pill → collapse immediately (the
-        //     cursor is the lifeline; if it leaves, the expansion goes).
-        //   - via initial post-recording auto-expansion → schedule the 30s
-        //     auto-minimize timer (the user gets time to read/copy/dismiss
-        //     without having to hover).
-        if expandedViaHover {
-            collapseToMinimizedReady()
-        } else {
-            scheduleAutoMinimize()
-        }
+        handleAppKitHover(hovering)
     }
 
     private func collapseToMinimizedReady() {
