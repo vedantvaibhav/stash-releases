@@ -59,7 +59,9 @@ final class AutoPasteService {
         if writeViaAXValue(text, into: element) {
             return .success
         }
-        // Strategy 2 (CGEvent ⌘V) wired in next commit.
+        if writeViaCGEventPaste(text) {
+            return .success
+        }
         return .insertionFailed
     }
 
@@ -172,6 +174,63 @@ final class AutoPasteService {
             _ = AXUIElementSetAttributeValue(
                 element, kAXSelectedTextRangeAttribute as CFString, axRange
             )
+        }
+        return true
+    }
+
+    // MARK: - Strategy 2: CGEvent ⌘V with pasteboard preservation
+
+    /// Universal fallback: snapshot the pasteboard, write `text` to it, post
+    /// a synthetic ⌘V keydown/keyup pair via CGEvent, restore the original
+    /// pasteboard 200ms later. Long enough for the destination app to have
+    /// consumed the paste; short enough to minimize cross-talk with the user
+    /// copying something else right after.
+    ///
+    /// Returns true on completion. Returns false only if pasteboard writes
+    /// fail outright (very rare).
+    private func writeViaCGEventPaste(_ text: String) -> Bool {
+        let pb = NSPasteboard.general
+
+        // Snapshot existing items as (type → data) dictionaries. Lazily-
+        // loaded items (file promises, drag-from-Photos) won't round-trip
+        // — known limitation. Most clipboards are text/image which do.
+        let snapshot: [[NSPasteboard.PasteboardType: Data]] = (pb.pasteboardItems ?? []).map { item in
+            var dict: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types {
+                if let data = item.data(forType: type) { dict[type] = data }
+            }
+            return dict
+        }
+
+        // Replace pasteboard with our text.
+        pb.clearContents()
+        guard pb.setString(text, forType: .string) else { return false }
+
+        // Post a synthetic ⌘V. `.hidSystemState` is the correct stateID for
+        // posted events that need to be processed as if they came from the
+        // user (modifier-flag handling, focus-app dispatch).
+        let source = CGEventSource(stateID: .hidSystemState)
+        // Virtual key 9 == kVK_ANSI_V. CGEvent uses physical scancodes,
+        // so this is layout-independent (works on QWERTY/Dvorak/AZERTY).
+        let vKey: CGKeyCode = 9
+        let down = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
+        down?.flags = .maskCommand
+        up?.flags = .maskCommand
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+
+        // Restore the original pasteboard after the destination has consumed
+        // our paste. 200ms is the empirical sweet spot.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
+            pb.clearContents()
+            for itemDict in snapshot {
+                let item = NSPasteboardItem()
+                for (type, data) in itemDict {
+                    item.setData(data, forType: type)
+                }
+                pb.writeObjects([item])
+            }
         }
         return true
     }
