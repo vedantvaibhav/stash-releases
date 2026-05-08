@@ -311,8 +311,22 @@ struct SettingsView: View {
         .frame(minHeight: 580)
         .background(Color.black)
         .preferredColorScheme(.dark)
-        .onAppear { refreshPermissionStatus() }
+        .onAppear {
+            refreshPermissionStatus()
+            // Real-time accessibility-state polling. macOS doesn't expose
+            // a notification for the trusted-list flip, so AutoPasteService
+            // polls AXIsProcessTrusted at 1Hz while we're visible and posts
+            // a notification on change. We stop the poll on disappear so
+            // we don't burn CPU when the window is closed.
+            AutoPasteService.shared.startPermissionPolling()
+        }
+        .onDisappear {
+            AutoPasteService.shared.stopPermissionPolling()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshPermissionStatus()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AutoPasteService.accessibilityStatusChangedNotification)) { _ in
             refreshPermissionStatus()
         }
     }
