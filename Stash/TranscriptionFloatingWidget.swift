@@ -819,7 +819,7 @@ struct TranscriptionPillExpandedView: View {
     private var footer: some View {
         HStack(spacing: DesignTokens.Pill.expandedButtonGap) {
             Spacer()
-            PillGhostButton(title: "Dismiss", action: onDismiss)
+            PillIconButton(systemSymbol: "xmark", action: onDismiss)
             PillFilledButton(
                 title: copyFlashActive ? "Copied ✓" : "Copy",
                 action: onCopy,
@@ -830,7 +830,38 @@ struct TranscriptionPillExpandedView: View {
     }
 }
 
-// MARK: - Expanded-pill button styles (filled primary + ghost secondary)
+// MARK: - Expanded-pill button styles
+
+private struct PillIconButton: View {
+    let systemSymbol: String
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemSymbol)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(DesignTokens.Pill.expandedGhostForeground)
+                .frame(
+                    width: DesignTokens.Pill.expandedButtonHeight,
+                    height: DesignTokens.Pill.expandedButtonHeight
+                )
+                .background(Circle().fill(background))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) { isHovering = hovering }
+        }
+        .accessibilityLabel("Dismiss")
+    }
+
+    private var background: Color {
+        isHovering
+            ? DesignTokens.Pill.expandedGhostBackgroundHover
+            : DesignTokens.Pill.expandedGhostBackgroundRest
+    }
+}
 
 private struct PillFilledButton: View {
     let title: String
@@ -865,33 +896,3 @@ private struct PillFilledButton: View {
     }
 }
 
-private struct PillGhostButton: View {
-    let title: String
-    let action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(DesignTokens.Pill.expandedGhostFont)
-                .foregroundStyle(DesignTokens.Pill.expandedGhostForeground)
-                .padding(.horizontal, DesignTokens.Pill.expandedButtonHorizontalPadding)
-                .frame(height: DesignTokens.Pill.expandedButtonHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: DesignTokens.Pill.expandedButtonCornerRadius, style: .continuous)
-                        .fill(background)
-                )
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.12)) { isHovering = hovering }
-        }
-    }
-
-    private var background: Color {
-        isHovering
-            ? DesignTokens.Pill.expandedGhostBackgroundHover
-            : DesignTokens.Pill.expandedGhostBackgroundRest
-    }
-}
