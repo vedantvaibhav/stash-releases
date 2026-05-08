@@ -12,6 +12,7 @@ extension Notification.Name {
     static let quickRecordHotkeyChanged     = Notification.Name("quickRecordHotkeyChanged")
     static let doubleTapQuickRecordChanged  = Notification.Name("DoubleTapQuickRecordChanged")
     static let authCompleted                = Notification.Name("AuthCompleted")
+    static let accessibilityStatusChanged   = Notification.Name("AccessibilityStatusChanged")
 }
 
 // MARK: - Layout style

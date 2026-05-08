@@ -326,7 +326,7 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshPermissionStatus()
         }
-        .onReceive(NotificationCenter.default.publisher(for: AutoPasteService.accessibilityStatusChangedNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .accessibilityStatusChanged)) { _ in
             refreshPermissionStatus()
         }
     }

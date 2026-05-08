@@ -48,15 +48,11 @@ final class AutoPasteService {
     /// against clobbering a user copy.
     private var currentPasteToken: UUID?
 
-    /// Posted whenever `AXIsProcessTrusted()` flips between polls. The
-    /// Settings screen observes this so the Permissions row updates in
-    /// real time when the user toggles the entry in System Settings —
-    /// without forcing them to alt-tab away and back.
-    static let accessibilityStatusChangedNotification = Notification.Name("AutoPasteService.accessibilityStatusChanged")
-
     /// Polling timer for `AXIsProcessTrusted`. Active only while a UI
     /// surface (currently SettingsView) is observing — see `startPermissionPolling`
     /// / `stopPermissionPolling`. Nil when no observer is attached.
+    /// Posts `.accessibilityStatusChanged` (declared in AppSettings.swift
+    /// alongside the rest of the project's notification names) on flip.
     private var pollingTimer: Timer?
     private var lastPolledTrusted: Bool = false
 
@@ -109,7 +105,7 @@ final class AutoPasteService {
         let current = hasAccessibilityPermission
         guard current != lastPolledTrusted else { return }
         lastPolledTrusted = current
-        NotificationCenter.default.post(name: Self.accessibilityStatusChangedNotification, object: nil)
+        NotificationCenter.default.post(name: .accessibilityStatusChanged, object: nil)
     }
 
     /// Attempt to insert `text` at the focused field's caret. Synchronous;
@@ -175,22 +171,23 @@ final class AutoPasteService {
         // Electron/ToDesktop. Strategy 2 still runs in that case.
         let element = focusedElement(in: frontApp)
 
-        if let element, isSecureTextElement(element) {
-            #if DEBUG
-            print("[AutoPaste] noFocusedField — focused element is a secure (password) field")
-            #endif
-            return .noFocusedField
-        }
-
-        if let element, isStandardWritableRole(element) {
-            // Re-check permission at strategy entry; the user may have revoked
-            // Accessibility between attemptInsert's first gate and now.
-            guard hasAccessibilityPermission else { return .noPermission }
-            if writeViaAXValue(text, into: element, deadline: deadline) {
+        if let element {
+            if isSecureTextElement(element) {
                 #if DEBUG
-                print("[AutoPaste] success via Strategy 1 (AXValue write). Front app: \(frontApp.bundleIdentifier ?? "?")")
+                print("[AutoPaste] noFocusedField — focused element is a secure (password) field")
                 #endif
-                return .success
+                return .noFocusedField
+            }
+            if isStandardWritableRole(element) {
+                // Re-check permission at strategy entry; the user may have revoked
+                // Accessibility between attemptInsert's first gate and now.
+                guard hasAccessibilityPermission else { return .noPermission }
+                if writeViaAXValue(text, into: element, deadline: deadline) {
+                    #if DEBUG
+                    print("[AutoPaste] success via Strategy 1 (AXValue write). Front app: \(frontApp.bundleIdentifier ?? "?")")
+                    #endif
+                    return .success
+                }
             }
         }
 
@@ -311,7 +308,6 @@ final class AutoPasteService {
         }
         if isDeadlineExceeded(deadline) { return false }
 
-        // Read current value (string).
         var valueRef: CFTypeRef?
         let valueStatus = AXUIElementCopyAttributeValue(
             element, kAXValueAttribute as CFString, &valueRef
@@ -319,8 +315,7 @@ final class AutoPasteService {
         let currentValue = (valueStatus == .success ? (valueRef as? String) : nil) ?? ""
         if isDeadlineExceeded(deadline) { return false }
 
-        // Read selected range. Some elements don't expose this — treat as
-        // append-at-end.
+        // Some elements don't expose a selected range — treat as append-at-end.
         var rangeRef: CFTypeRef?
         let rangeStatus = AXUIElementCopyAttributeValue(
             element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
@@ -341,7 +336,6 @@ final class AutoPasteService {
         }
         if isDeadlineExceeded(deadline) { return false }
 
-        // Splice the text into the selected range (replacing any selection).
         let nsCurrent = currentValue as NSString
         let safeLocation = max(0, min(selRange.location, nsCurrent.length))
         let safeLength = max(0, min(selRange.length, nsCurrent.length - safeLocation))
@@ -350,7 +344,6 @@ final class AutoPasteService {
             with: text
         )
 
-        // Write the new value.
         let setStatus = AXUIElementSetAttributeValue(
             element, kAXValueAttribute as CFString, newValue as CFString
         )
@@ -400,33 +393,24 @@ final class AutoPasteService {
     /// Returns true on completion. Returns false only if event creation or
     /// the pasteboard write fails outright (very rare).
     private func writeViaCGEventPaste(_ text: String, token: UUID) -> Bool {
-        let pb = NSPasteboard.general
-
-        // Snapshot existing items as (type → data) dictionaries. Lazily-
-        // loaded items (file promises, drag-from-Photos) won't round-trip
-        // — known limitation. Most clipboards are text/image which do.
-        let snapshot: [[NSPasteboard.PasteboardType: Data]] = (pb.pasteboardItems ?? []).map { item in
-            var dict: [NSPasteboard.PasteboardType: Data] = [:]
-            for type in item.types {
-                if let data = item.data(forType: type) { dict[type] = data }
-            }
-            return dict
-        }
-
-        // Build the four-event ⌘V sequence: CMD↓, V↓, V↑, CMD↑. Setting
-        // .maskCommand on V alone works for native AppKit but Electron apps
-        // (Claude desktop, VS Code, Slack) and Chromium contenteditable
-        // (WhatsApp Web, Notion, Linear, Gmail) listen for the explicit
-        // CMD modifier keyDown/keyUp events to flip their internal modifier
-        // state. Without those bracketing events, the V keypress arrives
-        // without an active "command" state and is treated as plain "v".
+        // Build the four-event ⌘V sequence FIRST. If event creation fails
+        // we abort BEFORE clobbering the pasteboard, so the user's clipboard
+        // stays intact and the caller falls through to .insertionFailed.
+        //
+        // CMD↓, V↓, V↑, CMD↑ — setting .maskCommand on V alone works for
+        // native AppKit but Electron apps (Claude desktop, VS Code, Slack)
+        // and Chromium contenteditable (WhatsApp Web, Notion, Linear, Gmail)
+        // listen for the explicit CMD modifier keyDown/keyUp events to flip
+        // their internal modifier state. Without those bracketing events,
+        // the V keypress arrives without an active "command" state and is
+        // treated as plain "v".
         //
         // `.combinedSessionState` is the correct stateID for events posted
-        // on behalf of the user — modifier flags from our event flow into
-        // the session state and are visible to the destination process.
-        // `.hidSystemState` (the previous choice) sources from the *physical*
-        // hardware state, which Electron occasionally sees as "no modifier
-        // is held" because no real CMD key is pressed.
+        // on behalf of the user — modifier flags flow into session state
+        // and are visible to the destination process. `.hidSystemState`
+        // sources from the *physical* hardware state, which Electron
+        // occasionally sees as "no modifier is held" because no real CMD
+        // key is pressed.
         let source = CGEventSource(stateID: .combinedSessionState)
         // Virtual key 9 == kVK_ANSI_V; 55 (0x37) == kVK_Command. CGEvent uses
         // physical scancodes, so this is layout-independent.
@@ -443,7 +427,22 @@ final class AutoPasteService {
         vUp.flags = .maskCommand
         cmdUp.flags = []
 
-        // Replace pasteboard with our text.
+        let pb = NSPasteboard.general
+
+        // Snapshot existing items now (after event-build success, before our
+        // own write). Walking each item's types and copying their Data can
+        // be MB-sized for an image clipboard — deferring past the event-build
+        // guard means we never pay this for the rare event-creation failure.
+        // Lazily-loaded items (file promises, drag-from-Photos) won't round-
+        // trip — known limitation; most clipboards are text/image which do.
+        let snapshot: [[NSPasteboard.PasteboardType: Data]] = (pb.pasteboardItems ?? []).map { item in
+            var dict: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types {
+                if let data = item.data(forType: type) { dict[type] = data }
+            }
+            return dict
+        }
+
         pb.clearContents()
         guard pb.setString(text, forType: .string) else { return false }
         // Snapshot the changeCount AFTER our write so we can detect a user
