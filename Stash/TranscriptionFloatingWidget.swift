@@ -150,6 +150,16 @@ struct TranscriptionPillView: View {
             .foregroundStyle(DesignTokens.Typography.itemColor)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
+            // PillRootView's outer `.animation(_:value: state.mode)` opens an
+            // animated transaction every second of recording (state.mode's
+            // .recording associated value carries durationSeconds). Without
+            // this transaction wrap, the implicit Text content swap inside
+            // that transaction cross-fades — visible as a dissolve on the
+            // timer. Pin the timer label to no-animation; other call sites
+            // ("Processing", completion text) keep their default behavior.
+            .transaction { transaction in
+                if tabularDigits { transaction.animation = nil }
+            }
     }
 
     // MARK: Trailing element
