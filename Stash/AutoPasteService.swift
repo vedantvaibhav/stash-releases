@@ -56,7 +56,10 @@ final class AutoPasteService {
               isWritableTextElement(element) else {
             return .noFocusedField
         }
-        // Strategies wired in next commits.
+        if writeViaAXValue(text, into: element) {
+            return .success
+        }
+        // Strategy 2 (CGEvent ⌘V) wired in next commit.
         return .insertionFailed
     }
 
@@ -108,5 +111,68 @@ final class AutoPasteService {
         default:
             return false
         }
+    }
+
+    // MARK: - Strategy 1: AXUIElement direct value write
+
+    /// Write the new text value via AXUIElementSetAttributeValue at
+    /// `kAXValueAttribute`. Reads current value + selected range, splices
+    /// `text` into the selected range (or appends if no selection), writes
+    /// back, and bumps the selected range to the end of the inserted text
+    /// so the caret lands AFTER the inserted transcript.
+    ///
+    /// Returns true on confirmed success. Returns false on any AX failure —
+    /// caller falls through to Strategy 2.
+    private func writeViaAXValue(_ text: String, into element: AXUIElement) -> Bool {
+        // Read current value (string).
+        var valueRef: CFTypeRef?
+        let valueStatus = AXUIElementCopyAttributeValue(
+            element, kAXValueAttribute as CFString, &valueRef
+        )
+        let currentValue = (valueStatus == .success ? (valueRef as? String) : nil) ?? ""
+
+        // Read selected range. Some elements don't expose this — treat as
+        // append-at-end.
+        var rangeRef: CFTypeRef?
+        let rangeStatus = AXUIElementCopyAttributeValue(
+            element, kAXSelectedTextRangeAttribute as CFString, &rangeRef
+        )
+        var selRange = CFRange(location: (currentValue as NSString).length, length: 0)
+        if rangeStatus == .success, let cfRange = rangeRef,
+           CFGetTypeID(cfRange) == AXValueGetTypeID() {
+            let axRange = cfRange as! AXValue
+            if AXValueGetType(axRange) == .cfRange {
+                var r = CFRange(location: 0, length: 0)
+                if AXValueGetValue(axRange, .cfRange, &r) {
+                    selRange = r
+                }
+            }
+        }
+
+        // Splice the text into the selected range (replacing any selection).
+        let nsCurrent = currentValue as NSString
+        let safeLocation = max(0, min(selRange.location, nsCurrent.length))
+        let safeLength = max(0, min(selRange.length, nsCurrent.length - safeLocation))
+        let newValue = nsCurrent.replacingCharacters(
+            in: NSRange(location: safeLocation, length: safeLength),
+            with: text
+        )
+
+        // Write the new value.
+        let setStatus = AXUIElementSetAttributeValue(
+            element, kAXValueAttribute as CFString, newValue as CFString
+        )
+        guard setStatus == .success else { return false }
+
+        // Move the caret to the end of the inserted text. Best-effort —
+        // not all elements honor selected-range writes.
+        let newCaret = safeLocation + (text as NSString).length
+        var newRange = CFRange(location: newCaret, length: 0)
+        if let axRange = AXValueCreate(.cfRange, &newRange) {
+            _ = AXUIElementSetAttributeValue(
+                element, kAXSelectedTextRangeAttribute as CFString, axRange
+            )
+        }
+        return true
     }
 }
