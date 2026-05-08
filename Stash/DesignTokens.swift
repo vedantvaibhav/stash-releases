@@ -68,8 +68,10 @@ enum DesignTokens {
         static let expandedAnimationCurveCP2x: Double = 0.36
         static let expandedAnimationCurveCP2y: Double = 1.0
 
-        // Auto-dismiss while expanded.
-        static let expandedAutoDismissSeconds: TimeInterval = 30
+        // Auto-minimize the expanded form into the small Ready pill after
+        // this many seconds of no interaction. The Ready pill stays on
+        // screen until explicit Copy / X / Esc / new-recording.
+        static let expandedAutoMinimizeSeconds: TimeInterval = 10
 
         // Copy-button success-flash duration before the pill collapses.
         static let expandedCopyFlashSeconds: TimeInterval = 1.2
