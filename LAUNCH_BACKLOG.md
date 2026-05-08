@@ -14,6 +14,10 @@ _Last updated: 6 May 2026_
 
 _None — all known bugs shipped or moved to Shipped below._
 
+## 🎨 UI polish (post-functional)
+
+- [ ] **Short-pill expanded form UI pass** — typography weight/spacing in the eyebrow, scrollbar styling, footer button visual rhythm, transcript-text padding. Functionality is in (#20); just the visual polish remains. Block: needs a designer/Figma pass before further code changes.
+
 ---
 
 ## 📣 Launch 1 — Marketing
