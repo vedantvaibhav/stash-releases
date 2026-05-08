@@ -6,6 +6,8 @@ _Last updated: 6 May 2026_
 
 ## 🚀 Launch 1 — Product (remaining)
 
+- [ ] **Auto-paste short transcripts to focused app (Option C)** — primary delivery mechanism for the short-recording handoff. After a short (<5 min) recording finishes, paste the cleaned transcript directly into the currently-focused text field of the user's active app. Fall back to the floating-pill morph (PR #20) only if no insertable text field is detected. Spec: `docs/superpowers/specs/2026-05-09-auto-paste-active-app-design.md`. **Replaces the morph as the launch-critical UX.** Morph stays as the fallback.
+- [ ] **Permissions onboarding screen** — single screen during onboarding that handles ALL system permissions in one place (microphone, accessibility for auto-paste, screen recording if added later, automation/Apple Events if needed). Currently we ask for mic mid-flow on first record, which is jarring. Design as a checklist: each permission has a row with status pill (granted / not granted) and a CTA to trigger the system prompt. User can proceed only after required ones are granted (mic is required; accessibility is required if auto-paste ships in launch 1).
 - [ ] **Onboarding step 2** — after login, route to onboarding screen before opening tray
 - [ ] **Success page entrance animation** — subtle fade/slide-up on logo + text on `success.html`
 - [ ] **Appcast / Sparkle setup** — sign DMG, add `sparkle:edSignature` + `length` to `appcast.xml`, verify `SUFeedURL`
