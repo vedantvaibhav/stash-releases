@@ -592,7 +592,12 @@ final class TranscriptionService: NSObject, ObservableObject {
     }
 
     private func clearBannerAfterDelay(_ delay: Double = 4.0) {
+        // Snapshot-guard: same shape as showCompletion's fix. Without it,
+        // an older banner's pending clear fires after the delay and wipes
+        // out a newer banner that arrived in the meantime.
+        let snapshot = lastErrorForBanner
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard self?.lastErrorForBanner == snapshot else { return }
             self?.lastErrorForBanner = nil
         }
     }
