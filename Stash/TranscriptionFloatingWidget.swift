@@ -8,6 +8,7 @@ enum PillMode: Equatable {
     case recording(durationSeconds: Int)
     case processing
     case completion(message: String)
+    case expanded(ShortTranscriptResult)
 }
 
 /// Stable animation key: identical across timer ticks so the HStack doesn't
@@ -16,12 +17,14 @@ private enum PillPhaseKey: Equatable {
     case recording
     case processing
     case completion(String)
+    case expanded(UUID)
 
     init(_ mode: PillMode) {
         switch mode {
         case .recording:            self = .recording
         case .processing:           self = .processing
         case .completion(let msg):  self = .completion(msg)
+        case .expanded(let result): self = .expanded(result.id)
         }
     }
 }
@@ -70,6 +73,8 @@ struct TranscriptionPillView: View {
                 .transition(.opacity)
         case .completion(let message):
             glyph(completionSymbol(for: message))
+        case .expanded:
+            EmptyView()
         }
     }
 
@@ -106,6 +111,8 @@ struct TranscriptionPillView: View {
             pillLabel("Processing")
         case .completion(let message):
             pillLabel(message)
+        case .expanded:
+            EmptyView()
         }
     }
 
@@ -130,7 +137,7 @@ struct TranscriptionPillView: View {
         case .recording:
             StopRecordingButton(onStop: onStop)
                 .transition(.opacity.combined(with: .scale(scale: 0.85)))
-        case .processing, .completion:
+        case .processing, .completion, .expanded:
             EmptyView()
         }
     }
@@ -413,5 +420,152 @@ final class TranscriptionFloatingWidgetController: NSObject {
         } else {
             panel.setFrame(target, display: false)
         }
+    }
+}
+
+// MARK: - Expanded pill (short-recording handoff)
+
+/// Vertical layout: eyebrow + duration row, scrollable selectable text,
+/// Copy / Dismiss footer. Width fixed by `DesignTokens.Pill.expandedWidth`;
+/// height grows with content up to `expandedMaxHeight`, then scrolls.
+struct TranscriptionPillExpandedView: View {
+    let result: ShortTranscriptResult
+    let onCopy: () -> Void
+    let onDismiss: () -> Void
+    /// True for ~1.2s after the user clicks Copy. Replaces the Copy button
+    /// label with a "Copied ✓" affordance before the pill collapses.
+    let copyFlashActive: Bool
+    /// Fired when the cursor enters/exits the expanded pill. The controller
+    /// uses this to cancel the auto-dismiss timer on enter and restart it on exit.
+    let onHoverChanged: (Bool) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            eyebrow
+                .padding(.bottom, DesignTokens.Pill.expandedEyebrowToTextGap)
+            transcriptText
+                .padding(.bottom, DesignTokens.Pill.expandedTextToFooterGap)
+            footer
+        }
+        .padding(DesignTokens.Pill.expandedPadding)
+        .frame(width: DesignTokens.Pill.expandedWidth, alignment: .topLeading)
+        .frame(maxHeight: DesignTokens.Pill.expandedMaxHeight, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: DesignTokens.Pill.expandedCornerRadius, style: .continuous)
+                .fill(Color.black)
+        )
+        .onHover { hovering in onHoverChanged(hovering) }
+    }
+
+    private var eyebrow: some View {
+        HStack(spacing: 0) {
+            Text(result.isRaw ? "Voice note — raw" : "Voice note")
+                .font(DesignTokens.Pill.expandedEyebrowFont)
+                .foregroundStyle(DesignTokens.Pill.expandedEyebrowColor)
+            Spacer(minLength: 8)
+            Text(formatDuration(result.durationSeconds))
+                .font(DesignTokens.Pill.expandedEyebrowFont.monospacedDigit())
+                .foregroundStyle(DesignTokens.Pill.expandedEyebrowColor)
+        }
+    }
+
+    private var transcriptText: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            Text(result.text)
+                .font(DesignTokens.Pill.expandedTextFont)
+                .foregroundStyle(DesignTokens.Pill.expandedTextColor)
+                .lineSpacing(DesignTokens.Pill.expandedTextLineSpacing)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.trailing, 4)
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: DesignTokens.Pill.expandedButtonGap) {
+            Spacer()
+            PillGhostButton(title: "Dismiss", action: onDismiss)
+            PillFilledButton(
+                title: copyFlashActive ? "Copied ✓" : "Copy",
+                action: onCopy,
+                isFlashing: copyFlashActive
+            )
+        }
+        .frame(height: DesignTokens.Pill.expandedButtonHeight)
+    }
+
+    /// MM:SS for sub-hour, H:MM:SS otherwise (mirrors `TranscriptionPillView`).
+    private func formatDuration(_ seconds: Int) -> String {
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        let s = seconds % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
+    }
+}
+
+// MARK: - Expanded-pill button styles (filled primary + ghost secondary)
+
+private struct PillFilledButton: View {
+    let title: String
+    let action: () -> Void
+    var isFlashing: Bool = false
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(DesignTokens.Pill.expandedFilledFont)
+                .foregroundStyle(DesignTokens.Pill.expandedFilledForeground)
+                .padding(.horizontal, DesignTokens.Pill.expandedButtonHorizontalPadding)
+                .frame(height: DesignTokens.Pill.expandedButtonHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: DesignTokens.Pill.expandedButtonCornerRadius, style: .continuous)
+                        .fill(background)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(isFlashing)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) { isHovering = hovering }
+        }
+    }
+
+    private var background: Color {
+        isHovering
+            ? DesignTokens.Pill.expandedFilledBackgroundHover
+            : DesignTokens.Pill.expandedFilledBackgroundRest
+    }
+}
+
+private struct PillGhostButton: View {
+    let title: String
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(DesignTokens.Pill.expandedGhostFont)
+                .foregroundStyle(DesignTokens.Pill.expandedGhostForeground)
+                .padding(.horizontal, DesignTokens.Pill.expandedButtonHorizontalPadding)
+                .frame(height: DesignTokens.Pill.expandedButtonHeight)
+                .background(
+                    RoundedRectangle(cornerRadius: DesignTokens.Pill.expandedButtonCornerRadius, style: .continuous)
+                        .fill(background)
+                )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.12)) { isHovering = hovering }
+        }
+    }
+
+    private var background: Color {
+        isHovering
+            ? DesignTokens.Pill.expandedGhostBackgroundHover
+            : DesignTokens.Pill.expandedGhostBackgroundRest
     }
 }
