@@ -433,15 +433,28 @@ final class TranscriptionFloatingWidgetController: NSObject {
         }
 
         // Recording supersedes everything: a new recording while the pill is
-        // expanded or minimized must hide that state immediately.
+        // expanded or minimized must hide that state immediately. The whole
+        // takeover runs inside a single Transaction with `disablesAnimations`
+        // so SwiftUI sees the two displayState.mode mutations
+        // (`hideAllResultPhases` → .collapsed(.processing), `updateHosted`
+        // → .collapsed(.recording(0))) as one atomic non-animated change.
+        // Without this wrap, PillRootView's `.animation(_:value: state.mode)`
+        // cross-fades the previous result-phase view out as the recording
+        // view fades in — the user-visible "ghost flash". Subsequent
+        // mutations (recording → processing → completion) animate normally;
+        // we only suppress the takeover frame.
         if ts.isRecording {
-            if phase == .expandedReady || phase == .minimizedReady {
-                hideAllResultPhases(clearResultOnService: true, animated: false)
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                if phase == .expandedReady || phase == .minimizedReady {
+                    hideAllResultPhases(clearResultOnService: true, animated: false)
+                }
+                cancelAllPendingWork(except: .recording)
+                phase = .recording
+                showCollapsedPanelIfNeeded()
+                updateHosted(mode: .recording(durationSeconds: ts.duration))
             }
-            cancelAllPendingWork(except: .recording)
-            phase = .recording
-            showCollapsedPanelIfNeeded()
-            updateHosted(mode: .recording(durationSeconds: ts.duration))
             return
         }
 
