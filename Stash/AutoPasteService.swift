@@ -51,17 +51,46 @@ final class AutoPasteService {
     /// Attempt to insert `text` at the focused field's caret. Synchronous;
     /// returns within a few ms.
     func attemptInsert(text: String) -> InsertResult {
-        guard hasAccessibilityPermission else { return .noPermission }
-        guard let element = focusedTextElement(),
-              isWritableTextElement(element) else {
+        guard hasAccessibilityPermission else {
+            #if DEBUG
+            print("[AutoPaste] noPermission — AXIsProcessTrusted() == false. Bundle: \(Bundle.main.bundlePath)")
+            #endif
+            return .noPermission
+        }
+        guard let element = focusedTextElement() else {
+            #if DEBUG
+            let frontApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
+            print("[AutoPaste] noFocusedField — focusedTextElement returned nil. Front app: \(frontApp)")
+            #endif
+            return .noFocusedField
+        }
+        guard isWritableTextElement(element) else {
+            #if DEBUG
+            var roleRef: CFTypeRef?
+            _ = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+            let role = (roleRef as? String) ?? "unknown"
+            var subroleRef: CFTypeRef?
+            _ = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleRef)
+            let subrole = (subroleRef as? String) ?? "none"
+            print("[AutoPaste] noFocusedField — element not writable. Role: \(role), subrole: \(subrole)")
+            #endif
             return .noFocusedField
         }
         if writeViaAXValue(text, into: element) {
+            #if DEBUG
+            print("[AutoPaste] success via Strategy 1 (AXValue write)")
+            #endif
             return .success
         }
         if writeViaCGEventPaste(text) {
+            #if DEBUG
+            print("[AutoPaste] success via Strategy 2 (CGEvent ⌘V)")
+            #endif
             return .success
         }
+        #if DEBUG
+        print("[AutoPaste] insertionFailed — both strategies returned false")
+        #endif
         return .insertionFailed
     }
 
