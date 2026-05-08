@@ -60,18 +60,21 @@ enum DesignTokens {
         static let expandedButtonCornerRadius: CGFloat = 8
         static let expandedButtonGap: CGFloat = 8
 
-        // Animation — cubic-bezier(0.22, 1, 0.36, 1) over 280ms, matching
-        // docs/auth/success.html's staggered fade for visual consistency.
-        static let expandedAnimationDuration: TimeInterval = 0.28
+        // Animation — cubic-bezier(0.22, 1, 0.36, 1) over 400ms. Slower than
+        // the original 280ms so the expand/collapse reads as deliberate
+        // movement rather than a snap.
+        static let expandedAnimationDuration: TimeInterval = 0.40
         static let expandedAnimationCurveCP1x: Double = 0.22
         static let expandedAnimationCurveCP1y: Double = 1.0
         static let expandedAnimationCurveCP2x: Double = 0.36
         static let expandedAnimationCurveCP2y: Double = 1.0
 
-        // Auto-minimize the expanded form into the small Ready pill after
-        // this many seconds of no interaction. The Ready pill stays on
-        // screen until explicit Copy / X / Esc / new-recording.
-        static let expandedAutoMinimizeSeconds: TimeInterval = 10
+        // Auto-minimize timer for the FIRST expansion (no hover yet). The
+        // user has this long to read/copy/dismiss without having to hover.
+        // Once they've hovered, the expansion's lifecycle becomes purely
+        // cursor-driven: hover-leave collapses immediately, hover-enter on
+        // the minimized pill re-expands.
+        static let expandedAutoMinimizeSeconds: TimeInterval = 30
 
         // Copy-button success-flash duration before the pill collapses.
         static let expandedCopyFlashSeconds: TimeInterval = 1.2

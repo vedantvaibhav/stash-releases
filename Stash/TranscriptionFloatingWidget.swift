@@ -236,6 +236,11 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// Non-nil for ~1.2s after Copy is clicked — drives the "Copied ✓" flash.
     /// `copyFlashWorkItem != nil` ⇒ flashing.
     private var copyFlashWorkItem: DispatchWorkItem?
+    /// True if the current `.expandedReady` was triggered by hovering the
+    /// minimized pill (vs. the initial post-recording auto-expansion). When
+    /// true, hover-leave collapses immediately back to `.minimizedReady`. When
+    /// false, hover-leave schedules the 30s auto-minimize timer.
+    private var expandedViaHover: Bool = false
     /// Change-detection guard — `TranscriptionService.audioLevel` ticks ~10×/s,
     /// firing `objectWillChange`. We only need to rebuild the hosted SwiftUI tree
     /// when the displayed `PillMode` actually changes (duration seconds, phase,
@@ -635,6 +640,11 @@ final class TranscriptionFloatingWidgetController: NSObject {
         // If transitioning from minimizedReady, drop that hosting view first.
         minimizedHosting = nil
 
+        // Default to false; `handleMinimizedHoverEnter` flips it to true after
+        // calling presentExpansion when the trigger was a hover on the
+        // minimized pill (so subsequent hover-leave collapses immediately).
+        expandedViaHover = false
+
         activeExpandedResult = result
         phase = .expandedReady
         lastMode = nil
@@ -718,12 +728,22 @@ final class TranscriptionFloatingWidgetController: NSObject {
         if hovering {
             autoMinimizeWorkItem?.cancel()
             autoMinimizeWorkItem = nil
+            return
+        }
+        // Hover-leave behavior depends on how we entered .expandedReady:
+        //   - via hover on the minimized pill → collapse immediately (the
+        //     cursor is the lifeline; if it leaves, the expansion goes).
+        //   - via initial post-recording auto-expansion → schedule the 30s
+        //     auto-minimize timer (the user gets time to read/copy/dismiss
+        //     without having to hover).
+        if expandedViaHover {
+            collapseToMinimizedReady()
         } else {
             scheduleAutoMinimize()
         }
     }
 
-    /// Auto-minimize fires after 10s of no interaction. Tears down the
+    /// Auto-minimize fires after 30s of no interaction. Tears down the
     /// expanded host + key monitor, swaps in the small Ready pill, resizes
     /// the panel to 130×32. Result stays on the service for hover-to-reexpand.
     private func collapseToMinimizedReady() {
@@ -760,6 +780,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private func handleMinimizedHoverEnter() {
         guard phase == .minimizedReady, let result = activeExpandedResult else { return }
         presentExpansion(for: result)
+        // Mark the lifecycle as cursor-driven from here on: hover-leave will
+        // collapse immediately back to .minimizedReady.
+        expandedViaHover = true
     }
 
     /// Tear down BOTH expanded and minimized state and fully hide the panel.
