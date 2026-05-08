@@ -48,6 +48,18 @@ final class AutoPasteService {
     /// against clobbering a user copy.
     private var currentPasteToken: UUID?
 
+    /// Posted whenever `AXIsProcessTrusted()` flips between polls. The
+    /// Settings screen observes this so the Permissions row updates in
+    /// real time when the user toggles the entry in System Settings —
+    /// without forcing them to alt-tab away and back.
+    static let accessibilityStatusChangedNotification = Notification.Name("AutoPasteService.accessibilityStatusChanged")
+
+    /// Polling timer for `AXIsProcessTrusted`. Active only while a UI
+    /// surface (currently SettingsView) is observing — see `startPermissionPolling`
+    /// / `stopPermissionPolling`. Nil when no observer is attached.
+    private var pollingTimer: Timer?
+    private var lastPolledTrusted: Bool = false
+
     /// True iff the process is currently in the Accessibility-trusted list.
     /// Cheap read; safe to call frequently.
     var hasAccessibilityPermission: Bool {
@@ -64,6 +76,40 @@ final class AutoPasteService {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue()
         let options: CFDictionary = [key: kCFBooleanTrue!] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+    }
+
+    // MARK: - Permission polling
+
+    /// Start a 1s polling loop on `AXIsProcessTrusted`. Posts
+    /// `accessibilityStatusChangedNotification` whenever the value flips.
+    ///
+    /// macOS exposes no AX-tree notification for the per-process trusted
+    /// flag (Apple has not surfaced one and there is no
+    /// kAXTrustedStateChangedNotification). Polling is the only way to
+    /// react to a System-Settings toggle while our own window is in front.
+    /// Caller is responsible for matching `stopPermissionPolling` when
+    /// the observing UI goes away — keeps us from burning CPU on a 1Hz
+    /// AX read in the background.
+    func startPermissionPolling() {
+        guard pollingTimer == nil else { return }
+        lastPolledTrusted = hasAccessibilityPermission
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollPermissionState() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        pollingTimer = timer
+    }
+
+    func stopPermissionPolling() {
+        pollingTimer?.invalidate()
+        pollingTimer = nil
+    }
+
+    private func pollPermissionState() {
+        let current = hasAccessibilityPermission
+        guard current != lastPolledTrusted else { return }
+        lastPolledTrusted = current
+        NotificationCenter.default.post(name: Self.accessibilityStatusChangedNotification, object: nil)
     }
 
     /// Attempt to insert `text` at the focused field's caret. Synchronous;
