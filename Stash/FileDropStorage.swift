@@ -314,3 +314,30 @@ final class FileDropStorage: ObservableObject {
         try? fileManager.removeItem(at: resolved)
     }
 }
+
+// MARK: - Confirm-then-delete (presents native NSAlert)
+
+extension FileDropStorage {
+    /// Show a native `NSAlert` confirmation; on confirm, remove the file from
+    /// the shelf and disk via `removeFile(_:)`. NSAlert renders its own modal
+    /// window — no SwiftUI binding, no shared state, no scrim or overlay code
+    /// on our side.
+    ///
+    /// Delete is the default (Return) and marked `hasDestructiveAction` so
+    /// AppKit renders it red. NSAlert auto-binds Escape to a button titled
+    /// "Cancel".
+    func confirmAndDelete(_ item: DroppedFileItem) {
+        let alert = NSAlert()
+        alert.messageText = "Delete file?"
+        alert.informativeText = "The file will be removed from the list and deleted from your Mac."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        if let deleteButton = alert.buttons.first {
+            deleteButton.hasDestructiveAction = true
+        }
+        if alert.runModal() == .alertFirstButtonReturn {
+            removeFile(item)
+        }
+    }
+}
