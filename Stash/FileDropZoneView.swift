@@ -345,8 +345,10 @@ final class FileDropCardContentView: NSView {
             imageView.widthAnchor.constraint(equalToConstant: 48),
             imageView.heightAnchor.constraint(equalToConstant: 48),
 
-            // Name: 4pt below icon, 6px inset each side, centred, 8pt from bottom
-            nameLabel.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: 4),
+            // Name: gap below icon, 6px inset each side, centred, 8pt from bottom.
+            // Gap sized so the selection-state accent fill has breathing room
+            // above the filename text instead of touching the thumbnail edge.
+            nameLabel.topAnchor.constraint(equalTo: imageView.bottomAnchor, constant: DesignTokens.FileShelf.mediaToFilenameGap),
             nameLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
             nameLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             nameLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -8),

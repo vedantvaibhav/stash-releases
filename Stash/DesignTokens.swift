@@ -176,6 +176,13 @@ enum DesignTokens {
         static let labelBackdropCornerRadius: CGFloat = 4
         static let labelBackdropPaddingH: CGFloat = 4
         static let labelBackdropPaddingV: CGFloat = 2
+
+        // Vertical gap between the 48×48 thumbnail and the filename label.
+        // Sized so the selection-state accent fill behind the filename has
+        // visible breathing room above it instead of kissing the thumbnail
+        // bottom edge (the fill extends `labelBackdropPaddingV` above the
+        // text baseline, so this gap should comfortably exceed that).
+        static let mediaToFilenameGap: CGFloat = 10
     }
 }
 
