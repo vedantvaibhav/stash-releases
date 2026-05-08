@@ -86,7 +86,7 @@ struct TranscriptionPillView: View {
     }
 
     /// Mirrors the strings emitted by `TranscriptionService.showCompletion(_:)`
-    /// (see TranscriptionService.swift — `"Copied" | "Note saved" | "Failed"`).
+    /// (see TranscriptionService.swift — `"Copied" | "Note saved" | "Failed" | "Pasted ✓"`).
     /// A service string we don't recognise falls back to a neutral checkmark.
     private func completionSymbol(for message: String) -> String {
         switch message {
@@ -96,6 +96,8 @@ struct TranscriptionPillView: View {
         case "No audio":      return "mic.slash"
         case "Copied (raw)":  return "checkmark"
         case "Saved (raw)":   return "note.text"
+        case "Pasted ✓":      return "arrow.right.doc.on.clipboard"
+        case "Pasted (raw)":  return "arrow.right.doc.on.clipboard"
         default:              return "checkmark"
         }
     }
