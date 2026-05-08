@@ -52,7 +52,61 @@ final class AutoPasteService {
     /// returns within a few ms.
     func attemptInsert(text: String) -> InsertResult {
         guard hasAccessibilityPermission else { return .noPermission }
-        // Strategies wired in subsequent commits.
-        return .noFocusedField
+        guard let element = focusedTextElement(),
+              isWritableTextElement(element) else {
+            return .noFocusedField
+        }
+        // Strategies wired in next commits.
+        return .insertionFailed
+    }
+
+    // MARK: - Focused-element discovery
+
+    /// Returns the focused UI element of the currently-frontmost app, or
+    /// nil if discovery fails (no front app, no focused element, AX call
+    /// returns non-success). Also returns nil when the front app is Stash
+    /// itself — we never want to auto-paste into our own UI.
+    private func focusedTextElement() -> AXUIElement? {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication else { return nil }
+        if frontApp.bundleIdentifier == Bundle.main.bundleIdentifier { return nil }
+
+        let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
+
+        var focused: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedUIElementAttribute as CFString,
+            &focused
+        )
+        guard status == .success, let element = focused else { return nil }
+        // CFGetTypeID check ensures we got an AXUIElement back. Apple's
+        // documented `CFTypeRef` unwrapping pattern for AX framework.
+        guard CFGetTypeID(element) == AXUIElementGetTypeID() else { return nil }
+        return (element as! AXUIElement)
+    }
+
+    /// True if `element` is a role we can write text into AND is not a
+    /// secure (password) field. Pasting a transcript into a password field
+    /// is a serious privacy fail — the secure-subrole reject is mandatory.
+    private func isWritableTextElement(_ element: AXUIElement) -> Bool {
+        var roleRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
+              let role = roleRef as? String else {
+            return false
+        }
+        switch role {
+        case "AXTextField", "AXTextArea", "AXComboBox":
+            // Reject the secure-text-field subrole. Secure fields report
+            // role `AXTextField` with subrole `AXSecureTextField`.
+            var subroleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleRef) == .success,
+               let subrole = subroleRef as? String,
+               subrole == "AXSecureTextField" {
+                return false
+            }
+            return true
+        default:
+            return false
+        }
     }
 }
