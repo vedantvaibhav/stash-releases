@@ -355,6 +355,24 @@ final class TranscriptionService: NSObject, ObservableObject {
     - Do not start with any label like "Overview:", "Summary:", "Key Points:", etc.
     """
 
+    // MARK: - Short-recording delivery
+
+    /// Try to paste the transcript directly into the user's focused text
+    /// field. On success, show a brief "Pasted ✓" / "Pasted (raw)" pill
+    /// confirmation. On any failure (no permission / no focused field /
+    /// insertion failed), fall back to publishing `shortTranscriptResult`
+    /// which the floating pill widget observes and morphs into the expanded
+    /// Copy/Dismiss form (which itself shows "Voice note — raw" eyebrow
+    /// when isRaw, so the raw signal carries through both paths).
+    private func handleShortRecordingDelivery(_ result: ShortTranscriptResult) {
+        switch AutoPasteService.shared.attemptInsert(text: result.text) {
+        case .success:
+            showCompletion(result.isRaw ? "Pasted (raw)" : "Pasted ✓")
+        case .noPermission, .noFocusedField, .insertionFailed:
+            shortTranscriptResult = result
+        }
+    }
+
     // MARK: - Unified pipeline
 
     private func processRecording(audioData: Data, durationSeconds: Int) async {
@@ -408,8 +426,10 @@ final class TranscriptionService: NSObject, ObservableObject {
             return
         }
 
-        // MARK: LLM cleaning — short path hands off via shortTranscriptResult
-        // for explicit Copy/Dismiss. Long path saves a meeting note (below).
+        // MARK: LLM cleaning — short path tries auto-paste into the focused
+        // text field first; falls back to publishing shortTranscriptResult
+        // (which the floating-pill widget morphs into Copy/Dismiss) when
+        // auto-paste isn't possible. Long path saves a meeting note (below).
         if isShort {
             do {
                 let cleaned = try await callChat(
@@ -418,17 +438,19 @@ final class TranscriptionService: NSObject, ObservableObject {
                     maxTokens: 400,
                     model: APIConstants.chatModelForShortClean
                 )
-                shortTranscriptResult = ShortTranscriptResult(
+                let result = ShortTranscriptResult(
                     text: cleaned,
                     isRaw: false,
                     durationSeconds: durationSeconds
                 )
+                handleShortRecordingDelivery(result)
             } catch {
-                shortTranscriptResult = ShortTranscriptResult(
+                let result = ShortTranscriptResult(
                     text: rawTranscript,
                     isRaw: true,
                     durationSeconds: durationSeconds
                 )
+                handleShortRecordingDelivery(result)
                 lastErrorForBanner = "Couldn't clean transcript — showing raw version"
                 clearBannerAfterDelay()
             }
