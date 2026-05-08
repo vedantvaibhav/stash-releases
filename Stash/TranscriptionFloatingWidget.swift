@@ -438,6 +438,96 @@ final class TranscriptionFloatingWidgetController: NSObject {
         }
     }
 
+    /// Swap `panel.contentView` to `newView` with a cross-fade. A snapshot of
+    /// the OLD contentView is laid on top of the new one and faded to zero in
+    /// sync with the panel resize, masking the content pop you'd otherwise see
+    /// when AppKit replaces the entire contentView. Falls back to a plain
+    /// assignment if `animated` is false or the snapshot can't be captured
+    /// (e.g., zero-bounds old view, panel just created).
+    ///
+    /// The overlay is anchored to the same corner of the new contentView that
+    /// the old view occupied — derived from `currentSnapZone()` — so the
+    /// fading ghost stays where the user remembers the previous content being.
+    private func crossFadeContentSwap(to newView: NSView, animated: Bool) {
+        guard let panel else { return }
+        let oldView = panel.contentView
+        panel.contentView = newView
+
+        guard animated,
+              let oldView,
+              oldView.bounds.width > 0,
+              oldView.bounds.height > 0,
+              let rep = oldView.bitmapImageRepForCachingDisplay(in: oldView.bounds) else {
+            return
+        }
+        oldView.cacheDisplay(in: oldView.bounds, to: rep)
+
+        let snapshotSize = oldView.bounds.size
+        let image = NSImage(size: snapshotSize)
+        image.addRepresentation(rep)
+
+        let overlay = NSImageView()
+        overlay.image = image
+        overlay.imageScaling = .scaleNone
+        overlay.imageAlignment = .alignCenter
+        overlay.wantsLayer = true
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+
+        // Clip so an oversized overlay (shrinking transition) doesn't render
+        // beyond the new contentView's bounds.
+        newView.wantsLayer = true
+        newView.layer?.masksToBounds = true
+
+        newView.addSubview(overlay, positioned: .above, relativeTo: nil)
+
+        var constraints: [NSLayoutConstraint] = [
+            overlay.widthAnchor.constraint(equalToConstant: snapshotSize.width),
+            overlay.heightAnchor.constraint(equalToConstant: snapshotSize.height)
+        ]
+        constraints.append(contentsOf: snapZoneOverlayAnchors(zone: currentSnapZone(), overlay: overlay, parent: newView))
+        NSLayoutConstraint.activate(constraints)
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = DesignTokens.Pill.expandedAnimationDuration
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints:
+                Float(DesignTokens.Pill.expandedAnimationCurveCP1x),
+                Float(DesignTokens.Pill.expandedAnimationCurveCP1y),
+                Float(DesignTokens.Pill.expandedAnimationCurveCP2x),
+                Float(DesignTokens.Pill.expandedAnimationCurveCP2y)
+            )
+            overlay.animator().alphaValue = 0
+        }, completionHandler: {
+            overlay.removeFromSuperview()
+        })
+    }
+
+    /// Two anchors (one vertical, one horizontal) so the snapshot pins to the
+    /// same corner of the new contentView that the panel itself is anchored to.
+    private func snapZoneOverlayAnchors(zone: PanelSnapZone, overlay: NSView, parent: NSView) -> [NSLayoutConstraint] {
+        var constraints: [NSLayoutConstraint] = []
+        switch zone {
+        case .topLeft:
+            constraints.append(overlay.topAnchor.constraint(equalTo: parent.topAnchor))
+            constraints.append(overlay.leftAnchor.constraint(equalTo: parent.leftAnchor))
+        case .topCenter:
+            constraints.append(overlay.topAnchor.constraint(equalTo: parent.topAnchor))
+            constraints.append(overlay.centerXAnchor.constraint(equalTo: parent.centerXAnchor))
+        case .topRight:
+            constraints.append(overlay.topAnchor.constraint(equalTo: parent.topAnchor))
+            constraints.append(overlay.rightAnchor.constraint(equalTo: parent.rightAnchor))
+        case .bottomLeft:
+            constraints.append(overlay.bottomAnchor.constraint(equalTo: parent.bottomAnchor))
+            constraints.append(overlay.leftAnchor.constraint(equalTo: parent.leftAnchor))
+        case .bottomCenter:
+            constraints.append(overlay.bottomAnchor.constraint(equalTo: parent.bottomAnchor))
+            constraints.append(overlay.centerXAnchor.constraint(equalTo: parent.centerXAnchor))
+        case .bottomRight:
+            constraints.append(overlay.bottomAnchor.constraint(equalTo: parent.bottomAnchor))
+            constraints.append(overlay.rightAnchor.constraint(equalTo: parent.rightAnchor))
+        }
+        return constraints
+    }
+
     private func hidePanel() {
         panel?.orderOut(nil)
         lastMode = nil
@@ -552,7 +642,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
         let expanded = makeExpandedRootView(result: result)
         let host = NSHostingView(rootView: expanded)
         host.autoresizingMask = [.width, .height]
-        panel.contentView = host
+        crossFadeContentSwap(to: host, animated: true)
         expandedHosting = host
 
         // Allow keyDown delivery to the pill while expanded so the local
@@ -658,7 +748,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
                 height: DesignTokens.Pill.height
             )
             host.autoresizingMask = [.width, .height]
-            panel.contentView = host
+            crossFadeContentSwap(to: host, animated: true)
             minimizedHosting = host
         }
 
@@ -698,7 +788,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
                 height: DesignTokens.Pill.height
             )
             host.autoresizingMask = [.width, .height]
-            panel.contentView = host
+            crossFadeContentSwap(to: host, animated: animated)
             hosting = host
         }
 
