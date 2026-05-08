@@ -2,6 +2,16 @@ import AppKit
 import AVFoundation
 import Foundation
 
+/// Result of a short (<5 min) recording handed off to the floating pill for
+/// explicit Copy / Dismiss. `isRaw == true` when the LLM cleaning step failed
+/// and the pill should label the transcript as raw.
+struct ShortTranscriptResult: Identifiable, Equatable {
+    let id = UUID()
+    let text: String
+    let isRaw: Bool
+    let durationSeconds: Int
+}
+
 /// Transcription + meeting notes via OpenAI-compatible API (provider auto-detected from key prefix).
 @MainActor
 final class TranscriptionService: NSObject, ObservableObject {
@@ -29,6 +39,11 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// (in PanelController) knows whether to auto-open the editor (long) or show
     /// the list with the new quick-transcript pinned at the top (short).
     @Published var lastRecordingWasShort: Bool = false
+    /// Set when a short (<5 min) recording finishes processing. The floating
+    /// pill widget observes this, expands to show the text, and clears it via
+    /// `clearShortTranscriptResult()` once the user copies/dismisses or auto-
+    /// dismiss fires. Nil means "no expansion in flight."
+    @Published var shortTranscriptResult: ShortTranscriptResult? = nil
 
     /// Set from the notes column so saves use the same storage as the rest of the app.
     weak var notesStorage: NotesStorage?
@@ -393,7 +408,8 @@ final class TranscriptionService: NSObject, ObservableObject {
             return
         }
 
-        // MARK: LLM cleaning — failure saves raw transcript so nothing is lost
+        // MARK: LLM cleaning — short path hands off via shortTranscriptResult
+        // for explicit Copy/Dismiss. Long path saves a meeting note (below).
         if isShort {
             do {
                 let cleaned = try await callChat(
@@ -402,24 +418,18 @@ final class TranscriptionService: NSObject, ObservableObject {
                     maxTokens: 400,
                     model: APIConstants.chatModelForShortClean
                 )
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(cleaned, forType: .string)
-                if let storage = notesStorage {
-                    _ = storage.saveQuickNote(text: cleaned, durationSeconds: durationSeconds)
-                    storage.refreshNotes()
-                }
-                isProcessing = false
-                showCompletion("Copied")
+                shortTranscriptResult = ShortTranscriptResult(
+                    text: cleaned,
+                    isRaw: false,
+                    durationSeconds: durationSeconds
+                )
             } catch {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(rawTranscript, forType: .string)
-                if let storage = notesStorage {
-                    _ = storage.saveQuickNote(text: rawTranscript, durationSeconds: durationSeconds)
-                    storage.refreshNotes()
-                }
-                isProcessing = false
-                showCompletion("Copied (raw)")
-                lastErrorForBanner = "Couldn't clean transcript — raw version copied and saved"
+                shortTranscriptResult = ShortTranscriptResult(
+                    text: rawTranscript,
+                    isRaw: true,
+                    durationSeconds: durationSeconds
+                )
+                lastErrorForBanner = "Couldn't clean transcript — showing raw version"
                 clearBannerAfterDelay()
             }
         } else {
@@ -471,6 +481,13 @@ final class TranscriptionService: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.completionMessage = nil
         }
+    }
+
+    /// Called by the floating widget after the user copies, dismisses, or
+    /// auto-dismiss expires. Clears the published handoff so the property
+    /// doesn't re-trigger expansion on subsequent state syncs.
+    func clearShortTranscriptResult() {
+        shortTranscriptResult = nil
     }
 
     func openMicrophonePrivacySettings() {
