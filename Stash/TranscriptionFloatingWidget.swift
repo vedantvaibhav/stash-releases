@@ -203,6 +203,62 @@ private final class PillPanel: NSPanel {
     override var canBecomeKey: Bool { allowsKeyStatus }
 }
 
+// MARK: - Unified display state + root view
+//
+// The previous design swapped `panel.contentView` between three different
+// NSHostingView trees (collapsed pill, expanded card, minimized Ready pill).
+// Each swap caused a visible content discontinuity that no overlay/snapshot
+// could fully hide — the SwiftUI tree is rebuilt from scratch on every swap,
+// so SwiftUI sees no continuity to animate against.
+//
+// This redesign keeps ONE persistent NSHostingView<PillRootView>. The root
+// branches on `PillDisplayState.mode`, and a single `.animation(_:value:)`
+// modifier triggers a SwiftUI cross-fade whenever the mode changes. The
+// AppKit panel frame still animates separately — but with matching duration
+// and easing, the two read as a single coordinated morph.
+
+final class PillDisplayState: ObservableObject {
+    enum Mode: Equatable {
+        case collapsed(PillMode)
+        case expandedReady(ShortTranscriptResult)
+        case minimizedReady(ShortTranscriptResult)
+    }
+    @Published var mode: Mode = .collapsed(.processing)
+    @Published var copyFlashActive: Bool = false
+}
+
+struct PillRootView: View {
+    @ObservedObject var state: PillDisplayState
+    let onStop: () -> Void
+    let onCopy: () -> Void
+    let onDismiss: () -> Void
+    let onMinimizedHoverEnter: () -> Void
+    let onExpandedHoverChanged: (Bool) -> Void
+
+    var body: some View {
+        ZStack {
+            switch state.mode {
+            case .collapsed(let pillMode):
+                TranscriptionPillView(mode: pillMode, onStop: onStop)
+                    .transition(.opacity)
+            case .expandedReady(let result):
+                TranscriptionPillExpandedView(
+                    result: result,
+                    onCopy: onCopy,
+                    onDismiss: onDismiss,
+                    copyFlashActive: state.copyFlashActive
+                )
+                .onHover(perform: onExpandedHoverChanged)
+                .transition(.opacity)
+            case .minimizedReady:
+                MinimizedReadyPillView(onHoverEnter: onMinimizedHoverEnter)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: DesignTokens.Pill.expandedAnimationDuration), value: state.mode)
+    }
+}
+
 // MARK: - Controller
 
 @MainActor
@@ -210,7 +266,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
     private weak var transcription: TranscriptionService?
     private var panel: PillPanel?
-    private var hosting: NSHostingView<TranscriptionPillView>?
+    /// One persistent NSHostingView. Driven by `displayState`; never replaced
+    /// across phase transitions, so SwiftUI sees mode changes as in-place
+    /// state mutations and animates them with `.animation(_:value:)`.
+    private var hosting: NSHostingView<PillRootView>?
+    /// Mode/state binding for the persistent hosting view.
+    private let displayState = PillDisplayState()
     private var cancellables = Set<AnyCancellable>()
     private var panelOpenForWidget = false
 
@@ -222,30 +283,18 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// Currently-attached result. Non-nil for both `.expandedReady` and
     /// `.minimizedReady`; nil otherwise.
     private var activeExpandedResult: ShortTranscriptResult?
-    /// Hosting view for the expanded SwiftUI root. Type-erased to `AnyView`
-    /// because the controller wraps the inner view in `.onHover` (which
-    /// changes the static type).
-    private var expandedHosting: NSHostingView<AnyView>?
-    /// Hosting view for the minimized Ready pill. Nil when not in `.minimizedReady`.
-    private var minimizedHosting: NSHostingView<MinimizedReadyPillView>?
-    /// Auto-minimize timer (10s). Resets on hover-end and on interaction.
+    /// Auto-minimize timer (30s). Resets on hover-end and on interaction.
     private var autoMinimizeWorkItem: DispatchWorkItem?
-    /// Local NSEvent monitor for ⌘C and Esc while expanded. Removed in
-    /// `.minimizedReady` (no keyboard shortcuts there) and on full hide.
+    /// Local NSEvent monitor for ⌘C and Esc while expanded.
     private var expandedKeyMonitor: Any?
     /// Non-nil for ~1.2s after Copy is clicked — drives the "Copied ✓" flash.
-    /// `copyFlashWorkItem != nil` ⇒ flashing.
+    /// `copyFlashWorkItem != nil` ⇒ flashing (mirrored to `displayState.copyFlashActive`).
     private var copyFlashWorkItem: DispatchWorkItem?
     /// True if the current `.expandedReady` was triggered by hovering the
     /// minimized pill (vs. the initial post-recording auto-expansion). When
     /// true, hover-leave collapses immediately back to `.minimizedReady`. When
     /// false, hover-leave schedules the 30s auto-minimize timer.
     private var expandedViaHover: Bool = false
-    /// Change-detection guard — `TranscriptionService.audioLevel` ticks ~10×/s,
-    /// firing `objectWillChange`. We only need to rebuild the hosted SwiftUI tree
-    /// when the displayed `PillMode` actually changes (duration seconds, phase,
-    /// or completion text).
-    private var lastMode: PillMode?
 
     /// Drag-to-snap state (mirrors the main tray's `snapToNearestZone` behavior).
     /// `isMovableByWindowBackground` handles the live drag; this monitor observes
@@ -362,14 +411,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
         }
     }
 
+    /// Update the SwiftUI tree's mode. SwiftUI's `.animation(_:value:)` on
+    /// PillRootView triggers a cross-fade if the new mode is a different
+    /// branch (collapsed ↔ expandedReady ↔ minimizedReady). For inner-pill
+    /// changes (recording → processing → completion), TranscriptionPillView's
+    /// own `.animation(.easeInOut(duration: 0.18), value:)` handles them.
     private func updateHosted(mode: PillMode) {
-        guard let hosting else { return }
-        if lastMode == mode { return }
-        lastMode = mode
-        hosting.rootView = TranscriptionPillView(
-            mode: mode,
-            onStop: { [weak self] in self?.transcription?.stopRecording() }
-        )
+        let new: PillDisplayState.Mode = .collapsed(mode)
+        if displayState.mode != new { displayState.mode = new }
     }
 
     private func showCollapsedPanelIfNeeded() {
@@ -387,24 +436,6 @@ final class TranscriptionFloatingWidgetController: NSObject {
         applyPhaseAwareFrame(size: size, animated: animated)
     }
 
-    /// Resize the panel to host the expanded view. Reads `fittingSize` from
-    /// `expandedHosting` (NOT the typed-collapsed `hosting` ivar). Caller MUST
-    /// have already assigned `expandedHosting` as `panel.contentView` so AppKit
-    /// can compute a real fittingSize (an unattached NSHostingView reports zero).
-    private func resizePanelToExpanded(animated: Bool) {
-        guard let host = expandedHosting else { return }
-        host.frame = NSRect(
-            x: 0, y: 0,
-            width: DesignTokens.Pill.expandedWidth,
-            height: DesignTokens.Pill.expandedMaxHeight
-        )
-        host.layoutSubtreeIfNeeded()
-        let fitted = host.fittingSize.height
-        let cap = DesignTokens.Pill.expandedMaxHeight
-        let h = min(max(fitted, DesignTokens.Pill.height), cap)
-        let size = NSSize(width: DesignTokens.Pill.expandedWidth, height: h)
-        applyPhaseAwareFrame(size: size, animated: animated)
-    }
 
     /// Read the persisted snap zone, falling back to `.topCenter`.
     private func currentSnapZone() -> PanelSnapZone {
@@ -443,99 +474,8 @@ final class TranscriptionFloatingWidgetController: NSObject {
         }
     }
 
-    /// Swap `panel.contentView` to `newView` with a cross-fade. A snapshot of
-    /// the OLD contentView is laid on top of the new one and faded to zero in
-    /// sync with the panel resize, masking the content pop you'd otherwise see
-    /// when AppKit replaces the entire contentView. Falls back to a plain
-    /// assignment if `animated` is false or the snapshot can't be captured
-    /// (e.g., zero-bounds old view, panel just created).
-    ///
-    /// The overlay is anchored to the same corner of the new contentView that
-    /// the old view occupied — derived from `currentSnapZone()` — so the
-    /// fading ghost stays where the user remembers the previous content being.
-    private func crossFadeContentSwap(to newView: NSView, animated: Bool) {
-        guard let panel else { return }
-        let oldView = panel.contentView
-        panel.contentView = newView
-
-        guard animated,
-              let oldView,
-              oldView.bounds.width > 0,
-              oldView.bounds.height > 0,
-              let rep = oldView.bitmapImageRepForCachingDisplay(in: oldView.bounds) else {
-            return
-        }
-        oldView.cacheDisplay(in: oldView.bounds, to: rep)
-
-        let snapshotSize = oldView.bounds.size
-        let image = NSImage(size: snapshotSize)
-        image.addRepresentation(rep)
-
-        let overlay = NSImageView()
-        overlay.image = image
-        overlay.imageScaling = .scaleNone
-        overlay.imageAlignment = .alignCenter
-        overlay.wantsLayer = true
-        overlay.translatesAutoresizingMaskIntoConstraints = false
-
-        // Clip so an oversized overlay (shrinking transition) doesn't render
-        // beyond the new contentView's bounds.
-        newView.wantsLayer = true
-        newView.layer?.masksToBounds = true
-
-        newView.addSubview(overlay, positioned: .above, relativeTo: nil)
-
-        var constraints: [NSLayoutConstraint] = [
-            overlay.widthAnchor.constraint(equalToConstant: snapshotSize.width),
-            overlay.heightAnchor.constraint(equalToConstant: snapshotSize.height)
-        ]
-        constraints.append(contentsOf: snapZoneOverlayAnchors(zone: currentSnapZone(), overlay: overlay, parent: newView))
-        NSLayoutConstraint.activate(constraints)
-
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = DesignTokens.Pill.expandedAnimationDuration
-            ctx.timingFunction = CAMediaTimingFunction(controlPoints:
-                Float(DesignTokens.Pill.expandedAnimationCurveCP1x),
-                Float(DesignTokens.Pill.expandedAnimationCurveCP1y),
-                Float(DesignTokens.Pill.expandedAnimationCurveCP2x),
-                Float(DesignTokens.Pill.expandedAnimationCurveCP2y)
-            )
-            overlay.animator().alphaValue = 0
-        }, completionHandler: {
-            overlay.removeFromSuperview()
-        })
-    }
-
-    /// Two anchors (one vertical, one horizontal) so the snapshot pins to the
-    /// same corner of the new contentView that the panel itself is anchored to.
-    private func snapZoneOverlayAnchors(zone: PanelSnapZone, overlay: NSView, parent: NSView) -> [NSLayoutConstraint] {
-        var constraints: [NSLayoutConstraint] = []
-        switch zone {
-        case .topLeft:
-            constraints.append(overlay.topAnchor.constraint(equalTo: parent.topAnchor))
-            constraints.append(overlay.leftAnchor.constraint(equalTo: parent.leftAnchor))
-        case .topCenter:
-            constraints.append(overlay.topAnchor.constraint(equalTo: parent.topAnchor))
-            constraints.append(overlay.centerXAnchor.constraint(equalTo: parent.centerXAnchor))
-        case .topRight:
-            constraints.append(overlay.topAnchor.constraint(equalTo: parent.topAnchor))
-            constraints.append(overlay.rightAnchor.constraint(equalTo: parent.rightAnchor))
-        case .bottomLeft:
-            constraints.append(overlay.bottomAnchor.constraint(equalTo: parent.bottomAnchor))
-            constraints.append(overlay.leftAnchor.constraint(equalTo: parent.leftAnchor))
-        case .bottomCenter:
-            constraints.append(overlay.bottomAnchor.constraint(equalTo: parent.bottomAnchor))
-            constraints.append(overlay.centerXAnchor.constraint(equalTo: parent.centerXAnchor))
-        case .bottomRight:
-            constraints.append(overlay.bottomAnchor.constraint(equalTo: parent.bottomAnchor))
-            constraints.append(overlay.rightAnchor.constraint(equalTo: parent.rightAnchor))
-        }
-        return constraints
-    }
-
     private func hidePanel() {
         panel?.orderOut(nil)
-        lastMode = nil
     }
 
     private func buildPanel() {
@@ -559,11 +499,15 @@ final class TranscriptionFloatingWidgetController: NSObject {
         p.isMovableByWindowBackground = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-        let initial = TranscriptionPillView(
-            mode: .processing,
-            onStop: { [weak self] in self?.transcription?.stopRecording() }
+        let root = PillRootView(
+            state: displayState,
+            onStop: { [weak self] in self?.transcription?.stopRecording() },
+            onCopy: { [weak self] in self?.handleCopy() },
+            onDismiss: { [weak self] in self?.handleDismiss() },
+            onMinimizedHoverEnter: { [weak self] in self?.handleMinimizedHoverEnter() },
+            onExpandedHoverChanged: { [weak self] hovering in self?.handleHoverChanged(hovering) }
         )
-        let host = NSHostingView(rootView: initial)
+        let host = NSHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: w, height: h)
         host.autoresizingMask = [.width, .height]
 
@@ -623,12 +567,13 @@ final class TranscriptionFloatingWidgetController: NSObject {
         applyPhaseAwareFrame(size: size, animated: true)
     }
 
-    // MARK: - Expanded phase
+    // MARK: - Expanded / minimized phase
+    //
+    // All three transitions (present, collapse-to-minimized, hide) mutate
+    // `displayState.mode` to drive the SwiftUI cross-fade, then animate the
+    // AppKit panel frame in parallel. The SwiftUI animation duration matches
+    // `expandedAnimationDuration`, so the two read as one coordinated morph.
 
-    /// Build (or rebuild) the expanded host, attach as contentView, lay out,
-    /// then animate the panel frame to the measured fitting size.
-    /// Re-presenting from `.minimizedReady` reuses the same lifecycle — the
-    /// `minimizedHosting` is torn down here.
     private func presentExpansion(for result: ShortTranscriptResult) {
         autoMinimizeWorkItem?.cancel(); autoMinimizeWorkItem = nil
         copyFlashWorkItem?.cancel(); copyFlashWorkItem = nil
@@ -637,55 +582,51 @@ final class TranscriptionFloatingWidgetController: NSObject {
         if panel == nil { buildPanel() }
         guard let panel else { return }
 
-        // If transitioning from minimizedReady, drop that hosting view first.
-        minimizedHosting = nil
-
-        // Default to false; `handleMinimizedHoverEnter` flips it to true after
-        // calling presentExpansion when the trigger was a hover on the
-        // minimized pill (so subsequent hover-leave collapses immediately).
+        // Default to false; `handleMinimizedHoverEnter` flips true after
+        // calling presentExpansion when triggered by a hover on the minimized
+        // pill (so subsequent hover-leave collapses immediately).
         expandedViaHover = false
-
         activeExpandedResult = result
         phase = .expandedReady
-        lastMode = nil
 
-        let expanded = makeExpandedRootView(result: result)
-        let host = NSHostingView(rootView: expanded)
-        host.autoresizingMask = [.width, .height]
-        crossFadeContentSwap(to: host, animated: true)
-        expandedHosting = host
+        // Drive the SwiftUI cross-fade.
+        displayState.copyFlashActive = false
+        displayState.mode = .expandedReady(result)
 
-        // Allow keyDown delivery to the pill while expanded so the local
-        // NSEvent monitor for ⌘C/Esc actually receives them.
+        // Allow keyDown delivery for ⌘C/Esc.
         panel.allowsKeyStatus = true
         panel.orderFrontRegardless()
         panel.makeKey()
 
-        resizePanelToExpanded(animated: true)
+        // Animate the panel to the expanded size in sync with SwiftUI's
+        // cross-fade. Height is computed from a probe layout of the SwiftUI
+        // tree; falls back to `expandedMaxHeight` if the probe yields zero.
+        let targetHeight = measuredExpandedHeight(for: result)
+        let targetSize = NSSize(width: DesignTokens.Pill.expandedWidth, height: targetHeight)
+        applyPhaseAwareFrame(size: targetSize, animated: true)
+
         installExpandedKeyMonitor()
         scheduleAutoMinimize()
     }
 
-    /// Build the expanded root + apply `.onHover` for auto-minimize reset.
-    /// Returns `AnyView` because `.onHover` changes the static View type and
-    /// the host needs a stable type across rebuilds.
-    private func makeExpandedRootView(result: ShortTranscriptResult) -> AnyView {
-        let inner = TranscriptionPillExpandedView(
+    /// One-off layout probe for the expanded view's preferred height. Builds
+    /// a throwaway NSHostingView at the target width, lays out, and reads
+    /// `fittingSize.height`. Capped at `expandedMaxHeight`.
+    private func measuredExpandedHeight(for result: ShortTranscriptResult) -> CGFloat {
+        let probe = NSHostingView(rootView: TranscriptionPillExpandedView(
             result: result,
-            onCopy: { [weak self] in self?.handleCopy() },
-            onDismiss: { [weak self] in self?.handleDismiss() },
-            copyFlashActive: copyFlashWorkItem != nil
+            onCopy: {},
+            onDismiss: {},
+            copyFlashActive: false
+        ))
+        probe.frame = NSRect(
+            x: 0, y: 0,
+            width: DesignTokens.Pill.expandedWidth,
+            height: DesignTokens.Pill.expandedMaxHeight
         )
-        return AnyView(
-            inner.onHover { [weak self] hovering in self?.handleHoverChanged(hovering) }
-        )
-    }
-
-    /// Push a fresh root view into the expanded NSHostingView (no panel resize).
-    /// Used for in-place updates like the Copy → "Copied ✓" flash.
-    private func updateExpandedHostedRootIfPresent() {
-        guard phase == .expandedReady, let result = activeExpandedResult, let host = expandedHosting else { return }
-        host.rootView = makeExpandedRootView(result: result)
+        probe.layoutSubtreeIfNeeded()
+        let h = probe.fittingSize.height
+        return min(max(h, DesignTokens.Pill.height), DesignTokens.Pill.expandedMaxHeight)
     }
 
     private func handleCopy() {
@@ -697,9 +638,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
             self?.hideAllResultPhases(clearResultOnService: true, animated: true)
         }
         copyFlashWorkItem = work
-        // Push the "Copied ✓" label into the SwiftUI tree now that the work
-        // item exists (so `copyFlashWorkItem != nil` ⇒ flashing).
-        updateExpandedHostedRootIfPresent()
+        // SwiftUI re-renders the footer to show "Copied ✓" because PillRootView
+        // observes `displayState.copyFlashActive`.
+        displayState.copyFlashActive = true
         DispatchQueue.main.asyncAfter(
             deadline: .now() + DesignTokens.Pill.expandedCopyFlashSeconds,
             execute: work
@@ -743,38 +684,22 @@ final class TranscriptionFloatingWidgetController: NSObject {
         }
     }
 
-    /// Auto-minimize fires after 30s of no interaction. Tears down the
-    /// expanded host + key monitor, swaps in the small Ready pill, resizes
-    /// the panel to 130×32. Result stays on the service for hover-to-reexpand.
     private func collapseToMinimizedReady() {
-        guard phase == .expandedReady, activeExpandedResult != nil else { return }
+        guard phase == .expandedReady, let result = activeExpandedResult else { return }
         autoMinimizeWorkItem?.cancel(); autoMinimizeWorkItem = nil
         copyFlashWorkItem?.cancel(); copyFlashWorkItem = nil
         removeExpandedKeyMonitor()
 
-        expandedHosting = nil
-        lastMode = nil
         phase = .minimizedReady
+        panel?.allowsKeyStatus = false
 
-        if let panel {
-            panel.allowsKeyStatus = false
-            let view = MinimizedReadyPillView(
-                onHoverEnter: { [weak self] in self?.handleMinimizedHoverEnter() }
-            )
-            let host = NSHostingView(rootView: view)
-            host.frame = NSRect(
-                x: 0, y: 0,
-                width: DesignTokens.Pill.width,
-                height: DesignTokens.Pill.height
-            )
-            host.autoresizingMask = [.width, .height]
-            crossFadeContentSwap(to: host, animated: true)
-            minimizedHosting = host
-        }
+        // Drive the SwiftUI cross-fade + animate the panel frame to small.
+        displayState.copyFlashActive = false
+        displayState.mode = .minimizedReady(result)
+        resizePanelToCollapsed(animated: true)
 
         // Service-side result stays — hovering the minimized pill re-expands
-        // using `activeExpandedResult` directly.
-        resizePanelToCollapsed(animated: true)
+        // via `handleMinimizedHoverEnter` → `presentExpansion`.
     }
 
     private func handleMinimizedHoverEnter() {
@@ -785,8 +710,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
         expandedViaHover = true
     }
 
-    /// Tear down BOTH expanded and minimized state and fully hide the panel.
-    /// Used by Copy / Dismiss / Esc / new-recording.
+    /// Full hide. Used by Copy / Dismiss / Esc / new-recording.
     private func hideAllResultPhases(clearResultOnService: Bool, animated: Bool) {
         autoMinimizeWorkItem?.cancel(); autoMinimizeWorkItem = nil
         copyFlashWorkItem?.cancel(); copyFlashWorkItem = nil
@@ -794,27 +718,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
         phase = .none
         activeExpandedResult = nil
-        expandedHosting = nil
-        minimizedHosting = nil
-        lastMode = nil
+        panel?.allowsKeyStatus = false
 
-        if let panel {
-            panel.allowsKeyStatus = false
-            let initial = TranscriptionPillView(
-                mode: .processing,
-                onStop: { [weak self] in self?.transcription?.stopRecording() }
-            )
-            let host = NSHostingView(rootView: initial)
-            host.frame = NSRect(
-                x: 0, y: 0,
-                width: DesignTokens.Pill.width,
-                height: DesignTokens.Pill.height
-            )
-            host.autoresizingMask = [.width, .height]
-            crossFadeContentSwap(to: host, animated: animated)
-            hosting = host
-        }
-
+        // Cross-fade back to a neutral collapsed mode while the panel shrinks.
+        // The panel is then ordered out after the resize animation completes.
+        displayState.copyFlashActive = false
+        displayState.mode = .collapsed(.processing)
         resizePanelToCollapsed(animated: animated)
 
         let delay = animated ? DesignTokens.Pill.expandedAnimationDuration : 0
