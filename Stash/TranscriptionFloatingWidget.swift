@@ -303,15 +303,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
         }
 
         // Short-recording handoff — present (or re-present) the expanded pill.
+        // No-op when we're already showing this exact result in either result
+        // phase (the user's interaction drives transitions from there).
         if let result = ts.shortTranscriptResult {
-            // Already showing this exact result (expanded or minimized) →
-            // let the user's interaction drive transitions. Different result
-            // id (or no result phase active) → present fresh.
-            if activeExpandedResult?.id != result.id {
-                presentExpansion(for: result)
-            } else if phase != .expandedReady && phase != .minimizedReady {
-                presentExpansion(for: result)
-            }
+            let alreadyShowing = activeExpandedResult?.id == result.id
+                && (phase == .expandedReady || phase == .minimizedReady)
+            if !alreadyShowing { presentExpansion(for: result) }
             return
         }
 
@@ -390,7 +387,6 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// have already assigned `expandedHosting` as `panel.contentView` so AppKit
     /// can compute a real fittingSize (an unattached NSHostingView reports zero).
     private func resizePanelToExpanded(animated: Bool) {
-        guard expandedHosting != nil else { return }
         guard let host = expandedHosting else { return }
         host.frame = NSRect(
             x: 0, y: 0,
@@ -418,10 +414,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// Used by every phase transition (collapsed/expanded/minimized resize)
     /// and by `restorePosition` on launch.
     private func applyPhaseAwareFrame(size: CGSize, animated: Bool) {
-        guard let panel, let screen = NSScreen.main else { return }
+        guard let screen = NSScreen.main else { return }
         let target = currentSnapZone().visibleFrame(size: size, screen: screen.visibleFrame)
         applyPanelFrame(target, animated: animated)
-        _ = panel
     }
 
     /// Animate panel frame using the spec's cubic-bezier curve over 280ms.
@@ -629,21 +624,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
     }
 
     private func handleHoverChanged(_ hovering: Bool) {
-        switch phase {
-        case .expandedReady:
-            if hovering {
-                autoMinimizeWorkItem?.cancel()
-                autoMinimizeWorkItem = nil
-            } else {
-                scheduleAutoMinimize()
-            }
-        case .minimizedReady:
-            // Re-expand on hover-enter is handled directly by
-            // MinimizedReadyPillView's onHoverEnter closure → handleMinimizedHoverEnter.
-            // Hover-exit is a no-op — the user can't lose the result by mousing away.
-            break
-        default:
-            break
+        guard phase == .expandedReady else { return }
+        if hovering {
+            autoMinimizeWorkItem?.cancel()
+            autoMinimizeWorkItem = nil
+        } else {
+            scheduleAutoMinimize()
         }
     }
 
@@ -651,7 +637,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// expanded host + key monitor, swaps in the small Ready pill, resizes
     /// the panel to 130×32. Result stays on the service for hover-to-reexpand.
     private func collapseToMinimizedReady() {
-        guard phase == .expandedReady, let result = activeExpandedResult else { return }
+        guard phase == .expandedReady, activeExpandedResult != nil else { return }
         autoMinimizeWorkItem?.cancel(); autoMinimizeWorkItem = nil
         copyFlashWorkItem?.cancel(); copyFlashWorkItem = nil
         removeExpandedKeyMonitor()
@@ -676,10 +662,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
             minimizedHosting = host
         }
 
-        resizePanelToCollapsed(animated: true)
         // Service-side result stays — hovering the minimized pill re-expands
         // using `activeExpandedResult` directly.
-        _ = result
+        resizePanelToCollapsed(animated: true)
     }
 
     private func handleMinimizedHoverEnter() {
