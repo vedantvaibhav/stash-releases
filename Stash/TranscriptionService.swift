@@ -500,7 +500,13 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     private func showCompletion(_ message: String) {
         completionMessage = message
+        // Snapshot the message we just set so the delayed clear only fires
+        // when our message is still the displayed one. Without this, a
+        // newer state ("Processing", "Pasted ✓", etc.) set within the 1.5s
+        // window gets clobbered by an older showCompletion's timer.
+        let snapshot = message
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard self?.completionMessage == snapshot else { return }
             self?.completionMessage = nil
         }
     }
