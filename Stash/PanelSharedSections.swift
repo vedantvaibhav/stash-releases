@@ -901,7 +901,6 @@ private struct NotesListView: View {
 
 struct SharedFilesColumn: View {
     @ObservedObject var fileDropStorage: FileDropStorage
-    @Binding var fileToDelete: DroppedFileItem?
     var forCardsMode: Bool
     var maxFileItems: Int? = nil
     @ObservedObject var fileSelection: FileSelectionState
@@ -912,7 +911,7 @@ struct SharedFilesColumn: View {
         FileDropZoneRepresentable(
             content: AnyView(FileDropListContent(
                 storage: fileDropStorage,
-                onRequestDelete: { fileToDelete = $0 },
+                onRequestDelete: { fileDropStorage.confirmAndDelete($0) },
                 maxItems: maxFileItems,
                 selection: fileSelection,
                 gridHover: fileGridHover,
@@ -933,7 +932,6 @@ struct AllCombinedView: View {
     @ObservedObject var clipboard: ClipboardManager
     @ObservedObject var notesStorage: NotesStorage
     @ObservedObject var fileDropStorage: FileDropStorage
-    @Binding var fileToDelete: DroppedFileItem?
     var makePanelKey: () -> Void
     @ObservedObject var transcription: TranscriptionService
     @Binding var showTranscriptionPage: Bool
@@ -1027,7 +1025,7 @@ struct AllCombinedView: View {
                                             )
                                             fileQuickLook.select(file.id, from: source)
                                         },
-                                        onRequestDelete: { fileToDelete = file },
+                                        onRequestDelete: { fileDropStorage.confirmAndDelete(file) },
                                         onDragSessionEnded: {
                                             fileDropStorage.handleDragOutSessionEnded(item: file, operation: $0)
                                         }

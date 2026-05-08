@@ -31,52 +31,11 @@ enum QuickPanelCardKind: Int, CaseIterable {
 final class PanelInteractionState: ObservableObject {
     @Published var editingNoteId: String?
     @Published var noteToDelete: NoteItem?
-    @Published var fileToDelete: DroppedFileItem?
     /// When true, notes column shows the live transcription page (shared between panel + cards + floating widget).
     @Published var showTranscriptionPage: Bool = false
     /// Set externally (e.g. after transcription completes) to switch the panel to a specific tab.
     /// `PanelContentView` consumes this via `.onChange` and clears it back to nil.
     @Published var requestedTab: PanelMainTab? = nil
-}
-
-// MARK: - File delete confirmation alert
-
-/// Present a dark-chromed NSAlert as the file delete confirmation, attached
-/// as a sheet to the key window (the Stash panel). Replaces the SwiftUI
-/// `.alert(...)` modifier because SwiftUI's stock alert rendered OS-default
-/// chrome that washed out against the panel's dark theme.
-///
-/// Sheet presentation (vs. `runModal()`) avoids two problems:
-/// - Custom NSPanel z-order: a free-standing modal alert can end up behind
-///   the panel depending on window levels. A sheet is rendered as a child
-///   of the parent and inherits its ordering.
-/// - SwiftUI update cycle: `runModal()` blocks the main thread synchronously,
-///   which doesn't always cooperate with `.onChange` closures fired during
-///   SwiftUI's commit phase.
-///
-/// First button (Cancel) is the default (Return) — preserves SwiftUI's prior
-/// behavior where `role: .cancel` made Cancel the default for destructive
-/// confirmations. NSAlert auto-binds Esc to a button titled "Cancel".
-/// `completion` runs on the main actor with `true` for Delete, `false` for
-/// Cancel/Esc/dismiss.
-@MainActor
-func presentFileDeleteConfirmAlert(completion: @escaping (Bool) -> Void) {
-    let alert = NSAlert()
-    alert.messageText = "Delete file?"
-    alert.informativeText = "The file will be removed from the list and deleted from your Mac."
-    alert.alertStyle = .warning
-    alert.window.appearance = NSAppearance(named: .darkAqua)
-    alert.addButton(withTitle: "Cancel")
-    alert.addButton(withTitle: "Delete")
-
-    if let parent = NSApp.keyWindow {
-        alert.beginSheetModal(for: parent) { response in
-            completion(response == .alertSecondButtonReturn)
-        }
-    } else {
-        // Fallback: free-standing modal if no key window is available.
-        completion(alert.runModal() == .alertSecondButtonReturn)
-    }
 }
 
 // MARK: - SwiftUI roots (ObservedObject so NSHostingView refreshes on model changes)
@@ -138,7 +97,6 @@ private struct CardsNotesRoot: View {
 
 private struct CardsFilesRoot: View {
     @ObservedObject var fileStorage: FileDropStorage
-    @ObservedObject var interaction: PanelInteractionState
     @ObservedObject var fileSelection: FileSelectionState
     @ObservedObject var fileGridHover: FileGridHoverState
     @ObservedObject var fileQuickLook: FileQuickLookController
@@ -146,10 +104,6 @@ private struct CardsFilesRoot: View {
     var body: some View {
         SharedFilesColumn(
             fileDropStorage: fileStorage,
-            fileToDelete: Binding(
-                get: { interaction.fileToDelete },
-                set: { interaction.fileToDelete = $0 }
-            ),
             forCardsMode: true,
             maxFileItems: 4,
             fileSelection: fileSelection,
@@ -158,16 +112,6 @@ private struct CardsFilesRoot: View {
         )
         .frame(width: ExpandableCardView.innerWidth)
         .fixedSize(horizontal: false, vertical: true)
-        .onChange(of: interaction.fileToDelete?.id) { _ in
-            // Fires when the active file-delete target changes (including
-            // becoming nil). The id-projection avoids re-firing on every
-            // identity-equal update.
-            guard let item = interaction.fileToDelete else { return }
-            presentFileDeleteConfirmAlert { confirmed in
-                if confirmed { fileStorage.removeFile(item) }
-                interaction.fileToDelete = nil
-            }
-        }
     }
 }
 
@@ -663,7 +607,6 @@ final class CardsModeContainerView: NSView {
         let notesRoot = AnyView(CardsNotesRoot(makePanelKey: makePanelKey, notes: notes, interaction: interaction, transcription: transcription))
         let filesRoot = AnyView(CardsFilesRoot(
             fileStorage: fileStorage,
-            interaction: interaction,
             fileSelection: fileSelection,
             fileGridHover: fileGridHover,
             fileQuickLook: fileQuickLook
