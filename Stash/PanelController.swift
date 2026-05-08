@@ -1049,10 +1049,6 @@ struct QuickPanelRootView: View {
                         get: { panelInteraction.noteToDelete },
                         set: { panelInteraction.noteToDelete = $0 }
                     ),
-                    fileToDelete: Binding(
-                        get: { panelInteraction.fileToDelete },
-                        set: { panelInteraction.fileToDelete = $0 }
-                    ),
                     panelWidth: settings.panelWidth
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1085,7 +1081,6 @@ struct PanelContentView: View {
     @Binding var showTranscriptionPage: Bool
     @Binding var editingNoteId: String?
     @Binding var noteToDelete: NoteItem?
-    @Binding var fileToDelete: DroppedFileItem?
     var panelWidth: CGFloat
 
     @State private var selectedTab: PanelMainTab = .all
@@ -1137,7 +1132,6 @@ struct PanelContentView: View {
                                         clipboard: clipboard,
                                         notesStorage: notesStorage,
                                         fileDropStorage: fileDropStorage,
-                                        fileToDelete: $fileToDelete,
                                         makePanelKey: makePanelKey,
                                         transcription: transcription,
                                         showTranscriptionPage: $showTranscriptionPage,
@@ -1165,7 +1159,6 @@ struct PanelContentView: View {
                         case .files:
                             SharedFilesColumn(
                                 fileDropStorage: fileDropStorage,
-                                fileToDelete: $fileToDelete,
                                 forCardsMode: false,
                                 fileSelection: fileSelection,
                                 fileGridHover: fileGridHover,
@@ -1230,16 +1223,6 @@ struct PanelContentView: View {
             }
         } message: {
             Text("This note will be permanently deleted.")
-        }
-        .onChange(of: fileToDelete?.id) { _ in
-            // Replaces the prior SwiftUI .alert(...) chain. The helper
-            // (CardsModeAppKit.swift) presents a dark-chromed NSAlert as a
-            // sheet on the panel; the completion fires after the user picks.
-            guard let item = fileToDelete else { return }
-            presentFileDeleteConfirmAlert { confirmed in
-                if confirmed { fileDropStorage.removeFile(item) }
-                fileToDelete = nil
-            }
         }
     }
 }
