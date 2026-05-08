@@ -15,7 +15,7 @@ final class AutoPasteService {
     static let shared = AutoPasteService()
     private init() {}
 
-    enum InsertResult: Equatable {
+    enum InsertResult {
         case success
         /// User hasn't granted Accessibility permission. Caller can prompt
         /// via `requestAccessibilityPermission()` from a user-initiated UI
@@ -99,14 +99,17 @@ final class AutoPasteService {
               let role = roleRef as? String else {
             return false
         }
+        // Note: Safari/Chrome contenteditable web inputs report role AXGroup
+        // (with a role-description string) rather than AXTextField — Strategy 1
+        // won't match them, but Strategy 2 (CGEvent ⌘V) handles them fine.
         switch role {
-        case "AXTextField", "AXTextArea", "AXComboBox":
+        case kAXTextFieldRole, kAXTextAreaRole, kAXComboBoxRole:
             // Reject the secure-text-field subrole. Secure fields report
             // role `AXTextField` with subrole `AXSecureTextField`.
             var subroleRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleRef) == .success,
                let subrole = subroleRef as? String,
-               subrole == "AXSecureTextField" {
+               subrole == kAXSecureTextFieldSubrole {
                 return false
             }
             return true
@@ -202,27 +205,38 @@ final class AutoPasteService {
             return dict
         }
 
-        // Replace pasteboard with our text.
-        pb.clearContents()
-        guard pb.setString(text, forType: .string) else { return false }
-
-        // Post a synthetic ⌘V. `.hidSystemState` is the correct stateID for
-        // posted events that need to be processed as if they came from the
-        // user (modifier-flag handling, focus-app dispatch).
+        // Build the ⌘V events first; if creation fails we abort BEFORE
+        // clobbering the pasteboard, so the user's clipboard stays intact
+        // and the caller falls through to .insertionFailed.
+        // `.hidSystemState` is the correct stateID for posted events that
+        // need to be processed as if they came from the user.
         let source = CGEventSource(stateID: .hidSystemState)
         // Virtual key 9 == kVK_ANSI_V. CGEvent uses physical scancodes,
         // so this is layout-independent (works on QWERTY/Dvorak/AZERTY).
         let vKey: CGKeyCode = 9
-        let down = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
-        down?.flags = .maskCommand
-        up?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false) else {
+            return false
+        }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+
+        // Replace pasteboard with our text.
+        pb.clearContents()
+        guard pb.setString(text, forType: .string) else { return false }
+        // Snapshot the changeCount AFTER our write so we can detect a user
+        // copying-during-the-restore-window and avoid clobbering their copy.
+        let changeCountAtWrite = pb.changeCount
+
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
 
         // Restore the original pasteboard after the destination has consumed
-        // our paste. 200ms is the empirical sweet spot.
+        // our paste. 200ms is the empirical sweet spot. Skip restoration if
+        // the user has copied something else in the meantime (changeCount
+        // bump) — their copy wins.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) {
+            guard pb.changeCount == changeCountAtWrite else { return }
             pb.clearContents()
             for itemDict in snapshot {
                 let item = NSPasteboardItem()
