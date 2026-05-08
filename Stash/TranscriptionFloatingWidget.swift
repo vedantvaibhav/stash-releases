@@ -72,10 +72,31 @@ struct TranscriptionPillView: View {
                 .tint(DesignTokens.Icon.tintMuted)
                 .transition(.opacity)
         case .completion(let message):
-            glyph(completionSymbol(for: message))
+            if isPastedCompletion(message) {
+                Image("PastedConfirm")
+                    .renderingMode(.template)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(
+                        width: DesignTokens.Pill.iconGlyphSize,
+                        height: DesignTokens.Pill.iconGlyphSize
+                    )
+                    .foregroundStyle(DesignTokens.Icon.tintMuted)
+                    .transition(.opacity)
+            } else {
+                glyph(completionSymbol(for: message))
+            }
         case .expanded:
             EmptyView()
         }
+    }
+
+    /// True iff the message represents a paste-success state. Paste states use
+    /// a custom asset (`PastedConfirm`) instead of an SF Symbol so the glyph
+    /// matches the design language. The raw-vs-clean distinction stays in the
+    /// label text — both share the icon.
+    private func isPastedCompletion(_ message: String) -> Bool {
+        message == "Pasted ✓" || message == "Pasted (raw)"
     }
 
     private func glyph(_ systemName: String) -> some View {
@@ -86,8 +107,10 @@ struct TranscriptionPillView: View {
     }
 
     /// Mirrors the strings emitted by `TranscriptionService.showCompletion(_:)`
-    /// (see TranscriptionService.swift — `"Copied" | "Note saved" | "Failed" | "Pasted ✓"`).
-    /// A service string we don't recognise falls back to a neutral checkmark.
+    /// (see TranscriptionService.swift — `"Copied" | "Note saved" | "Failed"`).
+    /// `"Pasted ✓"` / `"Pasted (raw)"` are handled in `iconGlyph` directly via
+    /// the custom `PastedConfirm` asset. A string we don't recognise falls
+    /// back to a neutral checkmark.
     private func completionSymbol(for message: String) -> String {
         switch message {
         case "Copied":        return "checkmark"
@@ -96,8 +119,6 @@ struct TranscriptionPillView: View {
         case "No audio":      return "mic.slash"
         case "Copied (raw)":  return "checkmark"
         case "Saved (raw)":   return "note.text"
-        case "Pasted ✓":      return "arrow.right.doc.on.clipboard"
-        case "Pasted (raw)":  return "arrow.right.doc.on.clipboard"
         default:              return "checkmark"
         }
     }
