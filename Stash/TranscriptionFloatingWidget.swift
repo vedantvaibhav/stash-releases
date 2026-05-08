@@ -378,27 +378,21 @@ final class TranscriptionFloatingWidgetController: NSObject {
         panel?.orderFrontRegardless()
     }
 
-    /// Resize the panel back to capsule dimensions. Called explicitly by
-    /// `collapseExpansion` (the only path that ever needs this).
+    /// Resize the panel back to capsule dimensions, anchored at the persisted
+    /// snap zone. Called by `collapseExpansion` and (after the redesign) by
+    /// `collapseToMinimizedReady`.
     private func resizePanelToCollapsed(animated: Bool) {
-        guard let panel else { return }
-        let target = NSRect(
-            origin: keepWithinScreen(
-                origin: panel.frame.origin,
-                size: NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
-            ),
-            size: NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
-        )
-        applyPanelFrame(target, animated: animated)
+        let size = NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+        applyPhaseAwareFrame(size: size, animated: animated)
     }
 
     /// Resize the panel to host the expanded view. Reads `fittingSize` from
     /// `expandedHosting` (NOT the typed-collapsed `hosting` ivar). Caller MUST
-    /// have already assigned `expandedHosting` as `panel.contentView` and
-    /// applied a width-fixed frame so AppKit can compute a real fittingSize
-    /// (an unattached NSHostingView reports `.zero`).
+    /// have already assigned `expandedHosting` as `panel.contentView` so AppKit
+    /// can compute a real fittingSize (an unattached NSHostingView reports zero).
     private func resizePanelToExpanded(animated: Bool) {
-        guard let panel, let host = expandedHosting else { return }
+        guard expandedHosting != nil else { return }
+        guard let host = expandedHosting else { return }
         host.frame = NSRect(
             x: 0, y: 0,
             width: DesignTokens.Pill.expandedWidth,
@@ -408,30 +402,27 @@ final class TranscriptionFloatingWidgetController: NSObject {
         let fitted = host.fittingSize.height
         let cap = DesignTokens.Pill.expandedMaxHeight
         let h = min(max(fitted, DesignTokens.Pill.height), cap)
-        let w = DesignTokens.Pill.expandedWidth
-        let target = NSRect(
-            origin: keepWithinScreen(
-                origin: panel.frame.origin,
-                size: NSSize(width: w, height: h)
-            ),
-            size: NSSize(width: w, height: h)
-        )
-        applyPanelFrame(target, animated: animated)
+        let size = NSSize(width: DesignTokens.Pill.expandedWidth, height: h)
+        applyPhaseAwareFrame(size: size, animated: animated)
     }
 
-    /// Clamp `origin` so a window of `size` stays within the current screen's
-    /// `visibleFrame`. Prevents the expanded pill from rendering off-screen
-    /// when the user has snapped the collapsed pill to a corner.
-    private func keepWithinScreen(origin: NSPoint, size: NSSize) -> NSPoint {
-        guard let screen = NSScreen.main else { return origin }
-        let vf = screen.visibleFrame
-        var x = origin.x
-        var y = origin.y
-        if x + size.width > vf.maxX { x = vf.maxX - size.width }
-        if x < vf.minX { x = vf.minX }
-        if y + size.height > vf.maxY { y = vf.maxY - size.height }
-        if y < vf.minY { y = vf.minY }
-        return NSPoint(x: x, y: y)
+    /// Read the persisted snap zone, falling back to `.topCenter`.
+    private func currentSnapZone() -> PanelSnapZone {
+        if let raw = UserDefaults.standard.string(forKey: Self.snapZoneDefaultsKey),
+           let zone = PanelSnapZone(rawValue: raw) {
+            return zone
+        }
+        return .topCenter
+    }
+
+    /// Position the panel at the persisted snap zone using the given size.
+    /// Used by every phase transition (collapsed/expanded/minimized resize)
+    /// and by `restorePosition` on launch.
+    private func applyPhaseAwareFrame(size: CGSize, animated: Bool) {
+        guard let panel, let screen = NSScreen.main else { return }
+        let target = currentSnapZone().visibleFrame(size: size, screen: screen.visibleFrame)
+        applyPanelFrame(target, animated: animated)
+        _ = panel
     }
 
     /// Animate panel frame using the spec's cubic-bezier curve over 280ms.
@@ -498,24 +489,8 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// First launch uses the menu-bar default (8 pt below the bar). Subsequent
     /// launches restore whichever corner the user last snapped the pill into.
     private func restorePosition() {
-        if let raw = UserDefaults.standard.string(forKey: Self.snapZoneDefaultsKey),
-           let zone = PanelSnapZone(rawValue: raw) {
-            applySnapZone(zone, animated: false)
-        } else {
-            positionAtMenuBar()
-        }
-    }
-
-    private func positionAtMenuBar() {
-        guard let p = panel, let screen = NSScreen.main else { return }
-        let vf = screen.visibleFrame
-        let sf = screen.frame
-        let w = p.frame.width
-        let h = p.frame.height
-        let menuBarHeight = sf.height - vf.maxY
-        let x = sf.midX - w / 2
-        let y = sf.maxY - menuBarHeight - 8 - h
-        p.setFrameOrigin(NSPoint(x: x, y: y))
+        let size = NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+        applyPhaseAwareFrame(size: size, animated: false)
     }
 
     // MARK: Drag-to-snap
@@ -551,25 +526,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private func snapToNearestZone() {
         guard let panel, let screen = NSScreen.main else { return }
         let vf = screen.visibleFrame
-        let size = CGSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+        // Use the panel's CURRENT size so dragging the expanded form snaps to
+        // a corner that fits the expanded form, not a hardcoded 130×32.
+        let size = panel.frame.size
         let zone = PanelSnapZone.nearest(to: panel.frame, size: size, screen: vf)
         UserDefaults.standard.set(zone.rawValue, forKey: Self.snapZoneDefaultsKey)
-        applySnapZone(zone, animated: true)
-    }
-
-    private func applySnapZone(_ zone: PanelSnapZone, animated: Bool) {
-        guard let panel, let screen = NSScreen.main else { return }
-        let size = CGSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
-        let target = zone.visibleFrame(size: size, screen: screen.visibleFrame)
-        if animated {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.28
-                ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.3, 0.64, 1.0) // springy, matches tray
-                panel.animator().setFrame(target, display: true)
-            }
-        } else {
-            panel.setFrame(target, display: false)
-        }
+        applyPhaseAwareFrame(size: size, animated: true)
     }
 
     // MARK: - Expanded phase
