@@ -554,6 +554,12 @@ struct SharedNotesColumn: View {
 
         return ZStack(alignment: .topTrailing) {
             VStack(alignment: .leading, spacing: 0) {
+                // Always-shown recent dictations section. Collapsed by default
+                // so it occupies one header row when not expanded, keeping the
+                // Notes list fully visible. Expands in place when there are
+                // entries and the user clicks the header.
+                DictationsRecentSection()
+
                 // List or empty state
                 if notesStorage.notes.isEmpty {
                     PanelEmptyState(
@@ -1182,5 +1188,177 @@ private struct AllNoteCard: View {
             previewText = String(full.prefix(300))
         }
     }
+}
+
+// MARK: - Recent dictations (inline section in the Notes column)
+//
+// Lives above NotesListView in the Notes tab body. Always-visible header so
+// the recovery surface for the always-paste model is discoverable: when a
+// short transcript's auto-paste misses (Finder desktop, secure field,
+// permission revoked), the user can find their text here.
+
+struct DictationsRecentSection: View {
+    @ObservedObject private var storage = DictationsStorage.shared
+    @State private var isExpanded: Bool = false
+    @State private var copyFlashId: UUID? = nil
+
+    /// Cap how tall the expanded list grows before internal scroll engages.
+    /// Keeps the Notes list visible even with hundreds of dictations.
+    private let maxExpandedHeight: CGFloat = 220
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            if isExpanded && !storage.entries.isEmpty {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(storage.entries) { entry in
+                            DictationRow(
+                                entry: entry,
+                                copyFlashed: copyFlashId == entry.id,
+                                onTap: { handleTap(entry) },
+                                onDelete: { storage.delete(id: entry.id) }
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 4)
+                }
+                .frame(maxHeight: maxExpandedHeight)
+            }
+            // Hairline separator between this section and whatever sits below.
+            Divider()
+                .opacity(0.06)
+                .padding(.horizontal, 12)
+                .padding(.top, isExpanded ? 4 : 0)
+        }
+    }
+
+    private var header: some View {
+        let hasEntries = !storage.entries.isEmpty
+        return Button {
+            guard hasEntries else { return }
+            withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: hasEntries
+                    ? (isExpanded ? "chevron.down" : "chevron.right")
+                    : "waveform")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(PanelSectionHeaderStyle.foreground)
+                    .frame(width: 11)
+                Text(headerTitle)
+                    .font(PanelSectionHeaderStyle.font)
+                    .foregroundStyle(PanelSectionHeaderStyle.foreground)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasEntries)
+    }
+
+    private var headerTitle: String {
+        let count = storage.entries.count
+        if count == 0 {
+            return "No dictations yet — hold ⌘⌘ to record"
+        }
+        return "Recent dictations  (\(count))"
+    }
+
+    private func handleTap(_ entry: DictationEntry) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(entry.text, forType: .string)
+        copyFlashId = entry.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [id = entry.id] in
+            if copyFlashId == id { copyFlashId = nil }
+        }
+    }
+}
+
+private struct DictationRow: View {
+    let entry: DictationEntry
+    let copyFlashed: Bool
+    let onTap: () -> Void
+    let onDelete: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(textPreview)
+                    .font(.system(size: 12.5, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(metaLine)
+                    .font(.system(size: 10.5, weight: .regular))
+                    .foregroundStyle(DesignTokens.Typography.sectionColor)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if copyFlashed {
+                Text("Copied")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: PanelListRowHoverStyle.cornerRadius, style: .continuous)
+                .fill(rowFill)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+        .onHover { isHovering = $0 }
+        .animation(PanelListRowHoverStyle.animation, value: isHovering)
+        .animation(PanelListRowHoverStyle.animation, value: copyFlashed)
+        .contextMenu {
+            Button("Copy") { onTap() }
+            Button("Delete", role: .destructive) { onDelete() }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Text("Dictation: \(textPreview). \(metaLine)"))
+    }
+
+    private var rowFill: Color {
+        if copyFlashed { return Color.white.opacity(0.18) }
+        if isHovering { return PanelListRowHoverStyle.hoverFill }
+        return Color.clear
+    }
+
+    private var textPreview: String {
+        let trimmed = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "(empty)" : trimmed
+    }
+
+    private var metaLine: String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        let timeAgo = formatter.localizedString(for: entry.timestamp, relativeTo: Date())
+        let dur = formatDictationDuration(entry.durationSec)
+        if let app = entry.sourceAppName, !app.isEmpty {
+            return "\(timeAgo) · \(dur) · \(app)"
+        }
+        return "\(timeAgo) · \(dur)"
+    }
+}
+
+/// Compact duration: "6s", "14s", "1m 12s", "2m 30s". Dictations are always
+/// short (<5min by definition of the short path).
+fileprivate func formatDictationDuration(_ seconds: Int) -> String {
+    if seconds < 60 { return "\(seconds)s" }
+    let m = seconds / 60
+    let s = seconds % 60
+    if s == 0 { return "\(m)m" }
+    return "\(m)m \(s)s"
 }
 
