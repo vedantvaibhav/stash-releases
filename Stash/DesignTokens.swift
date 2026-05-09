@@ -42,18 +42,15 @@ enum DesignTokens {
         // pill doesn't read as cramped on the right. Trailing padding +4
         // gives the dot more breathing room from the pill's right edge.
         //
-        // For a typical "MM:SS" label (~42pt at monospaced 14pt regular),
-        // pillWidth = 105 fits exactly: 4+24+6+42+11+10+8 = 105. Completion
-        // labels ("No audio", "Pasted ✓", etc.) render wider than the
-        // monospaced timer at the same point size — they use the proportional
-        // SF Pro variant — so completion phases use a wider `completionWidth`
-        // (see below) to avoid edge clipping on longer message strings.
+        // Pill width is now computed dynamically per displayed mode by the
+        // controller's sizeForCurrentMode (using NSString.size on the label
+        // text), so each state — recording timer, "Failed", "No audio",
+        // "Pasted ✓", "Note saved", "Saved (raw)" — gets exactly the width
+        // it needs. This `width` constant is the FALLBACK used by
+        // restorePosition during the panel's initial buildPanel call,
+        // before any mode is set; kept at the typical recording size so
+        // first-show slide+fade lands at a sensible target.
         static let width: CGFloat = 105
-        // Completion phase pill width. Wider than recording so messages like
-        // "No audio", "Pasted ✓", "Note saved" don't get clipped at the
-        // capsule edges. Per-phase sizing keeps the recording pill compact
-        // while letting completion text breathe.
-        static let completionWidth: CGFloat = 114
         static let height: CGFloat = 32
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14
@@ -82,12 +79,21 @@ enum DesignTokens {
         static let frameAnimationCurveCP2y: Double = 1.0
 
         // Phase-change animation — recording → processing (shrink to circle)
-        // and back (expand). 0.23s easeInEaseOut, ~5% slower than the prior
-        // 0.22 per design feedback (the loading transition felt slightly
-        // too quick). SwiftUI cross-fade for content swaps stays at 0.18s
-        // — the layers still feel coordinated.
-        static let phaseAnimationDuration: TimeInterval = 0.23
-        static let contentCrossfadeDuration: TimeInterval = 0.18
+        // and back (expand). 0.27s easeInEaseOut. The pill content uses an
+        // asymmetric transition so the capsule's geometry (rounded corners)
+        // morphs first, then content fades in — see contentInsertionDelay /
+        // contentInsertionDuration below.
+        static let phaseAnimationDuration: TimeInterval = 0.27
+
+        // Asymmetric content-swap transition timings. When mode changes,
+        // the OLD content fades out fast (`contentRemovalDuration`) so the
+        // capsule reads as "empty" while the AppKit panel resizes, then
+        // the NEW content fades in (`contentInsertionDuration`) after a
+        // small delay (`contentInsertionDelay`) so the rounded corners
+        // reach their target shape before text appears.
+        static let contentRemovalDuration: TimeInterval = 0.08
+        static let contentInsertionDelay: TimeInterval = 0.16
+        static let contentInsertionDuration: TimeInterval = 0.16
     }
 
     enum Typography {
