@@ -33,18 +33,35 @@ struct TranscriptionPillView: View {
     let onStop: () -> Void
 
     var body: some View {
-        HStack(spacing: DesignTokens.Pill.contentSpacing) {
-            iconDisc
-            label
-            Spacer(minLength: 0)
-            trailing
+        Group {
+            switch mode {
+            case .processing:
+                // Compact circle: just the icon disc + spinner. The pill
+                // collapses to its smallest meaningful state — work in
+                // progress, no chrome to read. The outer .animation cross-
+                // fades the HStack-shaped pill into this circle while the
+                // AppKit panel frame shrinks alongside.
+                iconDisc
+                    .frame(
+                        width: DesignTokens.Pill.height,
+                        height: DesignTokens.Pill.height
+                    )
+            default:
+                // Full pill: leading icon disc, label, trailing element.
+                HStack(spacing: DesignTokens.Pill.contentSpacing) {
+                    iconDisc
+                    label
+                    Spacer(minLength: 0)
+                    trailing
+                }
+                .padding(.leading, DesignTokens.Pill.leadingPadding)
+                .padding(.trailing, DesignTokens.Pill.trailingPadding)
+                .padding(.vertical, DesignTokens.Pill.verticalPadding)
+                .frame(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+            }
         }
-        .padding(.leading, DesignTokens.Pill.leadingPadding)
-        .padding(.trailing, DesignTokens.Pill.trailingPadding)
-        .padding(.vertical, DesignTokens.Pill.verticalPadding)
-        .frame(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
         .background(Color.black, in: Capsule())
-        .animation(.easeInOut(duration: 0.18), value: PillPhaseKey(mode))
+        .animation(.easeInOut(duration: DesignTokens.Pill.phaseAnimationDuration), value: PillPhaseKey(mode))
     }
 
     // MARK: Icon disc (24×24 with 14pt inner glyph / spinner)
@@ -129,7 +146,10 @@ struct TranscriptionPillView: View {
         case .recording(let seconds):
             pillLabel(formatPillDuration(seconds), tabularDigits: true)
         case .processing:
-            pillLabel("Processing")
+            // Unreachable: the outer body switch renders just the icon disc
+            // for .processing, so this branch never builds. Kept exhaustive
+            // for the compiler.
+            EmptyView()
         case .completion(let message):
             pillLabel(message)
         }
@@ -304,21 +324,25 @@ final class TranscriptionFloatingWidgetController: NSObject {
         // view fades in (the user-visible "ghost flash"). Subsequent mutations
         // (recording → processing → completion) animate normally.
         if ts.isRecording {
+            let oldPhase = phase
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 cancelAllPendingWork(except: .recording)
                 phase = .recording
                 showCollapsedPanelIfNeeded()
+                applyPhaseFrame(animated: oldPhase != .none)
                 updateHosted(mode: .recording(durationSeconds: ts.duration))
             }
             return
         }
 
         if let msg = ts.completionMessage {
+            let oldPhase = phase
             cancelAllPendingWork(except: .completion)
             phase = .completion
             showCollapsedPanelIfNeeded()
+            applyPhaseFrame(animated: oldPhase != .none)
             updateHosted(mode: .completion(message: msg))
 
             let work = DispatchWorkItem { [weak self] in
@@ -332,9 +356,11 @@ final class TranscriptionFloatingWidgetController: NSObject {
         }
 
         if ts.isProcessing {
+            let oldPhase = phase
             cancelAllPendingWork(except: .processing)
             phase = .processing
             showCollapsedPanelIfNeeded()
+            applyPhaseFrame(animated: oldPhase != .none)
             updateHosted(mode: .processing)
             return
         }
@@ -342,6 +368,33 @@ final class TranscriptionFloatingWidgetController: NSObject {
         if phase != .completion {
             hidePanel()
             phase = .none
+        }
+    }
+
+    /// Resize the panel frame to match the current `phase`. Animated when
+    /// transitioning between visible phases (e.g., recording → processing),
+    /// non-animated on first show (oldPhase == .none) so the panel doesn't
+    /// briefly render at a stale size before snapping.
+    ///
+    /// `.processing` shrinks to a 32×32 square (visually a circle once the
+    /// capsule background applies); every other phase expands back to the
+    /// full pill width. The SwiftUI side animates its content cross-fade
+    /// over the same duration so both layers read as one fluid motion.
+    private func applyPhaseFrame(animated: Bool) {
+        let size = sizeForCurrentPhase()
+        applyPhaseAwareFrame(
+            size: size,
+            animated: animated,
+            duration: DesignTokens.Pill.phaseAnimationDuration
+        )
+    }
+
+    private func sizeForCurrentPhase() -> NSSize {
+        switch phase {
+        case .processing:
+            return NSSize(width: DesignTokens.Pill.height, height: DesignTokens.Pill.height)
+        default:
+            return NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
         }
     }
 
@@ -371,18 +424,29 @@ final class TranscriptionFloatingWidgetController: NSObject {
     }
 
     /// Position the panel at the persisted snap zone using the given size.
-    private func applyPhaseAwareFrame(size: CGSize, animated: Bool) {
+    /// `duration` defaults to drag-snap's settle timing; phase changes
+    /// (recording ↔ processing ↔ completion) override with a faster value.
+    private func applyPhaseAwareFrame(
+        size: CGSize,
+        animated: Bool,
+        duration: TimeInterval = DesignTokens.Pill.frameAnimationDuration
+    ) {
         guard let screen = NSScreen.main else { return }
         let target = currentSnapZone().visibleFrame(size: size, screen: screen.visibleFrame)
-        applyPanelFrame(target, animated: animated)
+        applyPanelFrame(target, animated: animated, duration: duration)
     }
 
-    /// Animate panel frame using the spec's cubic-bezier curve.
-    private func applyPanelFrame(_ frame: NSRect, animated: Bool) {
+    /// Animate panel frame using the spec's cubic-bezier curve over the
+    /// given duration. `duration` defaults to drag-snap's settle timing.
+    private func applyPanelFrame(
+        _ frame: NSRect,
+        animated: Bool,
+        duration: TimeInterval = DesignTokens.Pill.frameAnimationDuration
+    ) {
         guard let panel else { return }
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = DesignTokens.Pill.frameAnimationDuration
+                ctx.duration = duration
                 ctx.timingFunction = CAMediaTimingFunction(controlPoints:
                     Float(DesignTokens.Pill.frameAnimationCurveCP1x),
                     Float(DesignTokens.Pill.frameAnimationCurveCP1y),
