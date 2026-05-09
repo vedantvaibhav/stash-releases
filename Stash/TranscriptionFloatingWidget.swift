@@ -411,6 +411,11 @@ final class TranscriptionFloatingWidgetController: NSObject {
         switch phase {
         case .processing:
             return NSSize(width: DesignTokens.Pill.height, height: DesignTokens.Pill.height)
+        case .completion:
+            // Wider than recording so completion messages ("No audio",
+            // "Pasted ✓", etc.) don't get clipped — they render in
+            // proportional SF Pro and run wider than the monospaced timer.
+            return NSSize(width: DesignTokens.Pill.completionWidth, height: DesignTokens.Pill.height)
         default:
             return NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
         }
