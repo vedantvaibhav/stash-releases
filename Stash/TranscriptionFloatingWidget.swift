@@ -81,7 +81,13 @@ struct TranscriptionPillView: View {
                         width: DesignTokens.Pill.iconGlyphSize,
                         height: DesignTokens.Pill.iconGlyphSize
                     )
-                    .foregroundStyle(DesignTokens.Icon.tintMuted)
+                    // .foregroundColor (not .foregroundStyle) — the latter
+                    // doesn't always propagate through .renderingMode(.template)
+                    // for custom-asset Images on macOS 13/14, leaving the
+                    // glyph at full opacity. .foregroundColor + .tint together
+                    // covers both old and new SwiftUI tint paths.
+                    .foregroundColor(DesignTokens.Icon.tintMuted)
+                    .tint(DesignTokens.Icon.tintMuted)
                     .transition(.opacity)
             } else {
                 glyph(completionSymbol(for: message))
