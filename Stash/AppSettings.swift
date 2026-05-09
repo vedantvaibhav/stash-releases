@@ -9,6 +9,7 @@ extension Notification.Name {
     static let quickPanelClearClipboard     = Notification.Name("QuickPanelClearClipboard")
     static let quickPanelClearNotes         = Notification.Name("QuickPanelClearNotes")
     static let quickPanelClearDroppedFiles  = Notification.Name("QuickPanelClearDroppedFiles")
+    static let quickPanelClearDictations    = Notification.Name("QuickPanelClearDictations")
     static let quickRecordHotkeyChanged     = Notification.Name("quickRecordHotkeyChanged")
     static let doubleTapQuickRecordChanged  = Notification.Name("DoubleTapQuickRecordChanged")
     static let authCompleted                = Notification.Name("AuthCompleted")
