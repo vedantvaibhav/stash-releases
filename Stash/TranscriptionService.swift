@@ -376,7 +376,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         switch AutoPasteService.shared.attemptInsert(text: result.text) {
         case .success:
             showCompletion(result.isRaw ? "Pasted (raw)" : "Pasted ✓")
-        case .noPermission, .noFocusedField, .insertionFailed:
+        case .noPermission, .insertionFailed:
             shortTranscriptResult = result
         }
     }

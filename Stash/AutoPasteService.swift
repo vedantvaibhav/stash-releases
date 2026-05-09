@@ -6,9 +6,15 @@ import ApplicationServices
 ///   1. AXUIElement direct value write (clean, app-cooperative apps).
 ///   2. CGEvent ⌘V with pasteboard preservation (universal fallback).
 ///
-/// Caller should treat any non-`.success` result as a signal to fall back to
-/// the floating-pill morph. The service is intentionally synchronous — both
-/// strategies complete in a few ms or fail fast.
+/// One of three delivery channels for short transcripts. The caller
+/// (`TranscriptionService.deliverShortDictation`) ALSO writes the transcript
+/// to the system pasteboard and saves a `DictationEntry` to disk regardless
+/// of this service's return value. So `.insertionFailed` is not user-data
+/// loss — it's a "Saved" pill instead of a "Pasted ✓" pill, with two
+/// recovery channels still active.
+///
+/// The service is intentionally synchronous — both strategies complete in a
+/// few ms or fail fast.
 @MainActor
 final class AutoPasteService {
 
@@ -21,12 +27,13 @@ final class AutoPasteService {
         /// via `requestAccessibilityPermission()` from a user-initiated UI
         /// action (e.g., the permissions onboarding screen).
         case noPermission
-        /// No insertable text field has focus right now (or the focused
-        /// element is read-only / a secure field / the focused app is
-        /// Stash itself).
-        case noFocusedField
-        /// Permission and target both fine, but the insertion call returned
-        /// failure or the pasteboard write didn't take.
+        /// Paste was skipped or failed: focused app is Stash itself (we
+        /// never paste into our own UI), focused element is a secure field
+        /// (privacy guard), both Strategy 1 and Strategy 2 returned false,
+        /// or the 5s deadline expired before Strategy 2 could start. Caller
+        /// should surface a "Saved" confirmation — clipboard + dictations
+        /// history are populated regardless and provide the user's recovery
+        /// path.
         case insertionFailed
     }
 
@@ -130,9 +137,9 @@ final class AutoPasteService {
     /// state and reporting bogus success.
     ///
     /// Flow:
-    ///   1. Permission gate (`AXIsProcessTrusted`).
+    ///   1. Permission gate (`AXIsProcessTrusted`). Returns `.noPermission`.
     ///   2. Frontmost-app gate (must exist; Stash-self rejected — we never
-    ///      auto-paste into our own UI).
+    ///      auto-paste into our own UI). Returns `.insertionFailed`.
     ///   3. Optional focus introspection. Many Electron / ToDesktop apps
     ///      (Cursor, Linear desktop, etc.) refuse to expose their focused
     ///      element to the app-level AX query — `focusedElement` will return
@@ -140,12 +147,13 @@ final class AutoPasteService {
     ///      1 and the secure-field privacy check, and rely on Strategy 2 to
     ///      deliver the paste.
     ///   4. Privacy gate — only enforceable when introspection succeeded.
-    ///      Reject `AXSecureTextField` subrole.
+    ///      Reject `AXSecureTextField` subrole. Returns `.insertionFailed`.
     ///   5. Strategy 1 (AX value write) — only runs if introspection found
     ///      a visible writable element with a known role
     ///      (AXTextField/AXTextArea/AXComboBox) AND text is below the
     ///      pre-flight length threshold.
-    ///   6. Strategy 2 (CGEvent ⌘V) — universal fallback.
+    ///   6. Strategy 2 (CGEvent ⌘V) — universal fallback. Returns `.success`
+    ///      on completion, `.insertionFailed` if it can't run.
     func attemptInsert(text: String) -> InsertResult {
         let token = UUID()
         currentPasteToken = token
@@ -161,9 +169,9 @@ final class AutoPasteService {
               frontApp.bundleIdentifier != Bundle.main.bundleIdentifier else {
             #if DEBUG
             let id = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
-            print("[AutoPaste] noFocusedField — no front app or Stash itself is front. Front: \(id)")
+            print("[AutoPaste] insertionFailed — no front app or Stash itself is front. Front: \(id)")
             #endif
-            return .noFocusedField
+            return .insertionFailed
         }
 
         // Best-effort introspection. Returns nil for apps that don't expose
@@ -174,9 +182,9 @@ final class AutoPasteService {
         if let element {
             if isSecureTextElement(element) {
                 #if DEBUG
-                print("[AutoPaste] noFocusedField — focused element is a secure (password) field")
+                print("[AutoPaste] insertionFailed — focused element is a secure (password) field")
                 #endif
-                return .noFocusedField
+                return .insertionFailed
             }
             if isStandardWritableRole(element) {
                 // Re-check permission at strategy entry; the user may have revoked
