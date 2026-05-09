@@ -279,10 +279,9 @@ struct SettingsView: View {
     @ObservedObject private var auth     = AuthService.shared
 
     // Data section alert state
-    @State private var showClearClipboardAlert  = false
-    @State private var showClearNotesAlert      = false
-    @State private var showClearFilesAlert      = false
-    @State private var showClearDictationsAlert = false
+    @State private var showClearClipboardAlert = false
+    @State private var showClearNotesAlert     = false
+    @State private var showClearFilesAlert     = false
 
     @State private var isHoveringSignOut = false
 
@@ -563,9 +562,6 @@ struct SettingsView: View {
                 dangerButton(title: "Clear all files") {
                     showClearFilesAlert = true
                 }
-                dangerButton(title: "Clear dictations history") {
-                    showClearDictationsAlert = true
-                }
             }
         }
         .alert("Clear all clipboard history?", isPresented: $showClearClipboardAlert) {
@@ -586,12 +582,6 @@ struct SettingsView: View {
                 NotificationCenter.default.post(name: .quickPanelClearDroppedFiles, object: nil)
             }
         } message: { Text("All files will be removed from the Stash shelf.") }
-        .alert("Clear all dictations?", isPresented: $showClearDictationsAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Clear", role: .destructive) {
-                NotificationCenter.default.post(name: .quickPanelClearDictations, object: nil)
-            }
-        } message: { Text("All voice transcripts in your dictations history will be permanently deleted.") }
     }
 
     private func dangerButton(title: String, action: @escaping () -> Void) -> some View {
