@@ -62,10 +62,21 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var maxDurationTimer: Timer?
     private var autoStoppedAtLimit = false
     private var processingWatchdog: DispatchWorkItem?
+    /// Snapshot of the user's paste-target intent at record start. Set by
+    /// `startRecording`; consumed and cleared by `handleShortRecordingDelivery`.
+    /// Single-use — never persisted across recordings.
+    private var capturedPasteTarget: CapturedPasteTarget?
 
     // MARK: - Start
 
     func startRecording() {
+        // Snapshot the user's paste target FIRST — before clearing transient
+        // state, before requesting microphone access, before any UI mutation.
+        // This is the moment of intent: where the user was looking when they
+        // chose to dictate. Held single-use until handleShortRecordingDelivery
+        // consumes it.
+        capturedPasteTarget = AutoPasteService.shared.captureTarget()
+
         // Clear all transient post-recording state before starting a new
         // recording. Without this, an active shortTranscriptResult or
         // completionMessage causes the controller's first sync() to render
@@ -373,10 +384,23 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Copy/Dismiss form (which itself shows "Voice note — raw" eyebrow
     /// when isRaw, so the raw signal carries through both paths).
     private func handleShortRecordingDelivery(_ result: ShortTranscriptResult) {
-        switch AutoPasteService.shared.attemptInsert(text: result.text) {
+        // Consume the captured target single-use; clear immediately so a
+        // subsequent recording snapshots fresh intent rather than inheriting
+        // stale state.
+        let target = capturedPasteTarget
+        capturedPasteTarget = nil
+
+        switch AutoPasteService.shared.attemptInsert(text: result.text, into: target) {
         case .success:
+            // Strategy 1 verified OR Strategy 2 verified via element-aware
+            // AXValue read-back. Either way we know the destination accepted
+            // the paste. Clean confirmation, no morph.
             showCompletion(result.isRaw ? "Pasted (raw)" : "Pasted ✓")
         case .noPermission, .noFocusedField, .insertionFailed:
+            // Captured target was nil (user wasn't in a text input at record
+            // start), app is gone, element invalid, paste was swallowed, or
+            // permission revoked mid-flight. Morph is the recovery path —
+            // user can copy the transcript even when paste couldn't land.
             shortTranscriptResult = result
         }
     }
