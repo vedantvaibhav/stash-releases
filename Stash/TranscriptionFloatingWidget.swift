@@ -36,17 +36,24 @@ struct TranscriptionPillView: View {
         Group {
             if case .processing = mode {
                 // Compact circle: just the icon disc + spinner. AppKit
-                // panel resizes to 32×32 around it; SwiftUI fills that
-                // space and centers the iconDisc.
+                // panel resizes to 32×32 around it.
                 iconDisc
+                    .frame(
+                        width: DesignTokens.Pill.height,
+                        height: DesignTokens.Pill.height
+                    )
+                    .transition(asymmetricContentTransition)
             } else {
                 // Full pill with asymmetric spacing: icon→timer is tighter
                 // than timer→dot. HStack uses spacing: 0 and the gaps come
                 // from the label's leading/trailing padding. In completion
                 // mode (trailing is EmptyView), the label's trailing padding
                 // becomes extra right-side breathing room for the message
-                // text — intentional, gives "No audio" / "Pasted ✓" more
-                // padding without needing a mode-specific layout.
+                // text. Pill auto-sizes to content via the controller's
+                // dynamic sizeForCurrentMode (using NSString.size on the
+                // label text), so any state — recording, "No audio",
+                // "Failed", "Note saved" — gets just enough pillWidth to
+                // fit, with no leftover slack.
                 HStack(spacing: 0) {
                     iconDisc
                     label
@@ -57,20 +64,44 @@ struct TranscriptionPillView: View {
                 .padding(.leading, DesignTokens.Pill.leadingPadding)
                 .padding(.trailing, DesignTokens.Pill.trailingPadding)
                 .padding(.vertical, DesignTokens.Pill.verticalPadding)
+                .transition(asymmetricContentTransition)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        // Mode-aware alignment: processing centers the icon in its 32×32
+        // circle; everything else leading-aligns so message text and icons
+        // stick to the left edge rather than centering inside the pill.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignmentForMode)
         .background(Color.black, in: Capsule())
         // Clip to the capsule so content can't overflow the rounded ends
-        // while the AppKit panel is mid-resize (processing → completion
-        // expands 32 → 114 over 0.23s; the HStack's intrinsic width is
-        // ~113pt as soon as mode flips, so without clipping the message
-        // text would peek beyond the capsule's not-yet-expanded rounded
-        // corners on both sides).
+        // while the AppKit panel is mid-resize.
         .clipShape(Capsule())
-        // Single cross-fade for content swaps. AppKit panel handles the
-        // frame size animation in parallel via NSAnimationContext.
-        .animation(.easeInOut(duration: DesignTokens.Pill.contentCrossfadeDuration), value: PillPhaseKey(mode))
+        // Triggers the asymmetric .transition modifiers. The actual
+        // durations come from the per-transition .animation chains; this
+        // just opens the animation transaction.
+        .animation(.default, value: PillPhaseKey(mode))
+    }
+
+    /// Old content fades out fast; new content fades in after a delay so the
+    /// AppKit panel-frame animation has time to morph the capsule's rounded
+    /// corners to their target before text appears inside.
+    private var asymmetricContentTransition: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.animation(
+                .easeInOut(duration: DesignTokens.Pill.contentInsertionDuration)
+                    .delay(DesignTokens.Pill.contentInsertionDelay)
+            ),
+            removal: .opacity.animation(
+                .easeInOut(duration: DesignTokens.Pill.contentRemovalDuration)
+            )
+        )
+    }
+
+    /// Processing mode centers (the iconDisc sits in the middle of the
+    /// 32×32 circle); every other mode leading-aligns content to the
+    /// pill's left edge.
+    private var alignmentForMode: Alignment {
+        if case .processing = mode { return .center }
+        return .leading
     }
 
     // MARK: Icon disc (24×24 with 14pt inner glyph / spinner)
@@ -346,15 +377,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
             withTransaction(transaction) {
                 cancelAllPendingWork(except: .recording)
                 phase = .recording
-                // Order: applyPhaseFrame BEFORE showCollapsedPanelIfNeeded so
-                // the panel.frame is at the canonical phase target before
-                // the slide-in animation captures it as the destination.
-                // showCollapsedPanelIfNeeded short-circuits on already-visible
-                // panels (no slide+fade re-entrance), so applyPhaseFrame's
-                // animator runs undisturbed for in-place phase changes.
+                // updateHosted FIRST so displayState.mode reflects the new
+                // mode by the time applyPhaseFrame measures content for
+                // dynamic sizing. applyPhaseFrame still runs before
+                // showCollapsedPanelIfNeeded so the slide-in animation
+                // captures the canonical phase target.
+                updateHosted(mode: .recording(durationSeconds: ts.duration))
                 applyPhaseFrame(animated: oldPhase != .none)
                 showCollapsedPanelIfNeeded()
-                updateHosted(mode: .recording(durationSeconds: ts.duration))
             }
             return
         }
@@ -363,9 +393,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
             let oldPhase = phase
             cancelAllPendingWork(except: .completion)
             phase = .completion
+            updateHosted(mode: .completion(message: msg))
             applyPhaseFrame(animated: oldPhase != .none)
             showCollapsedPanelIfNeeded()
-            updateHosted(mode: .completion(message: msg))
 
             let work = DispatchWorkItem { [weak self] in
                 self?.hidePanel()
@@ -381,9 +411,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
             let oldPhase = phase
             cancelAllPendingWork(except: .processing)
             phase = .processing
+            updateHosted(mode: .processing)
             applyPhaseFrame(animated: oldPhase != .none)
             showCollapsedPanelIfNeeded()
-            updateHosted(mode: .processing)
             return
         }
 
@@ -405,7 +435,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// "slows down" through the middle of the transition just as the
     /// SwiftUI cross-fade is between layers.
     private func applyPhaseFrame(animated: Bool) {
-        let size = sizeForCurrentPhase()
+        let size = sizeForCurrentMode()
         applyPhaseAwareFrame(
             size: size,
             animated: animated,
@@ -414,18 +444,56 @@ final class TranscriptionFloatingWidgetController: NSObject {
         )
     }
 
-    private func sizeForCurrentPhase() -> NSSize {
-        switch phase {
+    /// Pill width is dynamic — measured per displayed mode using NSString
+    /// font sizing so the AppKit panel auto-fits whatever message is being
+    /// shown. "Failed" gets a small pill, "Saved (raw)" gets a larger pill,
+    /// no slack on either side regardless of message length.
+    ///
+    /// Reads `displayState.mode` (which `sync()` sets via `updateHosted`
+    /// BEFORE calling applyPhaseFrame), so the size always reflects the
+    /// content that's about to be displayed.
+    private func sizeForCurrentMode() -> NSSize {
+        let height = DesignTokens.Pill.height
+        switch displayState.mode {
         case .processing:
-            return NSSize(width: DesignTokens.Pill.height, height: DesignTokens.Pill.height)
-        case .completion:
-            // Wider than recording so completion messages ("No audio",
-            // "Pasted ✓", etc.) don't get clipped — they render in
-            // proportional SF Pro and run wider than the monospaced timer.
-            return NSSize(width: DesignTokens.Pill.completionWidth, height: DesignTokens.Pill.height)
-        default:
-            return NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+            return NSSize(width: height, height: height)
+        case .recording(let seconds):
+            let labelW = measureLabelWidth(formatPillDuration(seconds), font: Self.recordingLabelFont)
+            let width = Self.basePillFixedWidth + labelW + DesignTokens.Pill.recordingDotSize + Self.measurementSafetyMargin
+            return NSSize(width: width, height: height)
+        case .completion(let message):
+            let labelW = measureLabelWidth(message, font: Self.completionLabelFont)
+            let width = Self.basePillFixedWidth + labelW + Self.measurementSafetyMargin
+            return NSSize(width: width, height: height)
         }
+    }
+
+    /// Sum of all fixed-width contributions to the pill (paddings + iconDisc
+    /// + the two label-padding gaps). The variable-width contribution is
+    /// the label text and, for recording mode, the red stop dot.
+    private static var basePillFixedWidth: CGFloat {
+        DesignTokens.Pill.leadingPadding
+            + DesignTokens.Pill.iconDiscSize
+            + DesignTokens.Pill.iconToTimerSpacing
+            + DesignTokens.Pill.timerToDotSpacing
+            + DesignTokens.Pill.trailingPadding
+    }
+
+    /// SwiftUI's Text rendering can disagree with NSString.size by a sub-pt
+    /// fraction; a 2pt safety margin avoids the very-last character being
+    /// clipped by the capsule's rounded right end.
+    private static let measurementSafetyMargin: CGFloat = 2
+
+    /// Fonts that match what the SwiftUI body uses for each mode's label.
+    /// Recording timer uses `.system(size: 14, weight: .regular).monospacedDigit()`;
+    /// completion messages use `.system(size: 14, weight: .regular)`. Both
+    /// have direct AppKit equivalents below.
+    private static let recordingLabelFont = NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .regular)
+    private static let completionLabelFont = NSFont.systemFont(ofSize: 14, weight: .regular)
+
+    private func measureLabelWidth(_ text: String, font: NSFont) -> CGFloat {
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        return ceil((text as NSString).size(withAttributes: attrs).width)
     }
 
     private func cancelAllPendingWork(except keep: Phase = .none) {
