@@ -107,13 +107,13 @@ struct TranscriptionPillView: View {
     }
 
     /// Mirrors the strings emitted by `TranscriptionService.showCompletion(_:)`.
-    /// `"Pasted ✓"` uses the custom `PastedConfirm` asset (handled above);
-    /// `"Saved"` is the always-paste fallback when paste was skipped or failed
-    /// (clipboard + dictations history are still populated).
+    /// `"Pasted ✓"` uses the custom `PastedConfirm` asset (handled above).
+    /// Non-verified paste outcomes do not show a pill at all (the dictation
+    /// is recoverable in Notes → Recent dictations) so there's no "Saved"
+    /// case here.
     private func completionSymbol(for message: String) -> String {
         switch message {
         case "Copied":      return "checkmark"
-        case "Saved":       return "tray.and.arrow.down"
         case "Note saved":  return "note.text"
         case "Failed":      return "xmark"
         case "No audio":    return "mic.slash"
