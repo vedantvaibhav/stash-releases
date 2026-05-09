@@ -57,6 +57,17 @@ final class DictationsStorage: ObservableObject {
         try? fileManager.createDirectory(at: appDir, withIntermediateDirectories: true)
         fileURL = appDir.appendingPathComponent("dictations.json")
         load()
+
+        // Settings → "Clear all dictations" posts this; clearAll() is fire-
+        // and-forget (no return value to surface back to the UI). Same shape
+        // as NotesStorage's `.quickPanelClearNotes` observer.
+        NotificationCenter.default.addObserver(
+            forName: .quickPanelClearDictations,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.clearAll()
+        }
     }
 
     /// Append a new dictation. Prepends to maintain newest-first order;
