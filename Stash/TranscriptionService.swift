@@ -25,11 +25,26 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // Embodied-feedback sounds. macOS system sounds at /System/Library/Sounds/
     // — no asset shipping needed. Tink is the macOS lightweight UI-feedback
-    // sound; Pop reads as "settled / committed." `NSSound(named:)` returns
-    // nil if the file moved (we're permissive — the optional chain on play()
-    // makes a missing sound a no-op rather than a crash).
-    private let recordingStartSound = NSSound(named: "Tink")
-    private let recordingStopSound = NSSound(named: "Pop")
+    // sound; Pop reads as "settled / committed."
+    //
+    // Eager init via a closure (not just `NSSound(named:)`) so we set volume
+    // once at load time rather than per-play. Strong instance refs prevent
+    // the autoreleased NSSound from being deallocated mid-play. Volume 0.6
+    // makes the cue subtle — present enough to register without being
+    // jarring at default system volume.
+    //
+    // `NSSound(named:)` returns nil if the file moved; the optional chain on
+    // .play() makes a missing sound a no-op rather than a crash.
+    private let recordingStartSound: NSSound? = {
+        let sound = NSSound(named: "Tink")
+        sound?.volume = 0.6
+        return sound
+    }()
+    private let recordingStopSound: NSSound? = {
+        let sound = NSSound(named: "Pop")
+        sound?.volume = 0.6
+        return sound
+    }()
 
     // — Published state
     @Published var isRecording = false
@@ -105,10 +120,18 @@ final class TranscriptionService: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if granted {
-                    // Embodied feedback: "we heard you start." Plays after
-                    // the permission dialog dismisses on first-recording flow,
-                    // synchronously thereafter.
-                    self.recordingStartSound?.play()
+                    // Embodied feedback: "we heard you start." Dispatched
+                    // through main.async even though we're already on
+                    // @MainActor — chaining play() directly inside the
+                    // AVCaptureDevice grant callback was missing intermittently
+                    // (test pass: A1, A3 — no Tink). The fresh runloop tick
+                    // gives NSSound a clean stack to start on. .stop() before
+                    // .play() handles rapid back-to-back recordings where the
+                    // previous Tink may not have finished.
+                    DispatchQueue.main.async { [weak self] in
+                        self?.recordingStartSound?.stop()
+                        self?.recordingStartSound?.play()
+                    }
                     self.beginRecording()
                 } else {
                     self.errorMessage = "Microphone access denied. Enable in System Settings > Privacy > Microphone"
@@ -231,9 +254,14 @@ final class TranscriptionService: NSObject, ObservableObject {
     // MARK: - Stop
 
     func stopRecording() {
-        // Embodied feedback: "we heard you stop." Plays before any state
-        // mutation so the sound is contemporaneous with the user's intent.
-        recordingStopSound?.play()
+        // Embodied feedback: "we heard you stop." Dispatched through
+        // main.async for the same NSSound reliability reason as
+        // startRecording — direct .play() was missing intermittently in the
+        // test pass.
+        DispatchQueue.main.async { [weak self] in
+            self?.recordingStopSound?.stop()
+            self?.recordingStopSound?.play()
+        }
 
         durationTimer?.invalidate()
         durationTimer = nil
