@@ -61,10 +61,21 @@ enum DesignTokens {
 
         // Phase-change animation — used when the pill shrinks from the full
         // width to a 32×32 circle (recording → processing) and expands back
-        // (processing → completion). Faster than frameAnimationDuration so
-        // the shrink reads as snappy/responsive rather than a deliberate
-        // settle. Same bezier curve so the motion feel matches.
-        static let phaseAnimationDuration: TimeInterval = 0.22
+        // (processing → completion). Length is tuned to fit a staggered
+        // SwiftUI cross-fade: fast removal of the prior layout, beat,
+        // slow insertion of the new layout. The AppKit panel uses ease-
+        // in-out timing over this same duration so its mid-motion lines
+        // up with the SwiftUI "slows down" pause between fade-out and
+        // fade-in.
+        static let phaseAnimationDuration: TimeInterval = 0.55
+
+        // SwiftUI transition timings used by TranscriptionPillView's
+        // asymmetric branch transitions. Splitting these out so the pill
+        // body and the AppKit panel are tuned together rather than each
+        // branch hardcoding its own number.
+        static let phaseRemovalDuration: TimeInterval = 0.15
+        static let phaseInsertionDelay: TimeInterval = 0.18
+        static let phaseInsertionDuration: TimeInterval = 0.40
     }
 
     enum Typography {

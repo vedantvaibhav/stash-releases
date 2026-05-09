@@ -33,19 +33,22 @@ struct TranscriptionPillView: View {
     let onStop: () -> Void
 
     var body: some View {
-        Group {
+        ZStack {
             switch mode {
             case .processing:
                 // Compact circle: just the icon disc + spinner. The pill
                 // collapses to its smallest meaningful state — work in
-                // progress, no chrome to read. The outer .animation cross-
-                // fades the HStack-shaped pill into this circle while the
-                // AppKit panel frame shrinks alongside.
+                // progress, no chrome to read.
                 iconDisc
-                    .frame(
-                        width: DesignTokens.Pill.height,
-                        height: DesignTokens.Pill.height
-                    )
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(
+                            .easeInOut(duration: DesignTokens.Pill.phaseInsertionDuration)
+                                .delay(DesignTokens.Pill.phaseInsertionDelay)
+                        ),
+                        removal: .opacity.animation(
+                            .easeInOut(duration: DesignTokens.Pill.phaseRemovalDuration)
+                        )
+                    ))
             default:
                 // Full pill: leading icon disc, label, trailing element.
                 HStack(spacing: DesignTokens.Pill.contentSpacing) {
@@ -57,11 +60,27 @@ struct TranscriptionPillView: View {
                 .padding(.leading, DesignTokens.Pill.leadingPadding)
                 .padding(.trailing, DesignTokens.Pill.trailingPadding)
                 .padding(.vertical, DesignTokens.Pill.verticalPadding)
-                .frame(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+                .transition(.asymmetric(
+                    insertion: .opacity.animation(
+                        .easeInOut(duration: DesignTokens.Pill.phaseInsertionDuration)
+                            .delay(DesignTokens.Pill.phaseInsertionDelay)
+                    ),
+                    removal: .opacity.animation(
+                        .easeInOut(duration: DesignTokens.Pill.phaseRemovalDuration)
+                    )
+                ))
             }
         }
+        // Fill whatever the AppKit panel hands us so the SwiftUI body never
+        // races the AppKit frame animation — the panel's NSAnimationContext
+        // is the single source of truth for size; SwiftUI just paints into
+        // the area it gets. Transitions above handle opacity only.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black, in: Capsule())
-        .animation(.easeInOut(duration: DesignTokens.Pill.phaseAnimationDuration), value: PillPhaseKey(mode))
+        // Triggers the asymmetric .transition modifiers on each branch.
+        // The actual durations come from the per-transition .animation()
+        // chains; this just opens the animation transaction.
+        .animation(.default, value: PillPhaseKey(mode))
     }
 
     // MARK: Icon disc (24×24 with 14pt inner glyph / spinner)
@@ -378,14 +397,17 @@ final class TranscriptionFloatingWidgetController: NSObject {
     ///
     /// `.processing` shrinks to a 32×32 square (visually a circle once the
     /// capsule background applies); every other phase expands back to the
-    /// full pill width. The SwiftUI side animates its content cross-fade
-    /// over the same duration so both layers read as one fluid motion.
+    /// full pill width. Ease-in-out timing pairs with the SwiftUI side's
+    /// staggered fade-out / pause / fade-in so the AppKit frame
+    /// "slows down" through the middle of the transition just as the
+    /// SwiftUI cross-fade is between layers.
     private func applyPhaseFrame(animated: Bool) {
         let size = sizeForCurrentPhase()
         applyPhaseAwareFrame(
             size: size,
             animated: animated,
-            duration: DesignTokens.Pill.phaseAnimationDuration
+            duration: DesignTokens.Pill.phaseAnimationDuration,
+            timingFunction: CAMediaTimingFunction(name: .easeInEaseOut)
         )
     }
 
@@ -425,29 +447,34 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
     /// Position the panel at the persisted snap zone using the given size.
     /// `duration` defaults to drag-snap's settle timing; phase changes
-    /// (recording ↔ processing ↔ completion) override with a faster value.
+    /// override with their own value. `timingFunction` lets phase changes
+    /// pass an ease-in-out curve while drag-snap keeps the heavier ease-out
+    /// cubic-bezier.
     private func applyPhaseAwareFrame(
         size: CGSize,
         animated: Bool,
-        duration: TimeInterval = DesignTokens.Pill.frameAnimationDuration
+        duration: TimeInterval = DesignTokens.Pill.frameAnimationDuration,
+        timingFunction: CAMediaTimingFunction? = nil
     ) {
         guard let screen = NSScreen.main else { return }
         let target = currentSnapZone().visibleFrame(size: size, screen: screen.visibleFrame)
-        applyPanelFrame(target, animated: animated, duration: duration)
+        applyPanelFrame(target, animated: animated, duration: duration, timingFunction: timingFunction)
     }
 
-    /// Animate panel frame using the spec's cubic-bezier curve over the
-    /// given duration. `duration` defaults to drag-snap's settle timing.
+    /// Animate panel frame over the given duration. When `timingFunction`
+    /// is nil, falls back to the cubic-bezier from DesignTokens (heavy
+    /// ease-out, used by drag-snap settle).
     private func applyPanelFrame(
         _ frame: NSRect,
         animated: Bool,
-        duration: TimeInterval = DesignTokens.Pill.frameAnimationDuration
+        duration: TimeInterval = DesignTokens.Pill.frameAnimationDuration,
+        timingFunction: CAMediaTimingFunction? = nil
     ) {
         guard let panel else { return }
         if animated {
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = duration
-                ctx.timingFunction = CAMediaTimingFunction(controlPoints:
+                ctx.timingFunction = timingFunction ?? CAMediaTimingFunction(controlPoints:
                     Float(DesignTokens.Pill.frameAnimationCurveCP1x),
                     Float(DesignTokens.Pill.frameAnimationCurveCP1y),
                     Float(DesignTokens.Pill.frameAnimationCurveCP2x),
