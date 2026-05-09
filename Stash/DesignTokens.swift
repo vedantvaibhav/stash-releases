@@ -35,28 +35,30 @@ enum DesignTokens {
     /// Floating transcription pill (redesign 2026-04-21). Fixed dimensions so Recording,
     /// Processing and Copied states share identical width/height per Figma node 280-981.
     enum Pill {
-        // Sized so the visible gap between the timer and the red stop dot
-        // matches `contentSpacing` (the gap between iconDisc and timer):
-        //   visible gap = pillWidth - trailingPadding - dotSize - leadingPadding
-        //                 - iconDiscSize - contentSpacing - labelWidth
-        // For a typical "MM:SS" label (~40pt at monospaced 14pt regular),
-        // pillWidth = 104 + tapTargetSize=18 lands the visible gap at ~6-8pt
-        // (close to contentSpacing). Hour-plus recordings ("1:23:45")
-        // overflow slightly — known edge case worth living with for the
-        // typical-case symmetry.
-        static let width: CGFloat = 104
+        // Sized for symmetric margins around the content. Layout (LTR):
+        //   [4pt outer pad][slack][24 iconDisc][8][label][8][10 dot][slack][4pt outer pad]
+        // No middle Spacer between label and dot — both gaps are the
+        // contentSpacing (8pt). The two outer slacks absorb leftover
+        // pillWidth and stay equal, keeping the iconDisc and dot the same
+        // distance from the pill's left and right edges. For a typical
+        // "MM:SS" label (~40-45pt at monospaced 14pt regular), pillWidth
+        // = 100 leaves a few pt of slack on each side. Hour-plus recordings
+        // ("1:23:45") overflow — known edge case.
+        static let width: CGFloat = 100
         static let height: CGFloat = 32
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14
+        // Symmetric outer padding so the pill's content has matching
+        // breathing room on both sides.
         static let leadingPadding: CGFloat = 4
-        static let trailingPadding: CGFloat = 12
+        static let trailingPadding: CGFloat = 4
         static let verticalPadding: CGFloat = 4
         static let contentSpacing: CGFloat = 8
         static let recordingDotSize: CGFloat = 10
-        // Stop button tap target. 18pt is the maximum that doesn't overlap
-        // the timer label at the configured pillWidth — any larger and the
-        // tap target's invisible left edge slides under the timer text.
-        static let stopTapTargetSize: CGFloat = 18
+        // Stop button tap target = visible dot size. No invisible tap area
+        // around the dot — that was the source of the asymmetric label→dot
+        // gap. 10pt is small but adequate for mouse hit-testing on macOS.
+        static let stopTapTargetSize: CGFloat = 10
 
         // Panel-frame animation — cubic-bezier(0.22, 1, 0.36, 1) over 400ms.
         // Used by the drag-to-snap reposition. Tuned to read as a deliberate
@@ -67,23 +69,13 @@ enum DesignTokens {
         static let frameAnimationCurveCP2x: Double = 0.36
         static let frameAnimationCurveCP2y: Double = 1.0
 
-        // Phase-change animation — used when the pill shrinks from the full
-        // width to a 32×32 circle (recording → processing) and expands back
-        // (processing → completion). Length is tuned to fit a staggered
-        // SwiftUI cross-fade: fast removal of the prior layout, beat,
-        // slow insertion of the new layout. The AppKit panel uses ease-
-        // in-out timing over this same duration so its mid-motion lines
-        // up with the SwiftUI "slows down" pause between fade-out and
-        // fade-in.
-        static let phaseAnimationDuration: TimeInterval = 0.55
-
-        // SwiftUI transition timings used by TranscriptionPillView's
-        // asymmetric branch transitions. Splitting these out so the pill
-        // body and the AppKit panel are tuned together rather than each
-        // branch hardcoding its own number.
-        static let phaseRemovalDuration: TimeInterval = 0.15
-        static let phaseInsertionDelay: TimeInterval = 0.18
-        static let phaseInsertionDuration: TimeInterval = 0.40
+        // Phase-change animation — recording → processing (shrink to circle)
+        // and back (expand). 0.22s easeInEaseOut, ~20% faster than the
+        // earlier 0.55s staggered version. SwiftUI cross-fade for content
+        // swaps runs at 0.18s on the same easing, so the two layers feel
+        // coordinated without the explicit stagger.
+        static let phaseAnimationDuration: TimeInterval = 0.22
+        static let contentCrossfadeDuration: TimeInterval = 0.18
     }
 
     enum Typography {
@@ -116,17 +108,17 @@ enum DesignTokens {
     }
 
     enum PanelAnimation {
-        /// Open: fade 0 → 1 with a 12 pt downward settle. Ease-in-out so the
-        /// motion has the same "smooth through the middle" feel as the
-        /// transcription pill's processing-shrink.
-        static let openDuration: CFTimeInterval = 0.32
-        /// Close: fade 1 → 0 with a 10 pt upward lift. Ease-in-out, slightly
-        /// faster than open so dismissal reads as deliberate but not sluggish.
-        static let closeDuration: CFTimeInterval = 0.26
-        /// Panel starts 12 pt above its final y on open.
-        static let openSlideOffset: CGFloat = 12
-        /// Panel ends 10 pt above its start y on close.
-        static let closeSlideOffset: CGFloat = 10
+        /// Open: fade 0 → 1 with a 10 pt downward settle. Ease-in-out, ~20%
+        /// faster than the earlier 0.32s — the prior duration felt sluggish
+        /// per test feedback.
+        static let openDuration: CFTimeInterval = 0.26
+        /// Close: fade 1 → 0 with an 8 pt upward lift. Ease-in-out, slightly
+        /// faster than open so dismissal reads as quick.
+        static let closeDuration: CFTimeInterval = 0.21
+        /// Panel starts 10 pt above its final y on open.
+        static let openSlideOffset: CGFloat = 10
+        /// Panel ends 8 pt above its start y on close.
+        static let closeSlideOffset: CGFloat = 8
     }
 
     enum Onboarding {
