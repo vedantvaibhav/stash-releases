@@ -35,7 +35,7 @@ enum DesignTokens {
     /// Floating transcription pill (redesign 2026-04-21). Fixed dimensions so Recording,
     /// Processing and Copied states share identical width/height per Figma node 280-981.
     enum Pill {
-        static let width: CGFloat = 116
+        static let width: CGFloat = 124
         static let height: CGFloat = 32
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14
@@ -44,7 +44,11 @@ enum DesignTokens {
         static let verticalPadding: CGFloat = 4
         static let contentSpacing: CGFloat = 8
         static let recordingDotSize: CGFloat = 10
-        static let stopTapTargetSize: CGFloat = 32
+        // Stop button tap target — smaller than before so the visible red
+        // dot sits closer to the timer label rather than floating off at
+        // the trailing edge with ~22pt of invisible-tap-area between it
+        // and the time. 24pt is plenty for mouse-driven hit detection.
+        static let stopTapTargetSize: CGFloat = 24
 
         // Panel-frame animation — cubic-bezier(0.22, 1, 0.36, 1) over 400ms.
         // Used by the drag-to-snap reposition. Tuned to read as a deliberate
