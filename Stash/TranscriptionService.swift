@@ -39,11 +39,16 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// (in PanelController) knows whether to auto-open the editor (long) or show
     /// the list with the new quick-transcript pinned at the top (short).
     @Published var lastRecordingWasShort: Bool = false
-    /// Set when a short (<5 min) recording finishes processing. The floating
-    /// pill widget observes this, expands to show the text, and clears it via
-    /// `clearShortTranscriptResult()` once the user copies/dismisses or auto-
-    /// dismiss fires. Nil means "no expansion in flight."
-    @Published var shortTranscriptResult: ShortTranscriptResult? = nil
+
+    /// Bundle ID + localized name of the app that was frontmost when the
+    /// current recording started. Captured at intent-time (start, not stop)
+    /// so the saved DictationEntry attributes the dictation to where the
+    /// user *meant* to paste, even if focus has shifted by the time
+    /// transcription finishes. Cleared after delivery. Wiring in startRecording
+    /// arrives in the recording-sounds + source-app commit; for now both
+    /// stay nil and the DictationEntry records no source app.
+    private var capturedSourceAppBundleID: String?
+    private var capturedSourceAppName: String?
 
     /// Set from the notes column so saves use the same storage as the rest of the app.
     weak var notesStorage: NotesStorage?
@@ -66,16 +71,14 @@ final class TranscriptionService: NSObject, ObservableObject {
     // MARK: - Start
 
     func startRecording() {
-        // Clear all transient post-recording state before starting a new
-        // recording. Without this, an active shortTranscriptResult or
-        // completionMessage causes the controller's first sync() to render
-        // the previous result-phase or completion view briefly during the
-        // takeover ("ghost flash"). The existing showCompletion / banner
-        // snapshot guards (commits 681bb97, 886d20b) handle their own clears
-        // gracefully when their @Published source flips out from under them.
+        // Clear transient post-recording state before starting a new
+        // recording. Without this, a residual completionMessage causes the
+        // controller's first sync() to briefly render the previous completion
+        // view during the takeover ("ghost flash"). showCompletion's snapshot
+        // guard (commit 681bb97) handles its delayed clear gracefully when
+        // we flip the source out from under it here.
         errorMessage = nil
         completionMessage = nil
-        shortTranscriptResult = nil
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
         #endif
@@ -365,19 +368,53 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - Short-recording delivery
 
-    /// Try to paste the transcript directly into the user's focused text
-    /// field. On success, show a brief "Pasted ✓" / "Pasted (raw)" pill
-    /// confirmation. On any failure (no permission / no focused field /
-    /// insertion failed), fall back to publishing `shortTranscriptResult`
-    /// which the floating pill widget observes and morphs into the expanded
-    /// Copy/Dismiss form (which itself shows "Voice note — raw" eyebrow
-    /// when isRaw, so the raw signal carries through both paths).
-    private func handleShortRecordingDelivery(_ result: ShortTranscriptResult) {
+    /// Triple-redundant delivery for short transcripts. Three channels run on
+    /// EVERY short recording, regardless of paste outcome — so the user
+    /// always has at least two reliable recovery paths even when paste misses.
+    ///
+    /// 1. **Clipboard** — overwrites whatever was there. Wispr Flow contract:
+    ///    after a recording, the dictation is always reachable via ⌘V. The
+    ///    user's previous clipboard is replaced; this is intentional and
+    ///    matches what they expect after triggering a dictation.
+    ///
+    /// 2. **Dictations history** (`DictationsStorage`) — persistent. Survives
+    ///    app relaunch. Shown in the "Recent dictations" section under the
+    ///    Notes tab.
+    ///
+    /// 3. **AutoPasteService** — best-effort direct paste into the focused
+    ///    field. May silently miss (no focused field, secure field, app that
+    ///    rejects synthetic events). When it does, channels 1 + 2 backstop.
+    ///
+    /// Pill confirmation reads "Pasted ✓" only when channel 3 succeeded;
+    /// otherwise "Saved" — honest signal that channels 1 + 2 are ready to
+    /// recover from.
+    private func deliverShortDictation(_ result: ShortTranscriptResult) {
+        // Channel 1: clipboard. AutoPasteService's Strategy 2 will snapshot+
+        // restore the pasteboard if it runs — but its snapshot at this point
+        // IS our text (we just wrote it), so the restore round-trips correctly
+        // and the pasteboard ends with our text either way.
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(result.text, forType: .string)
+
+        // Channel 2: persistent history.
+        DictationsStorage.shared.save(DictationEntry(
+            id: UUID(),
+            text: result.text,
+            timestamp: Date(),
+            durationSec: result.durationSeconds,
+            sourceAppBundleID: capturedSourceAppBundleID,
+            sourceAppName: capturedSourceAppName,
+            isRaw: result.isRaw
+        ))
+        capturedSourceAppBundleID = nil
+        capturedSourceAppName = nil
+
+        // Channel 3: best-effort paste.
         switch AutoPasteService.shared.attemptInsert(text: result.text) {
         case .success:
-            showCompletion(result.isRaw ? "Pasted (raw)" : "Pasted ✓")
+            showCompletion("Pasted ✓")
         case .noPermission, .insertionFailed:
-            shortTranscriptResult = result
+            showCompletion("Saved")
         }
     }
 
@@ -434,10 +471,9 @@ final class TranscriptionService: NSObject, ObservableObject {
             return
         }
 
-        // MARK: LLM cleaning — short path tries auto-paste into the focused
-        // text field first; falls back to publishing shortTranscriptResult
-        // (which the floating-pill widget morphs into Copy/Dismiss) when
-        // auto-paste isn't possible. Long path saves a meeting note (below).
+        // MARK: LLM cleaning — short path delivers through the triple-redundant
+        // pipeline (paste + clipboard + dictations history); long path saves
+        // a meeting note (below).
         if isShort {
             do {
                 let cleaned = try await callChat(
@@ -451,14 +487,14 @@ final class TranscriptionService: NSObject, ObservableObject {
                     isRaw: false,
                     durationSeconds: durationSeconds
                 )
-                handleShortRecordingDelivery(result)
+                deliverShortDictation(result)
             } catch {
                 let result = ShortTranscriptResult(
                     text: rawTranscript,
                     isRaw: true,
                     durationSeconds: durationSeconds
                 )
-                handleShortRecordingDelivery(result)
+                deliverShortDictation(result)
                 lastErrorForBanner = "Couldn't clean transcript — showing raw version"
                 clearBannerAfterDelay()
             }
@@ -517,13 +553,6 @@ final class TranscriptionService: NSObject, ObservableObject {
             guard self?.completionMessage == snapshot else { return }
             self?.completionMessage = nil
         }
-    }
-
-    /// Called by the floating widget after the user copies, dismisses, or
-    /// auto-dismiss expires. Clears the published handoff so the property
-    /// doesn't re-trigger expansion on subsequent state syncs.
-    func clearShortTranscriptResult() {
-        shortTranscriptResult = nil
     }
 
     func openMicrophonePrivacySettings() {

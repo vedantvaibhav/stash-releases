@@ -46,57 +46,14 @@ enum DesignTokens {
         static let recordingDotSize: CGFloat = 10
         static let stopTapTargetSize: CGFloat = 32
 
-        // Expanded form (short-transcript handoff). Capsule grows into a
-        // rounded rectangle to host the cleaned text + Copy/Dismiss footer.
-        static let expandedWidth: CGFloat = 520
-        static let expandedMaxHeight: CGFloat = 280
-        static let expandedCornerRadius: CGFloat = 16
-        static let expandedPadding: CGFloat = 16
-        static let expandedFooterGap: CGFloat = 12
-        static let expandedEyebrowToTextGap: CGFloat = 10
-        static let expandedTextToFooterGap: CGFloat = 14
-        static let expandedButtonHeight: CGFloat = 32
-        static let expandedButtonHorizontalPadding: CGFloat = 14
-        static let expandedButtonCornerRadius: CGFloat = 8
-        static let expandedButtonGap: CGFloat = 8
-
-        // Animation — cubic-bezier(0.22, 1, 0.36, 1) over 400ms. Slower than
-        // the original 280ms so the expand/collapse reads as deliberate
-        // movement rather than a snap.
-        static let expandedAnimationDuration: TimeInterval = 0.40
-        static let expandedAnimationCurveCP1x: Double = 0.22
-        static let expandedAnimationCurveCP1y: Double = 1.0
-        static let expandedAnimationCurveCP2x: Double = 0.36
-        static let expandedAnimationCurveCP2y: Double = 1.0
-
-        // Auto-minimize timer for the FIRST expansion (no hover yet). The
-        // user has this long to read/copy/dismiss without having to hover.
-        // Once they've hovered, the expansion's lifecycle becomes purely
-        // cursor-driven: hover-leave collapses immediately, hover-enter on
-        // the minimized pill re-expands.
-        static let expandedAutoMinimizeSeconds: TimeInterval = 30
-
-        // Copy-button success-flash duration before the pill collapses.
-        static let expandedCopyFlashSeconds: TimeInterval = 1.2
-
-        // Eyebrow + text styling.
-        static let expandedEyebrowFont = Font.system(size: 11, weight: .semibold)
-        static let expandedEyebrowColor = Color.white.opacity(0.55)
-        static let expandedTextFont = Font.system(size: 14, weight: .regular)
-        static let expandedTextColor = Color.white.opacity(0.92)
-        static let expandedTextLineSpacing: CGFloat = 4
-
-        // Filled (primary) Copy button.
-        static let expandedFilledFont = Font.system(size: 13, weight: .medium)
-        static let expandedFilledForeground = Color.white
-        static let expandedFilledBackgroundRest = Color.white.opacity(0.18)
-        static let expandedFilledBackgroundHover = Color.white.opacity(0.26)
-
-        // Ghost (secondary) Dismiss button.
-        static let expandedGhostFont = Font.system(size: 13, weight: .regular)
-        static let expandedGhostForeground = Color.white.opacity(0.70)
-        static let expandedGhostBackgroundRest = Color.clear
-        static let expandedGhostBackgroundHover = Color.white.opacity(0.10)
+        // Panel-frame animation — cubic-bezier(0.22, 1, 0.36, 1) over 400ms.
+        // Used by the drag-to-snap reposition. Tuned to read as a deliberate
+        // settle into the snap corner rather than a hard snap.
+        static let frameAnimationDuration: TimeInterval = 0.40
+        static let frameAnimationCurveCP1x: Double = 0.22
+        static let frameAnimationCurveCP1y: Double = 1.0
+        static let frameAnimationCurveCP2x: Double = 0.36
+        static let frameAnimationCurveCP2y: Double = 1.0
     }
 
     enum Typography {
