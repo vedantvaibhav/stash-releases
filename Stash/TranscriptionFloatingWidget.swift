@@ -296,6 +296,18 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private var phase: Phase = .none
     private var completionWorkItem: DispatchWorkItem?
 
+    /// Bumped on every show/hide animation start. The completion handler of
+    /// each animation checks the token: a stale completion (e.g., hide's
+    /// orderOut after a new show has started) is skipped.
+    private var visibilityAnimationToken: UInt64 = 0
+    /// True from the moment hidePanel commits its slide-out animation until
+    /// either (a) the animation completes and orderOut runs, or (b) a new
+    /// show supersedes it. Distinguishes "panel currently hiding" from
+    /// "panel mid slide-in" — both have isVisible=true and possibly
+    /// alpha < 1, but only the hiding case wants a re-entrance from a new
+    /// show.
+    private var hideInFlight = false
+
     /// Drag-to-snap state (mirrors the main tray's `snapToNearestZone` behavior).
     /// `isMovableByWindowBackground` handles the live drag; this monitor observes
     /// mouseDown / mouseUp on our panel to decide when a drag actually ended.
@@ -349,8 +361,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
             withTransaction(transaction) {
                 cancelAllPendingWork(except: .recording)
                 phase = .recording
-                showCollapsedPanelIfNeeded()
+                // Order: applyPhaseFrame BEFORE showCollapsedPanelIfNeeded so
+                // the panel.frame is at the canonical phase target before
+                // the slide-in animation captures it as the destination.
+                // showCollapsedPanelIfNeeded short-circuits on already-visible
+                // panels (no slide+fade re-entrance), so applyPhaseFrame's
+                // animator runs undisturbed for in-place phase changes.
                 applyPhaseFrame(animated: oldPhase != .none)
+                showCollapsedPanelIfNeeded()
                 updateHosted(mode: .recording(durationSeconds: ts.duration))
             }
             return
@@ -360,8 +378,8 @@ final class TranscriptionFloatingWidgetController: NSObject {
             let oldPhase = phase
             cancelAllPendingWork(except: .completion)
             phase = .completion
-            showCollapsedPanelIfNeeded()
             applyPhaseFrame(animated: oldPhase != .none)
+            showCollapsedPanelIfNeeded()
             updateHosted(mode: .completion(message: msg))
 
             let work = DispatchWorkItem { [weak self] in
@@ -378,8 +396,8 @@ final class TranscriptionFloatingWidgetController: NSObject {
             let oldPhase = phase
             cancelAllPendingWork(except: .processing)
             phase = .processing
-            showCollapsedPanelIfNeeded()
             applyPhaseFrame(animated: oldPhase != .none)
+            showCollapsedPanelIfNeeded()
             updateHosted(mode: .processing)
             return
         }
@@ -433,7 +451,45 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
     private func showCollapsedPanelIfNeeded() {
         if panel == nil { buildPanel() }
-        panel?.orderFrontRegardless()
+        guard let panel else { return }
+
+        // Already showing AND not in the middle of a hide → just keep it on
+        // top. CRITICAL: do NOT enter the slide+fade entrance here, even if
+        // alpha is mid-animation. A phase transition (e.g., recording →
+        // processing) has applyPhaseFrame committing an animator.setFrame
+        // for the shrink JUST before us; if we then call panel.setFrame
+        // directly (as part of slide+fade entrance), we cancel that
+        // in-flight animator and the processing-shrink visibly breaks.
+        // The earlier (alpha == 1) check was the bug — false during slide-in
+        // tail, triggering exactly that cancellation.
+        if panel.isVisible && !hideInFlight {
+            panel.orderFrontRegardless()
+            return
+        }
+
+        // Either fully hidden, or mid-hide. Run slide+fade entrance from
+        // `openSlideOffset` above the canonical target. `panel.frame` reflects
+        // the just-set phase target because `sync()` calls `applyPhaseFrame`
+        // immediately before this.
+        visibilityAnimationToken &+= 1
+        hideInFlight = false
+        let token = visibilityAnimationToken
+
+        let target = panel.frame
+        let startFrame = target.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.openSlideOffset)
+        panel.setFrame(startFrame, display: false)
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = DesignTokens.PanelAnimation.openDuration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(target, display: true)
+            panel.animator().alphaValue = 1
+        }, completionHandler: { [weak self] in
+            // Token guard: if a hide superseded this show, ignore.
+            guard let self, self.visibilityAnimationToken == token else { return }
+        })
     }
 
     /// Read the persisted snap zone, falling back to `.topCenter`.
@@ -488,7 +544,30 @@ final class TranscriptionFloatingWidgetController: NSObject {
     }
 
     private func hidePanel() {
-        panel?.orderOut(nil)
+        guard let panel, panel.isVisible else { return }
+
+        // Slide+fade exit: lift the panel `closeSlideOffset` upward as it
+        // fades to alpha=0, then orderOut. `hideInFlight` lets a subsequent
+        // show distinguish "panel currently hiding" from "panel mid slide-in"
+        // and re-run slide+fade entrance only for the former.
+        visibilityAnimationToken &+= 1
+        hideInFlight = true
+        let token = visibilityAnimationToken
+
+        let endFrame = panel.frame.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.closeSlideOffset)
+
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = DesignTokens.PanelAnimation.closeDuration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(endFrame, display: true)
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self, weak panel] in
+            // Token guard: if a show superseded this hide, don't orderOut —
+            // the show animation is bringing the panel back.
+            guard let self, self.visibilityAnimationToken == token else { return }
+            panel?.orderOut(nil)
+            self.hideInFlight = false
+        })
     }
 
     private func buildPanel() {
