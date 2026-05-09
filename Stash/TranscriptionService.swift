@@ -23,6 +23,14 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var whisperModel: String { APIConstants.whisperModel }
     private var chatModel: String { APIConstants.chatModel }
 
+    // Embodied-feedback sounds. macOS system sounds at /System/Library/Sounds/
+    // — no asset shipping needed. Tink is the macOS lightweight UI-feedback
+    // sound; Pop reads as "settled / committed." `NSSound(named:)` returns
+    // nil if the file moved (we're permissive — the optional chain on play()
+    // makes a missing sound a no-op rather than a crash).
+    private let recordingStartSound = NSSound(named: "Tink")
+    private let recordingStopSound = NSSound(named: "Pop")
+
     // — Published state
     @Published var isRecording = false
     @Published var isProcessing = false
@@ -79,6 +87,17 @@ final class TranscriptionService: NSObject, ObservableObject {
         // we flip the source out from under it here.
         errorMessage = nil
         completionMessage = nil
+
+        // Capture the user's intended target app at INTENT-time (start of
+        // recording, not stop). By the time transcription finishes seconds
+        // later the user may have alt-tabbed — we attribute the dictation to
+        // where they meant to put it. If Stash itself is frontmost (mic
+        // tapped from the panel UI), we record that as the source — the
+        // dictation is genuinely "from Stash."
+        let frontApp = NSWorkspace.shared.frontmostApplication
+        capturedSourceAppBundleID = frontApp?.bundleIdentifier
+        capturedSourceAppName = frontApp?.localizedName
+
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
         #endif
@@ -86,6 +105,10 @@ final class TranscriptionService: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 if granted {
+                    // Embodied feedback: "we heard you start." Plays after
+                    // the permission dialog dismisses on first-recording flow,
+                    // synchronously thereafter.
+                    self.recordingStartSound?.play()
                     self.beginRecording()
                 } else {
                     self.errorMessage = "Microphone access denied. Enable in System Settings > Privacy > Microphone"
@@ -208,6 +231,10 @@ final class TranscriptionService: NSObject, ObservableObject {
     // MARK: - Stop
 
     func stopRecording() {
+        // Embodied feedback: "we heard you stop." Plays before any state
+        // mutation so the sound is contemporaneous with the user's intent.
+        recordingStopSound?.play()
+
         durationTimer?.invalidate()
         durationTimer = nil
         transcriptTimer?.invalidate()
