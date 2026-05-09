@@ -33,54 +33,32 @@ struct TranscriptionPillView: View {
     let onStop: () -> Void
 
     var body: some View {
-        ZStack {
-            switch mode {
-            case .processing:
-                // Compact circle: just the icon disc + spinner. The pill
-                // collapses to its smallest meaningful state — work in
-                // progress, no chrome to read.
+        Group {
+            if case .processing = mode {
+                // Compact circle: just the icon disc + spinner. AppKit
+                // panel resizes to 32×32 around it; SwiftUI fills that
+                // space and centers the iconDisc.
                 iconDisc
-                    .transition(.asymmetric(
-                        insertion: .opacity.animation(
-                            .easeInOut(duration: DesignTokens.Pill.phaseInsertionDuration)
-                                .delay(DesignTokens.Pill.phaseInsertionDelay)
-                        ),
-                        removal: .opacity.animation(
-                            .easeInOut(duration: DesignTokens.Pill.phaseRemovalDuration)
-                        )
-                    ))
-            default:
-                // Full pill: leading icon disc, label, trailing element.
+            } else {
+                // Full pill: iconDisc, label, dot — no middle Spacer so
+                // both gaps stay at contentSpacing. Outer alignment .center
+                // (set on the surrounding .frame below) absorbs leftover
+                // pillWidth equally on both sides.
                 HStack(spacing: DesignTokens.Pill.contentSpacing) {
                     iconDisc
                     label
-                    Spacer(minLength: 0)
                     trailing
                 }
                 .padding(.leading, DesignTokens.Pill.leadingPadding)
                 .padding(.trailing, DesignTokens.Pill.trailingPadding)
                 .padding(.vertical, DesignTokens.Pill.verticalPadding)
-                .transition(.asymmetric(
-                    insertion: .opacity.animation(
-                        .easeInOut(duration: DesignTokens.Pill.phaseInsertionDuration)
-                            .delay(DesignTokens.Pill.phaseInsertionDelay)
-                    ),
-                    removal: .opacity.animation(
-                        .easeInOut(duration: DesignTokens.Pill.phaseRemovalDuration)
-                    )
-                ))
             }
         }
-        // Fill whatever the AppKit panel hands us so the SwiftUI body never
-        // races the AppKit frame animation — the panel's NSAnimationContext
-        // is the single source of truth for size; SwiftUI just paints into
-        // the area it gets. Transitions above handle opacity only.
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .background(Color.black, in: Capsule())
-        // Triggers the asymmetric .transition modifiers on each branch.
-        // The actual durations come from the per-transition .animation()
-        // chains; this just opens the animation transaction.
-        .animation(.default, value: PillPhaseKey(mode))
+        // Single cross-fade for content swaps. AppKit panel handles the
+        // frame size animation in parallel via NSAnimationContext.
+        .animation(.easeInOut(duration: DesignTokens.Pill.contentCrossfadeDuration), value: PillPhaseKey(mode))
     }
 
     // MARK: Icon disc (24×24 with 14pt inner glyph / spinner)
@@ -220,11 +198,11 @@ fileprivate func formatPillDuration(_ seconds: Int) -> String {
     return String(format: "%02d:%02d", m, s)
 }
 
-// MARK: - Stop button (10×10 solid red dot, 32×32 tap target)
+// MARK: - Stop button (10×10 solid red dot, tap = visible)
 //
-// Visible dot is trailing-aligned inside the tap zone so the gap to the pill's
-// right edge matches the 12 pt trailing padding — the tap area extends leftward
-// (invisibly) into the label region for a generous hit box.
+// Tap target = visible dot. The earlier 18pt invisible-tap-area produced an
+// asymmetric label→dot gap (the tap area's invisible left side ate into the
+// gap), making the pill look unbalanced relative to the iconDisc→label gap.
 //
 // Uses `.onTapGesture` (not `Button`) so the parent panel's window-drag
 // (`isMovableByWindowBackground = true`) is still reachable from the trailing
@@ -240,11 +218,6 @@ private struct StopRecordingButton: View {
             .frame(
                 width: DesignTokens.Pill.recordingDotSize,
                 height: DesignTokens.Pill.recordingDotSize
-            )
-            .frame(
-                width: DesignTokens.Pill.stopTapTargetSize,
-                height: DesignTokens.Pill.stopTapTargetSize,
-                alignment: .trailing
             )
             .contentShape(Rectangle())
             .onTapGesture { onStop() }
