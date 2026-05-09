@@ -48,6 +48,13 @@ final class AutoPasteService {
     /// regardless of length, so route long transcripts straight to it.
     private static let strategy1MaxTextLength = 500
 
+    /// Strategy 2 saves the user's previous pasteboard, writes the transcript,
+    /// posts ⌘V, and restores the saved contents this many seconds later.
+    /// Public so the caller can sequence its own pasteboard writes after the
+    /// restore window closes (otherwise our restore could clobber a clipboard
+    /// write the caller did right after attemptInsert returned).
+    public static let pasteboardRestoreDelaySeconds: TimeInterval = 0.30
+
     /// Per-call token for the active paste. Strategy 2's pasteboard restore
     /// compares against this; if a newer paste superseded ours, the older
     /// restore is silently cancelled (the newer paste's token now owns the
@@ -479,7 +486,7 @@ final class AutoPasteService {
         //      service. Skip our restore so we don't clobber their write.
         //   2. changeCount — user (or another agent) copied between our
         //      write and our restore. Their copy wins.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pasteboardRestoreDelaySeconds) { [weak self] in
             guard let self else { return }
             guard self.currentPasteToken == token else { return }
             guard pb.changeCount == changeCountAtWrite else { return }

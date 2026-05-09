@@ -416,14 +416,8 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// otherwise "Saved" — honest signal that channels 1 + 2 are ready to
     /// recover from.
     private func deliverShortDictation(_ result: ShortTranscriptResult) {
-        // Channel 1: clipboard. AutoPasteService's Strategy 2 will snapshot+
-        // restore the pasteboard if it runs — but its snapshot at this point
-        // IS our text (we just wrote it), so the restore round-trips correctly
-        // and the pasteboard ends with our text either way.
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(result.text, forType: .string)
-
-        // Channel 2: persistent history.
+        // Channel 2: persistent history. First because it's pasteboard-
+        // independent — survives any subsequent paste-related I/O.
         DictationsStorage.shared.save(DictationEntry(
             id: UUID(),
             text: result.text,
@@ -436,12 +430,28 @@ final class TranscriptionService: NSObject, ObservableObject {
         capturedSourceAppBundleID = nil
         capturedSourceAppName = nil
 
-        // Channel 3: best-effort paste.
+        // Channel 3: best-effort paste. May write to and restore the
+        // pasteboard internally (Strategy 2's preserve-and-restore cycle).
         switch AutoPasteService.shared.attemptInsert(text: result.text) {
         case .success:
             showCompletion("Pasted ✓")
         case .noPermission, .insertionFailed:
             showCompletion("Saved")
+        }
+
+        // Channel 1: clipboard. Deferred past AutoPasteService's
+        // pasteboard-restore window so our write is the LAST writer — the
+        // earlier ordering (clipboard → attemptInsert) was racing with
+        // Strategy 2's restore and intermittently leaving the clipboard
+        // empty (test pass: B1 / B2). +50ms after the restore deadline
+        // gives the dispatched restore closure time to complete on a
+        // quiet runloop before our write fires.
+        let textToWrite = result.text
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + AutoPasteService.pasteboardRestoreDelaySeconds + 0.05
+        ) {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(textToWrite, forType: .string)
         }
     }
 
