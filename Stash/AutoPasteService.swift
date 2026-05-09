@@ -9,9 +9,10 @@ import ApplicationServices
 /// One of three delivery channels for short transcripts. The caller
 /// (`TranscriptionService.deliverShortDictation`) ALSO writes the transcript
 /// to the system pasteboard and saves a `DictationEntry` to disk regardless
-/// of this service's return value. So `.insertionFailed` is not user-data
-/// loss — it's a "Saved" pill instead of a "Pasted ✓" pill, with two
-/// recovery channels still active.
+/// of this service's return value. So any non-`.verifiedPasted` outcome is
+/// not user-data loss — it's a "Saved" pill instead of a "Pasted ✓" pill,
+/// with two recovery channels still active. Only `.verifiedPasted` (Strategy 1
+/// with read-back confirmation) is honest enough to surface as "Pasted ✓".
 ///
 /// The service is intentionally synchronous — both strategies complete in a
 /// few ms or fail fast.
@@ -22,18 +23,27 @@ final class AutoPasteService {
     private init() {}
 
     enum InsertResult {
-        case success
+        /// Strategy 1 (AX value write) ran AND its post-write read-back
+        /// confirmed the focused element's value actually changed. Caller
+        /// can confidently show "Pasted ✓" — we know the text landed in
+        /// the focused field.
+        case verifiedPasted
+        /// Strategy 2 (synthetic ⌘V) posted the keyboard events. Whether
+        /// the destination app actually consumed them is unobservable from
+        /// the source process — Electron renderers, Finder, secure-mode
+        /// fields all swallow synthetic events silently with no readable
+        /// signal. Caller should show "Saved" rather than claim success
+        /// dishonestly; clipboard + dictations history backstop.
+        case attemptedPaste
         /// User hasn't granted Accessibility permission. Caller can prompt
         /// via `requestAccessibilityPermission()` from a user-initiated UI
         /// action (e.g., the permissions onboarding screen).
         case noPermission
-        /// Paste was skipped or failed: focused app is Stash itself (we
-        /// never paste into our own UI), focused element is a secure field
-        /// (privacy guard), both Strategy 1 and Strategy 2 returned false,
-        /// or the 5s deadline expired before Strategy 2 could start. Caller
-        /// should surface a "Saved" confirmation — clipboard + dictations
-        /// history are populated regardless and provide the user's recovery
-        /// path.
+        /// Paste was skipped or both strategies aborted before posting:
+        /// Stash itself frontmost (we never paste into our own UI), focused
+        /// element is a secure field (privacy guard), Strategy 2 event-
+        /// creation failed outright, or the 5s deadline expired before
+        /// Strategy 2 could start. Caller should surface "Saved".
         case insertionFailed
     }
 
@@ -158,9 +168,12 @@ final class AutoPasteService {
     ///   5. Strategy 1 (AX value write) — only runs if introspection found
     ///      a visible writable element with a known role
     ///      (AXTextField/AXTextArea/AXComboBox) AND text is below the
-    ///      pre-flight length threshold.
-    ///   6. Strategy 2 (CGEvent ⌘V) — universal fallback. Returns `.success`
-    ///      on completion, `.insertionFailed` if it can't run.
+    ///      pre-flight length threshold. On success, returns
+    ///      `.verifiedPasted` (the read-back confirmed the write landed).
+    ///   6. Strategy 2 (CGEvent ⌘V) — universal fallback. Returns
+    ///      `.attemptedPaste` on event-post completion (we cannot verify
+    ///      whether the destination app accepted the events), or
+    ///      `.insertionFailed` if event creation itself failed.
     func attemptInsert(text: String) -> InsertResult {
         let token = UUID()
         currentPasteToken = token
@@ -199,9 +212,9 @@ final class AutoPasteService {
                 guard hasAccessibilityPermission else { return .noPermission }
                 if writeViaAXValue(text, into: element, deadline: deadline) {
                     #if DEBUG
-                    print("[AutoPaste] success via Strategy 1 (AXValue write). Front app: \(frontApp.bundleIdentifier ?? "?")")
+                    print("[AutoPaste] verifiedPasted via Strategy 1 (AXValue write, read-back confirmed). Front app: \(frontApp.bundleIdentifier ?? "?")")
                     #endif
-                    return .success
+                    return .verifiedPasted
                 }
             }
         }
@@ -222,9 +235,9 @@ final class AutoPasteService {
             } else {
                 roleDescription = "(AX introspection unavailable)"
             }
-            print("[AutoPaste] success via Strategy 2 (CGEvent ⌘V). Front app: \(frontApp.bundleIdentifier ?? "?"). Role: \(roleDescription)")
+            print("[AutoPaste] attemptedPaste via Strategy 2 (CGEvent ⌘V — landing unverifiable). Front app: \(frontApp.bundleIdentifier ?? "?"). Role: \(roleDescription)")
             #endif
-            return .success
+            return .attemptedPaste
         }
         #if DEBUG
         print("[AutoPaste] insertionFailed — both strategies returned false")

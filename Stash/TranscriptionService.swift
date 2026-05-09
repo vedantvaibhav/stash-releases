@@ -432,12 +432,12 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         // Channel 3: best-effort paste. May write to and restore the
         // pasteboard internally (Strategy 2's preserve-and-restore cycle).
-        switch AutoPasteService.shared.attemptInsert(text: result.text) {
-        case .success:
-            showCompletion("Pasted ✓")
-        case .noPermission, .insertionFailed:
-            showCompletion("Saved")
-        }
+        // Only `.verifiedPasted` (Strategy 1 with read-back) earns "Pasted ✓".
+        // `.attemptedPaste` (Strategy 2) → "Saved" because we cannot observe
+        // whether a synthetic ⌘V actually landed in Finder / Electron / a
+        // window without focus.
+        let pasteResult = AutoPasteService.shared.attemptInsert(text: result.text)
+        showCompletion(pillCopyFor(pasteResult))
 
         // Channel 1: clipboard. Deferred past AutoPasteService's
         // pasteboard-restore window so our write is the LAST writer — the
@@ -452,6 +452,19 @@ final class TranscriptionService: NSObject, ObservableObject {
         ) {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(textToWrite, forType: .string)
+        }
+    }
+
+    /// Maps the AX-paste outcome to the pill confirmation copy. Only the
+    /// read-back-verified Strategy 1 path earns "Pasted ✓"; everything else
+    /// falls through to "Saved" (clipboard + dictations history are still
+    /// populated, so this is honest signal rather than failure messaging).
+    private func pillCopyFor(_ result: AutoPasteService.InsertResult) -> String {
+        switch result {
+        case .verifiedPasted:
+            return "Pasted ✓"
+        case .attemptedPaste, .noPermission, .insertionFailed:
+            return "Saved"
         }
     }
 
