@@ -61,6 +61,13 @@ struct TranscriptionPillView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .background(Color.black, in: Capsule())
+        // Clip to the capsule so content can't overflow the rounded ends
+        // while the AppKit panel is mid-resize (processing → completion
+        // expands 32 → 114 over 0.23s; the HStack's intrinsic width is
+        // ~113pt as soon as mode flips, so without clipping the message
+        // text would peek beyond the capsule's not-yet-expanded rounded
+        // corners on both sides).
+        .clipShape(Capsule())
         // Single cross-fade for content swaps. AppKit panel handles the
         // frame size animation in parallel via NSAnimationContext.
         .animation(.easeInOut(duration: DesignTokens.Pill.contentCrossfadeDuration), value: PillPhaseKey(mode))
