@@ -1,6 +1,35 @@
 import AppKit
 import ApplicationServices
 
+/// Snapshot of the user's paste-target intent, captured at the moment they
+/// begin a recording. The user may switch apps mid-recording (handled by
+/// re-activation at paste time), close the captured window (handled by the
+/// element re-validation gate), or have nothing focused at capture time
+/// (handled by the nil-element path → morph fallback). Either way, intent
+/// is set at start, not inferred at end.
+struct CapturedPasteTarget {
+    /// The frontmost app at capture time. Held strong; checked for
+    /// termination at paste time.
+    let app: NSRunningApplication
+    /// Bundle ID cached at capture time so diagnostics survive even if
+    /// `app` becomes terminated and `bundleIdentifier` returns nil.
+    let appBundleID: String
+    /// Focused element at capture time, or nil if AX exposed nothing.
+    /// nil is a meaningful signal — caller should treat it as "user wasn't
+    /// in a text input when they started dictating" and morph at paste
+    /// time without attempting Strategy 2.
+    let element: AXUIElement?
+    /// For diagnostics only.
+    let capturedAt: Date
+
+    /// True if the captured app process is still running. Element validity
+    /// is checked separately at paste time via an AX query, since
+    /// `AXUIElement` references can outlive their underlying UI.
+    var isAppStillAlive: Bool {
+        !app.isTerminated
+    }
+}
+
 /// Pastes short voice-transcripts directly into the user's currently-focused
 /// text field. Two strategies in order:
 ///   1. AXUIElement direct value write (clean, app-cooperative apps).
@@ -72,6 +101,43 @@ final class AutoPasteService {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue()
         let options: CFDictionary = [key: kCFBooleanTrue!] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+    }
+
+    // MARK: - Intent capture
+
+    /// Snapshot the user's paste-target intent. Call this at record START,
+    /// before any state mutation in `TranscriptionService.startRecording`,
+    /// so the snapshot reflects the user's environment at the moment they
+    /// chose to dictate.
+    ///
+    /// Returns nil only when Stash itself is frontmost (the self-paste guard).
+    /// All other cases produce a non-nil target — the `element` field may
+    /// still be nil if AX exposed no focused UI at capture time, which is a
+    /// distinct signal the caller uses to route to morph instead of pasting
+    /// blindly.
+    func captureTarget() -> CapturedPasteTarget? {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+            #if DEBUG
+            print("[AutoPaste] captureTarget — no frontmost application")
+            #endif
+            return nil
+        }
+        guard frontApp.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            #if DEBUG
+            print("[AutoPaste] captureTarget — Stash itself is frontmost; self-guard fires")
+            #endif
+            return nil
+        }
+        let element = focusedElement(in: frontApp)
+        #if DEBUG
+        print("[AutoPaste] captureTarget — app: \(frontApp.bundleIdentifier ?? "?"), element: \(element != nil ? "present" : "absent")")
+        #endif
+        return CapturedPasteTarget(
+            app: frontApp,
+            appBundleID: frontApp.bundleIdentifier ?? "",
+            element: element,
+            capturedAt: Date()
+        )
     }
 
     // MARK: - Permission polling
