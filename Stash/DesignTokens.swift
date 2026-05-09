@@ -35,7 +35,16 @@ enum DesignTokens {
     /// Floating transcription pill (redesign 2026-04-21). Fixed dimensions so Recording,
     /// Processing and Copied states share identical width/height per Figma node 280-981.
     enum Pill {
-        static let width: CGFloat = 124
+        // Sized so the visible gap between the timer and the red stop dot
+        // matches `contentSpacing` (the gap between iconDisc and timer):
+        //   visible gap = pillWidth - trailingPadding - dotSize - leadingPadding
+        //                 - iconDiscSize - contentSpacing - labelWidth
+        // For a typical "MM:SS" label (~37pt at monospaced 14pt regular),
+        // pillWidth = 108 + tapTargetSize=18 lands the visible gap at ~8pt
+        // (matching contentSpacing). Hour-plus recordings ("1:23:45")
+        // overflow slightly — known edge case worth living with for the
+        // typical-case symmetry.
+        static let width: CGFloat = 108
         static let height: CGFloat = 32
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14
@@ -44,11 +53,10 @@ enum DesignTokens {
         static let verticalPadding: CGFloat = 4
         static let contentSpacing: CGFloat = 8
         static let recordingDotSize: CGFloat = 10
-        // Stop button tap target — smaller than before so the visible red
-        // dot sits closer to the timer label rather than floating off at
-        // the trailing edge with ~22pt of invisible-tap-area between it
-        // and the time. 24pt is plenty for mouse-driven hit detection.
-        static let stopTapTargetSize: CGFloat = 24
+        // Stop button tap target. 18pt is the maximum that doesn't overlap
+        // the timer label at the configured pillWidth — any larger and the
+        // tap target's invisible left edge slides under the timer text.
+        static let stopTapTargetSize: CGFloat = 18
 
         // Panel-frame animation — cubic-bezier(0.22, 1, 0.36, 1) over 400ms.
         // Used by the drag-to-snap reposition. Tuned to read as a deliberate
