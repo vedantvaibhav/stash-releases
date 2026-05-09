@@ -821,28 +821,19 @@ final class TranscriptionService: NSObject, ObservableObject {
             return nil
         }
 
-        // Substantive word list — shared by PASS 3b (bare-URL gate) and PASS 4
-        // (word-count gate). Tokens shorter than 2 chars after stripping
-        // punctuation are dropped so single-letter noise doesn't inflate counts.
+        // Substantive word list — used by PASS 4 (word-count gate). Tokens
+        // shorter than 2 chars after stripping punctuation are dropped so
+        // single-letter noise doesn't inflate counts.
         let words = cleaned.components(separatedBy: .whitespaces).filter { word in
             let w = word.trimmingCharacters(in: .punctuationCharacters)
             return w.count >= 2
         }
 
-        // PASS 3b — URL / attribution detection.
-        // Only reject when the ENTIRE output is a bare URL (Whisper hallucination
-        // from ambient audio). Do NOT reject transcripts that merely contain a URL
-        // mentioned in real speech — that's legitimate content.
-        let bareURLPatterns = ["www.", "http://", "https://"]
-        let lowerCleaned = cleaned.lowercased()
-        let isBareURL = bareURLPatterns.contains(where: { lowerCleaned.hasPrefix($0) })
-            && words.count < 5
-        if isBareURL {
-            #if DEBUG
-            print("[Transcription] sanitise: rejected (bare URL output) — \"\(cleaned)\"")
-            #endif
-            return nil
-        }
+        // (Earlier revisions had a PASS 3b that rejected bare-URL outputs as
+        // Whisper hallucination from ambient audio. Removed: dictating a URL
+        // — "vedantvaibhav.com", "github.com/foo" — is legitimate user
+        // content. Token + semantic + attribution gates above still catch
+        // the actual Whisper hallucinations these were designed to filter.)
 
         // PASS 3c — media attribution phrases not caught by exact-match above.
         let attributionPatterns = [
@@ -858,12 +849,15 @@ final class TranscriptionService: NSObject, ObservableObject {
             return nil
         }
 
-        // PASS 4 — word-count gate. Fewer than 3 non-trivial words → almost
-        // certainly hallucination or mic-bumped silence. Quick voice notes
-        // like "Call John tomorrow" should still pass.
-        guard words.count >= 3 else {
+        // PASS 4 — word-count gate. Reject only when there are zero
+        // substantive words (the real Whisper-on-silence outcome). Single-
+        // word legitimate dictations — "yes", "okay", a name, a URL — must
+        // pass; the >= 3 threshold previously blocked them. Token / semantic
+        // gates above still catch hallucinated single-word outputs like
+        // "[BLANK_AUDIO]" or "thanks".
+        guard words.count >= 1 else {
             #if DEBUG
-            print("[Transcription] sanitise: rejected (\(words.count) substantive words) — \"\(cleaned)\"")
+            print("[Transcription] sanitise: rejected (0 substantive words) — \"\(cleaned)\"")
             #endif
             return nil
         }
