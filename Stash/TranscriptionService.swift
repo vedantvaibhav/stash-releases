@@ -63,16 +63,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// the list with the new quick-transcript pinned at the top (short).
     @Published var lastRecordingWasShort: Bool = false
 
-    /// Bundle ID + localized name of the app that was frontmost when the
-    /// current recording started. Captured at intent-time (start, not stop)
-    /// so the saved DictationEntry attributes the dictation to where the
-    /// user *meant* to paste, even if focus has shifted by the time
-    /// transcription finishes. Cleared after delivery. Wiring in startRecording
-    /// arrives in the recording-sounds + source-app commit; for now both
-    /// stay nil and the DictationEntry records no source app.
-    private var capturedSourceAppBundleID: String?
-    private var capturedSourceAppName: String?
-
     /// Set from the notes column so saves use the same storage as the rest of the app.
     weak var notesStorage: NotesStorage?
     var onNoteCreated: ((String) -> Void)?
@@ -102,16 +92,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         // we flip the source out from under it here.
         errorMessage = nil
         completionMessage = nil
-
-        // Capture the user's intended target app at INTENT-time (start of
-        // recording, not stop). By the time transcription finishes seconds
-        // later the user may have alt-tabbed — we attribute the dictation to
-        // where they meant to put it. If Stash itself is frontmost (mic
-        // tapped from the panel UI), we record that as the source — the
-        // dictation is genuinely "from Stash."
-        let frontApp = NSWorkspace.shared.frontmostApplication
-        capturedSourceAppBundleID = frontApp?.bundleIdentifier
-        capturedSourceAppName = frontApp?.localizedName
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -423,62 +403,47 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - Short-recording delivery
 
-    /// Triple-redundant delivery for short transcripts. Three channels run on
-    /// EVERY short recording, regardless of paste outcome — so the user
-    /// always has at least two reliable recovery paths even when paste misses.
+    /// Three-channel delivery for short transcripts:
     ///
-    /// 1. **Clipboard** — overwrites whatever was there. Wispr Flow contract:
-    ///    after a recording, the dictation is always reachable via ⌘V. The
-    ///    user's previous clipboard is replaced; this is intentional and
-    ///    matches what they expect after triggering a dictation.
+    /// 1. **NotesStorage as a `.quick` note** — visible in the Notes tab
+    ///    next to written notes, distinguished by the waveform glyph. Tap
+    ///    opens the editor; user copies from there. This is the primary
+    ///    recovery surface when paste isn't verified — same UX as a
+    ///    written note, just produced by voice.
     ///
-    /// 2. **Dictations history** (`DictationsStorage`) — persistent. Survives
-    ///    app relaunch. Shown in the "Recent dictations" section under the
-    ///    Notes tab.
+    /// 2. **Clipboard** — `⌘V` always reaches the dictation. Replaces the
+    ///    user's previous clipboard contents; matches what they expect
+    ///    after triggering a dictation.
     ///
     /// 3. **AutoPasteService** — best-effort direct paste into the focused
-    ///    field. May silently miss (no focused field, secure field, app that
-    ///    rejects synthetic events). When it does, channels 1 + 2 backstop.
-    ///
-    /// Pill confirmation reads "Pasted ✓" only when channel 3's read-back
-    /// verified the paste landed. Any other outcome hides the pill silently
-    /// — channels 1 + 2 still populate the recovery path, and the user
-    /// learns over time to look in Notes → Recent dictations for anything
-    /// not directly pasted.
+    ///    field. Pill confirmation reads "Pasted ✓" only when channel 3's
+    ///    read-back verified the paste landed; any other outcome hides
+    ///    the pill silently and the user finds the transcript in Notes.
     private func deliverShortDictation(_ result: ShortTranscriptResult) {
-        // Channel 2: persistent history. First because it's pasteboard-
-        // independent — survives any subsequent paste-related I/O.
-        DictationsStorage.shared.save(DictationEntry(
-            id: UUID(),
-            text: result.text,
-            timestamp: Date(),
-            durationSec: result.durationSeconds,
-            sourceAppBundleID: capturedSourceAppBundleID,
-            sourceAppName: capturedSourceAppName,
-            isRaw: result.isRaw
-        ))
-        capturedSourceAppBundleID = nil
-        capturedSourceAppName = nil
+        // Channel 1: persistent history as a quick note. Saved before paste
+        // attempt because it's pasteboard-independent — survives anything
+        // AutoPasteService does. We deliberately do NOT fire onNoteCreated
+        // (that would yank focus to Stash and open the editor); user is in
+        // another app expecting the paste to land or to grab via ⌘V.
+        notesStorage?.saveQuickNote(text: result.text, durationSeconds: result.durationSeconds)
+        notesStorage?.refreshNotes()
 
         // Channel 3: best-effort paste. May write to and restore the
         // pasteboard internally (Strategy 2's preserve-and-restore cycle).
         // Only `.verifiedPasted` (Strategy 1 with read-back) earns a
-        // "Pasted ✓" pill. Everything else hides the pill silently — the
-        // user learns over time that any dictation lives in Notes →
-        // Recent dictations regardless of pill outcome, so a "Saved"
-        // state would just be redundant noise.
+        // "Pasted ✓" pill. Other outcomes hide the pill silently — the
+        // user finds the transcript in the Notes tab.
         let pasteResult = AutoPasteService.shared.attemptInsert(text: result.text)
         if let pillCopy = pillCopyFor(pasteResult) {
             showCompletion(pillCopy)
         }
 
-        // Channel 1: clipboard. Deferred past AutoPasteService's
+        // Channel 2: clipboard. Deferred past AutoPasteService's
         // pasteboard-restore window so our write is the LAST writer — the
         // earlier ordering (clipboard → attemptInsert) was racing with
         // Strategy 2's restore and intermittently leaving the clipboard
-        // empty (test pass: B1 / B2). +50ms after the restore deadline
-        // gives the dispatched restore closure time to complete on a
-        // quiet runloop before our write fires.
+        // empty. +50ms after the restore deadline gives the dispatched
+        // restore closure time to complete on a quiet runloop.
         let textToWrite = result.text
         DispatchQueue.main.asyncAfter(
             deadline: .now() + AutoPasteService.pasteboardRestoreDelaySeconds + 0.05
@@ -491,9 +456,8 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Maps the AX-paste outcome to a pill confirmation message, or nil
     /// when the pill should hide silently. Only the read-back-verified
     /// Strategy 1 path earns "Pasted ✓"; the other outcomes return nil so
-    /// the pill goes from processing to invisible without a redundant
-    /// "Saved" / failure state — the dictation is recoverable in
-    /// Notes → Recent dictations regardless of paste outcome.
+    /// the pill goes from processing to invisible. The transcript is
+    /// recoverable in Notes regardless of paste outcome.
     private func pillCopyFor(_ result: AutoPasteService.InsertResult) -> String? {
         switch result {
         case .verifiedPasted:
