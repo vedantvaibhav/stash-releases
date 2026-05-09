@@ -29,6 +29,7 @@ _To be filled in next session_
 
 ## 🔮 Launch 2
 
+- [ ] **Latency: skip LLM cleanup for sub-5-second recordings** — short clips currently round-trip through Whisper AND the LLM cleanup pass (~1–2s extra). For clips under ~5s, paste raw Whisper output directly and skip the cleanup. Quality trade-off: no filler removal ("um", "you know") on short clips. Worth measuring user perception — short clips usually don't have filler anyway, and the latency win is significant for the "say a word, paste it" flow.
 - [ ] **Repaste from a dictation entry** — re-deliver an old dictation as if it were just recorded (paste + clipboard refresh + maybe new history entry). Needs intent-capture architecture: at moment of repaste, capture frontmost app, switch focus back to it, paste. Non-trivial because the user is in Stash's UI when triggering the repaste.
 - [ ] **Search across dictations** — text-content search over `DictationsStorage.entries`. Likely a header search field above the Recent dictations section, scoped to dictations only. Cheap with current dataset sizes (~MB-class JSON).
 - [ ] **Pin / favorite dictations** — boolean flag on `DictationEntry` + sticky-top sort for pinned entries. Useful for templates / standing snippets.
