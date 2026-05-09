@@ -35,7 +35,7 @@ enum DesignTokens {
     /// Floating transcription pill (redesign 2026-04-21). Fixed dimensions so Recording,
     /// Processing and Copied states share identical width/height per Figma node 280-981.
     enum Pill {
-        static let width: CGFloat = 130
+        static let width: CGFloat = 116
         static let height: CGFloat = 32
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14
@@ -54,6 +54,13 @@ enum DesignTokens {
         static let frameAnimationCurveCP1y: Double = 1.0
         static let frameAnimationCurveCP2x: Double = 0.36
         static let frameAnimationCurveCP2y: Double = 1.0
+
+        // Phase-change animation — used when the pill shrinks from the full
+        // width to a 32×32 circle (recording → processing) and expands back
+        // (processing → completion). Faster than frameAnimationDuration so
+        // the shrink reads as snappy/responsive rather than a deliberate
+        // settle. Same bezier curve so the motion feel matches.
+        static let phaseAnimationDuration: TimeInterval = 0.22
     }
 
     enum Typography {
