@@ -747,7 +747,10 @@ final class PanelController: NSObject {
         let token = animationToken
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = DesignTokens.PanelAnimation.openDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            // easeInEaseOut paired with the longer duration matches the
+            // pill processing animation feel — soft ease into motion,
+            // slow settle at the end.
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(targetFrame, display: true)
             panel.animator().alphaValue = 1
         }, completionHandler: { [weak self] in
@@ -787,7 +790,9 @@ final class PanelController: NSObject {
         let token = animationToken
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = DesignTokens.PanelAnimation.closeDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            // Match the open curve so dismissal has the same smoothness
+            // as the appearance — symmetric motion vocabulary.
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().setFrame(endFrame, display: true)
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self, weak panel] in
