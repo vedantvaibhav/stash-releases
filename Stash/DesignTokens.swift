@@ -44,10 +44,16 @@ enum DesignTokens {
         //
         // For a typical "MM:SS" label (~42pt at monospaced 14pt regular),
         // pillWidth = 105 fits exactly: 4+24+6+42+11+10+8 = 105. Completion
-        // labels ("No audio" ~52pt, "Pasted ✓" ~54pt) inherit the timer→dot
-        // spacing as extra trailing padding when no dot is rendered, giving
-        // the text more right-side breathing room — by design.
+        // labels ("No audio", "Pasted ✓", etc.) render wider than the
+        // monospaced timer at the same point size — they use the proportional
+        // SF Pro variant — so completion phases use a wider `completionWidth`
+        // (see below) to avoid edge clipping on longer message strings.
         static let width: CGFloat = 105
+        // Completion phase pill width. Wider than recording so messages like
+        // "No audio", "Pasted ✓", "Note saved" don't get clipped at the
+        // capsule edges. Per-phase sizing keeps the recording pill compact
+        // while letting completion text breathe.
+        static let completionWidth: CGFloat = 114
         static let height: CGFloat = 32
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14
