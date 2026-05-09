@@ -116,14 +116,17 @@ enum DesignTokens {
     }
 
     enum PanelAnimation {
-        /// Open: fade 0 → 1 with an 8 pt downward settle. Ease-out.
-        static let openDuration: CFTimeInterval = 0.18
-        /// Close: fade 1 → 0 with a 6 pt upward lift. Ease-in. Slightly faster than open.
-        static let closeDuration: CFTimeInterval = 0.14
-        /// Panel starts 8 pt above its final y on open.
-        static let openSlideOffset: CGFloat = 8
-        /// Panel ends 6 pt above its start y on close.
-        static let closeSlideOffset: CGFloat = 6
+        /// Open: fade 0 → 1 with a 12 pt downward settle. Ease-in-out so the
+        /// motion has the same "smooth through the middle" feel as the
+        /// transcription pill's processing-shrink.
+        static let openDuration: CFTimeInterval = 0.32
+        /// Close: fade 1 → 0 with a 10 pt upward lift. Ease-in-out, slightly
+        /// faster than open so dismissal reads as deliberate but not sluggish.
+        static let closeDuration: CFTimeInterval = 0.26
+        /// Panel starts 12 pt above its final y on open.
+        static let openSlideOffset: CGFloat = 12
+        /// Panel ends 10 pt above its start y on close.
+        static let closeSlideOffset: CGFloat = 10
     }
 
     enum Onboarding {
