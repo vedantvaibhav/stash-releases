@@ -35,29 +35,35 @@ enum DesignTokens {
     /// Floating transcription pill (redesign 2026-04-21). Fixed dimensions so Recording,
     /// Processing and Copied states share identical width/height per Figma node 280-981.
     enum Pill {
-        // Sized for symmetric margins around the content. Layout (LTR):
-        //   [4pt outer pad][slack][24 iconDisc][8][label][8][10 dot][slack][4pt outer pad]
-        // No middle Spacer between label and dot — both gaps are the
-        // contentSpacing (8pt). The two outer slacks absorb leftover
-        // pillWidth and stay equal, keeping the iconDisc and dot the same
-        // distance from the pill's left and right edges. For a typical
-        // "MM:SS" label (~40-45pt at monospaced 14pt regular), pillWidth
-        // = 100 leaves a few pt of slack on each side. Hour-plus recordings
-        // ("1:23:45") overflow — known edge case.
-        static let width: CGFloat = 100
+        // Asymmetric inner spacing. Layout (LTR):
+        //   [4pt lead pad][24 iconDisc][6 icon→timer][label][11 timer→dot][10 dot][8pt trail pad]
+        // Per design feedback: icon→timer slightly tighter (-2pt) than the
+        // base contentSpacing, timer→dot slightly looser (+3pt) so the
+        // pill doesn't read as cramped on the right. Trailing padding +4
+        // gives the dot more breathing room from the pill's right edge.
+        //
+        // For a typical "MM:SS" label (~42pt at monospaced 14pt regular),
+        // pillWidth = 105 fits exactly: 4+24+6+42+11+10+8 = 105. Completion
+        // labels ("No audio" ~52pt, "Pasted ✓" ~54pt) inherit the timer→dot
+        // spacing as extra trailing padding when no dot is rendered, giving
+        // the text more right-side breathing room — by design.
+        static let width: CGFloat = 105
         static let height: CGFloat = 32
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14
-        // Symmetric outer padding so the pill's content has matching
-        // breathing room on both sides.
+        // Asymmetric outer padding — more on the right.
         static let leadingPadding: CGFloat = 4
-        static let trailingPadding: CGFloat = 4
+        static let trailingPadding: CGFloat = 8
         static let verticalPadding: CGFloat = 4
+        // Inner spacings — used as label's left/right padding inside the
+        // HStack(spacing: 0). Splitting them lets the iconDisc→timer and
+        // timer→dot gaps differ.
+        static let iconToTimerSpacing: CGFloat = 6
+        static let timerToDotSpacing: CGFloat = 11
+        // Legacy generic content spacing — retained for any caller still
+        // referring to it; new code uses iconToTimer/timerToDot.
         static let contentSpacing: CGFloat = 8
         static let recordingDotSize: CGFloat = 10
-        // Stop button tap target = visible dot size. No invisible tap area
-        // around the dot — that was the source of the asymmetric label→dot
-        // gap. 10pt is small but adequate for mouse hit-testing on macOS.
         static let stopTapTargetSize: CGFloat = 10
 
         // Panel-frame animation — cubic-bezier(0.22, 1, 0.36, 1) over 400ms.
@@ -70,11 +76,11 @@ enum DesignTokens {
         static let frameAnimationCurveCP2y: Double = 1.0
 
         // Phase-change animation — recording → processing (shrink to circle)
-        // and back (expand). 0.22s easeInEaseOut, ~20% faster than the
-        // earlier 0.55s staggered version. SwiftUI cross-fade for content
-        // swaps runs at 0.18s on the same easing, so the two layers feel
-        // coordinated without the explicit stagger.
-        static let phaseAnimationDuration: TimeInterval = 0.22
+        // and back (expand). 0.23s easeInEaseOut, ~5% slower than the prior
+        // 0.22 per design feedback (the loading transition felt slightly
+        // too quick). SwiftUI cross-fade for content swaps stays at 0.18s
+        // — the layers still feel coordinated.
+        static let phaseAnimationDuration: TimeInterval = 0.23
         static let contentCrossfadeDuration: TimeInterval = 0.18
     }
 
