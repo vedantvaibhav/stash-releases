@@ -440,9 +440,11 @@ final class TranscriptionService: NSObject, ObservableObject {
     ///    field. May silently miss (no focused field, secure field, app that
     ///    rejects synthetic events). When it does, channels 1 + 2 backstop.
     ///
-    /// Pill confirmation reads "Pasted ✓" only when channel 3 succeeded;
-    /// otherwise "Saved" — honest signal that channels 1 + 2 are ready to
-    /// recover from.
+    /// Pill confirmation reads "Pasted ✓" only when channel 3's read-back
+    /// verified the paste landed. Any other outcome hides the pill silently
+    /// — channels 1 + 2 still populate the recovery path, and the user
+    /// learns over time to look in Notes → Recent dictations for anything
+    /// not directly pasted.
     private func deliverShortDictation(_ result: ShortTranscriptResult) {
         // Channel 2: persistent history. First because it's pasteboard-
         // independent — survives any subsequent paste-related I/O.
@@ -460,12 +462,15 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         // Channel 3: best-effort paste. May write to and restore the
         // pasteboard internally (Strategy 2's preserve-and-restore cycle).
-        // Only `.verifiedPasted` (Strategy 1 with read-back) earns "Pasted ✓".
-        // `.attemptedPaste` (Strategy 2) → "Saved" because we cannot observe
-        // whether a synthetic ⌘V actually landed in Finder / Electron / a
-        // window without focus.
+        // Only `.verifiedPasted` (Strategy 1 with read-back) earns a
+        // "Pasted ✓" pill. Everything else hides the pill silently — the
+        // user learns over time that any dictation lives in Notes →
+        // Recent dictations regardless of pill outcome, so a "Saved"
+        // state would just be redundant noise.
         let pasteResult = AutoPasteService.shared.attemptInsert(text: result.text)
-        showCompletion(pillCopyFor(pasteResult))
+        if let pillCopy = pillCopyFor(pasteResult) {
+            showCompletion(pillCopy)
+        }
 
         // Channel 1: clipboard. Deferred past AutoPasteService's
         // pasteboard-restore window so our write is the LAST writer — the
@@ -483,16 +488,18 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
     }
 
-    /// Maps the AX-paste outcome to the pill confirmation copy. Only the
-    /// read-back-verified Strategy 1 path earns "Pasted ✓"; everything else
-    /// falls through to "Saved" (clipboard + dictations history are still
-    /// populated, so this is honest signal rather than failure messaging).
-    private func pillCopyFor(_ result: AutoPasteService.InsertResult) -> String {
+    /// Maps the AX-paste outcome to a pill confirmation message, or nil
+    /// when the pill should hide silently. Only the read-back-verified
+    /// Strategy 1 path earns "Pasted ✓"; the other outcomes return nil so
+    /// the pill goes from processing to invisible without a redundant
+    /// "Saved" / failure state — the dictation is recoverable in
+    /// Notes → Recent dictations regardless of paste outcome.
+    private func pillCopyFor(_ result: AutoPasteService.InsertResult) -> String? {
         switch result {
         case .verifiedPasted:
             return "Pasted ✓"
         case .attemptedPaste, .noPermission, .insertionFailed:
-            return "Saved"
+            return nil
         }
     }
 
