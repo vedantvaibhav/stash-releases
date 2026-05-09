@@ -174,45 +174,30 @@ final class AutoPasteService {
         NotificationCenter.default.post(name: .accessibilityStatusChanged, object: nil)
     }
 
-    /// Attempt to insert `text` at the focused field's caret. Synchronous;
-    /// returns within a few ms (or up to 5s on a stuck AX server, after which
-    /// it aborts cleanly).
-    ///
-    /// Hard deadline: every AX call boundary inside Strategy 1 is checked
-    /// against `Date()` and aborts cleanly on timeout, falling through to
-    /// Strategy 2 (which is queue-based and never blocks). If Strategy 2
-    /// itself can't even start (deadline exceeded before its entry), we
-    /// return `.insertionFailed` without writing the pasteboard.
-    ///
-    /// Concurrent pastes: a per-call `UUID` is stored in `currentPasteToken`
-    /// at entry. Strategy 2's restore closure checks that token before
-    /// touching the pasteboard. A newer paste setting a fresh token
-    /// implicitly cancels the older paste's pending restore.
-    ///
-    /// Permission: re-checked at the head of each strategy. The user can
-    /// revoke Accessibility from System Settings while we're mid-flight
-    /// (especially during a multi-second LLM round-trip); we want to surface
-    /// `.noPermission` cleanly in that case rather than running with stale
-    /// state and reporting bogus success.
+    /// Attempt to insert `text` into the user's captured paste target. The
+    /// target is snapshotted at record start (see `captureTarget()`), NOT
+    /// inferred at paste time — that snapshot is the source of truth for
+    /// "where did the user intend this transcript to go." This eliminates
+    /// the post-hoc paste-landing inference that produced silent data loss
+    /// in apps where Strategy 2's synthetic ⌘V can be swallowed (Claude
+    /// with no clicked prompt, Finder on desktop, modal dialogs, etc.).
     ///
     /// Flow:
     ///   1. Permission gate (`AXIsProcessTrusted`).
-    ///   2. Frontmost-app gate (must exist; Stash-self rejected — we never
-    ///      auto-paste into our own UI).
-    ///   3. Optional focus introspection. Many Electron / ToDesktop apps
-    ///      (Cursor, Linear desktop, etc.) refuse to expose their focused
-    ///      element to the app-level AX query — `focusedElement` will return
-    ///      nil. That's NOT a reason to bail; it just means we skip Strategy
-    ///      1 and the secure-field privacy check, and rely on Strategy 2 to
-    ///      deliver the paste.
-    ///   4. Privacy gate — only enforceable when introspection succeeded.
-    ///      Reject `AXSecureTextField` subrole.
-    ///   5. Strategy 1 (AX value write) — only runs if introspection found
-    ///      a visible writable element with a known role
-    ///      (AXTextField/AXTextArea/AXComboBox) AND text is below the
-    ///      pre-flight length threshold.
-    ///   6. Strategy 2 (CGEvent ⌘V) — universal fallback.
-    func attemptInsert(text: String) -> InsertResult {
+    ///   2. `target == nil` → `.noFocusedField` (caller morphs).
+    ///   3. App still alive? If not, `.insertionFailed`.
+    ///   4. Re-activate the captured app if it isn't frontmost (user may
+    ///      have switched apps mid-recording — re-route to where they
+    ///      intended).
+    ///   5. Re-validate the captured element via `kAXRoleAttribute` query.
+    ///      If invalid, treat as element-nil → `.noFocusedField`.
+    ///   6. Element-non-nil path:
+    ///      a. Secure-field guard.
+    ///      b. Standard-role: Strategy 1 with read-back verification.
+    ///      c. Otherwise: Strategy 2 with element-aware AXValue read-back
+    ///         verification (75ms wait, see `writeViaCGEventPaste(_:token:into:)`).
+    ///   7. Element-nil path: `.noFocusedField`. NO fake ⌘V into the void.
+    func attemptInsert(text: String, into target: CapturedPasteTarget?) -> InsertResult {
         let token = UUID()
         currentPasteToken = token
         let deadline = Date().addingTimeInterval(Self.attemptDeadlineSeconds)
@@ -223,62 +208,97 @@ final class AutoPasteService {
             #endif
             return .noPermission
         }
-        guard let frontApp = NSWorkspace.shared.frontmostApplication,
-              frontApp.bundleIdentifier != Bundle.main.bundleIdentifier else {
+
+        guard let target else {
             #if DEBUG
-            let id = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
-            print("[AutoPaste] noFocusedField — no front app or Stash itself is front. Front: \(id)")
+            print("[AutoPaste] noFocusedField — captured target was nil (Stash was frontmost at record start, or no front app)")
             #endif
             return .noFocusedField
         }
 
-        // Best-effort introspection. Returns nil for apps that don't expose
-        // their focused element via the app-level AX query — common in
-        // Electron/ToDesktop. Strategy 2 still runs in that case.
-        let element = focusedElement(in: frontApp)
+        guard target.isAppStillAlive else {
+            #if DEBUG
+            print("[AutoPaste] insertionFailed — captured app \(target.appBundleID) is no longer running")
+            #endif
+            return .insertionFailed
+        }
 
-        if let element {
-            if isSecureTextElement(element) {
+        // Re-activate if the user switched apps mid-recording. The user's
+        // intent is the captured target, not whatever happens to be frontmost
+        // now. Activation is a no-op if target.app is already frontmost.
+        if NSWorkspace.shared.frontmostApplication != target.app {
+            #if DEBUG
+            let now = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "?"
+            print("[AutoPaste] re-activating captured app \(target.appBundleID) (current frontmost: \(now))")
+            #endif
+            target.app.activate(options: [.activateIgnoringOtherApps])
+            // 50ms for activation to settle: window-server -> app -> AX tree
+            // refresh. Below this, posted events may race the activation
+            // and land on the previously-frontmost app.
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
+        }
+
+        // Re-validate the captured element. AXUIElement references can outlive
+        // their UI (window closed, view removed). A cheap kAXRoleAttribute
+        // query is the canonical liveness check.
+        let liveElement: AXUIElement? = {
+            guard let element = target.element else { return nil }
+            var roleRef: CFTypeRef?
+            let status = AXUIElementCopyAttributeValue(
+                element, kAXRoleAttribute as CFString, &roleRef
+            )
+            if status == .success { return element }
+            #if DEBUG
+            print("[AutoPaste] captured element no longer valid (kAXRoleAttribute returned non-success); treating as element-nil")
+            #endif
+            return nil
+        }()
+
+        guard let element = liveElement else {
+            #if DEBUG
+            print("[AutoPaste] noFocusedField — no live element on captured target \(target.appBundleID); morph fallback")
+            #endif
+            return .noFocusedField
+        }
+
+        if isSecureTextElement(element) {
+            #if DEBUG
+            print("[AutoPaste] noFocusedField — captured element is a secure (password) field")
+            #endif
+            return .noFocusedField
+        }
+
+        // Re-check permission at strategy entry; user may have revoked between
+        // captureTarget at record start and now (multi-second LLM round-trip).
+        guard hasAccessibilityPermission else { return .noPermission }
+
+        if isStandardWritableRole(element) {
+            if writeViaAXValue(text, into: element, deadline: deadline) {
                 #if DEBUG
-                print("[AutoPaste] noFocusedField — focused element is a secure (password) field")
+                print("[AutoPaste] success via Strategy 1 (AXValue write). Front app: \(target.appBundleID)")
                 #endif
-                return .noFocusedField
-            }
-            if isStandardWritableRole(element) {
-                // Re-check permission at strategy entry; the user may have revoked
-                // Accessibility between attemptInsert's first gate and now.
-                guard hasAccessibilityPermission else { return .noPermission }
-                if writeViaAXValue(text, into: element, deadline: deadline) {
-                    #if DEBUG
-                    print("[AutoPaste] success via Strategy 1 (AXValue write). Front app: \(frontApp.bundleIdentifier ?? "?")")
-                    #endif
-                    return .success
-                }
+                return .success
             }
         }
 
         guard hasAccessibilityPermission else { return .noPermission }
         guard !isDeadlineExceeded(deadline) else {
-            // Strategy 2 didn't even start; pasteboard is untouched, no
-            // restore needed.
             return .insertionFailed
         }
-        if writeViaCGEventPaste(text, token: token) {
+
+        // Strategy 2 with element-aware verification — the verification logic
+        // lives in writeViaCGEventPaste(_:token:into:) so we can read the
+        // captured element's AXValue before/after posting ⌘V and confirm
+        // the destination actually consumed the paste.
+        if writeViaCGEventPaste(text, token: token, into: element) {
             #if DEBUG
-            let roleDescription: String
-            if let element {
-                var roleRef: CFTypeRef?
-                _ = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
-                roleDescription = (roleRef as? String) ?? "unknown"
-            } else {
-                roleDescription = "(AX introspection unavailable)"
-            }
-            print("[AutoPaste] success via Strategy 2 (CGEvent ⌘V). Front app: \(frontApp.bundleIdentifier ?? "?"). Role: \(roleDescription)")
+            print("[AutoPaste] success via Strategy 2 (CGEvent ⌘V, verified). Front app: \(target.appBundleID)")
             #endif
             return .success
         }
+
         #if DEBUG
-        print("[AutoPaste] insertionFailed — both strategies returned false")
+        print("[AutoPaste] insertionFailed — both strategies returned false / Strategy 2 verification failed")
         #endif
         return .insertionFailed
     }
@@ -450,15 +470,17 @@ final class AutoPasteService {
 
     // MARK: - Strategy 2: CGEvent ⌘V with pasteboard preservation
 
-    /// Universal fallback: snapshot the pasteboard, write `text` to it, post
-    /// a synthetic ⌘V via CGEvent, restore the original pasteboard 300ms
-    /// later. The restore is gated by both `token` (so a newer paste
-    /// implicitly cancels ours) and `pb.changeCount` (so a user copy beats
-    /// our restore).
+    /// Universal fallback with element-aware verification: snapshot the
+    /// pasteboard, write `text` to it, post a synthetic ⌘V via CGEvent,
+    /// wait 75ms, then read the captured `element`'s AXValue length to
+    /// confirm the destination actually consumed the paste. Pasteboard is
+    /// restored 300ms later (token + changeCount gated).
     ///
-    /// Returns true on completion. Returns false only if event creation or
-    /// the pasteboard write fails outright (very rare).
-    private func writeViaCGEventPaste(_ text: String, token: UUID) -> Bool {
+    /// Returns true ONLY when verification passes (or the element refuses
+    /// AXValue reads — optimistic success, rare). Returns false when the
+    /// destination silently swallowed the paste, or when event creation
+    /// or the pasteboard write fails outright.
+    private func writeViaCGEventPaste(_ text: String, token: UUID, into element: AXUIElement) -> Bool {
         // Build the four-event ⌘V sequence FIRST. If event creation fails
         // we abort BEFORE clobbering the pasteboard, so the user's clipboard
         // stays intact and the caller falls through to .insertionFailed.
@@ -493,6 +515,13 @@ final class AutoPasteService {
         vUp.flags = .maskCommand
         cmdUp.flags = []
 
+        // Read element's AXValue length BEFORE the paste. If unreadable
+        // (some apps refuse this query for non-AXTextField elements), we
+        // treat it as "verification unavailable" → optimistic success after
+        // posting. Length is in NSString units (UTF-16 code units),
+        // matching how setValue measures the splice in Strategy 1.
+        let beforeLength = readAXValueLength(of: element)
+
         let pb = NSPasteboard.general
 
         // Snapshot existing items now (after event-build success, before our
@@ -515,18 +544,18 @@ final class AutoPasteService {
         // copying-during-the-restore-window and avoid clobbering their copy.
         let changeCountAtWrite = pb.changeCount
 
-        // Brief delay before posting ⌘V so the pasteboard server has time
-        // to propagate our setString to other processes. Electron apps read
-        // the pasteboard via Mach IPC in response to keydown — without this
-        // gap, fast renderers occasionally read the OLD pasteboard contents.
-        // 25ms is well below human-perception threshold and reliably above
-        // the daemon's commit latency on contemporary macOS.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
-            cmdDown.post(tap: .cghidEventTap)
-            vDown.post(tap: .cghidEventTap)
-            vUp.post(tap: .cghidEventTap)
-            cmdUp.post(tap: .cghidEventTap)
-        }
+        // Pre-paste delay: 25ms for the pasteboard server to propagate our
+        // setString to other processes. Electron apps read the pasteboard
+        // via Mach IPC in response to keydown — without this gap, fast
+        // renderers occasionally read the OLD pasteboard contents. Below
+        // human-perception threshold, reliably above daemon commit latency.
+        // Synchronous so the post and verify happen in the same logical op.
+        RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.025))
+
+        cmdDown.post(tap: .cghidEventTap)
+        vDown.post(tap: .cghidEventTap)
+        vUp.post(tap: .cghidEventTap)
+        cmdUp.post(tap: .cghidEventTap)
 
         // Restore the original pasteboard after the destination has consumed
         // our paste. 300ms accounts for the 25ms pre-paste delay plus the
@@ -550,6 +579,62 @@ final class AutoPasteService {
                 pb.writeObjects([item])
             }
         }
-        return true
+
+        // Verification: wait 75ms for the destination app's paste handler
+        // to process the ⌘V and update the element's value, then read
+        // AXValue length and check whether it grew by at least our text's
+        // length.
+        //
+        // 75ms covers native AppKit (~5–15ms) and Electron's Mach IPC
+        // round-trip (~30–80ms). Below 50ms, slow Electron renderers under
+        // load occasionally haven't written yet (false negative). Above
+        // 100ms, the chance of the user typing additional characters in
+        // the destination grows (false positive — but in the GOOD direction:
+        // paste did land, just with extra chars).
+        RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.075))
+
+        let afterLength = readAXValueLength(of: element)
+
+        // Verification disposition:
+        //   - beforeLength nil OR afterLength nil → AXValue unreadable for
+        //     this element. Optimistic success — most apps in this category
+        //     (some Electron text fields) DO accept synthetic ⌘V; the
+        //     morph path remains as user-driven recovery.
+        //   - afterLength - beforeLength >= text.length (in UTF-16 units) →
+        //     paste landed. Success.
+        //   - Otherwise → paste was swallowed. Insertion failed.
+        guard let before = beforeLength, let after = afterLength else {
+            #if DEBUG
+            print("[AutoPaste] Strategy 2 verification skipped (AXValue unreadable on element); optimistic success")
+            #endif
+            return true
+        }
+
+        let textLengthInUTF16 = (text as NSString).length
+        if after - before >= textLengthInUTF16 {
+            #if DEBUG
+            print("[AutoPaste] Strategy 2 verified: AXValue grew \(after - before) UTF-16 units (text was \(textLengthInUTF16))")
+            #endif
+            return true
+        }
+
+        #if DEBUG
+        print("[AutoPaste] Strategy 2 verification failed: AXValue did not grow (\(before) → \(after); text was \(textLengthInUTF16) UTF-16 units). Paste was swallowed.")
+        #endif
+        return false
+    }
+
+    /// Read the current AXValue's length in UTF-16 code units, or nil if
+    /// unreadable. Used by Strategy 2 verification — caller treats nil as
+    /// "verification unavailable, optimistic success."
+    private func readAXValueLength(of element: AXUIElement) -> Int? {
+        var valueRef: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(
+            element, kAXValueAttribute as CFString, &valueRef
+        )
+        guard status == .success, let value = valueRef as? String else {
+            return nil
+        }
+        return (value as NSString).length
     }
 }
