@@ -24,8 +24,8 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var chatModel: String { APIConstants.chatModel }
 
     // Embodied-feedback sounds. macOS system sounds at /System/Library/Sounds/
-    // — no asset shipping needed. Tink is the macOS lightweight UI-feedback
-    // sound; Pop reads as "settled / committed."
+    // — no asset shipping needed. Glass is a bright clean chime that reads
+    // as "ready / go"; Pop reads as "settled / committed."
     //
     // Eager init via a closure (not just `NSSound(named:)`) so we set volume
     // once at load time rather than per-play. Strong instance refs prevent
@@ -36,7 +36,7 @@ final class TranscriptionService: NSObject, ObservableObject {
     // `NSSound(named:)` returns nil if the file moved; the optional chain on
     // .play() makes a missing sound a no-op rather than a crash.
     private let recordingStartSound: NSSound? = {
-        let sound = NSSound(named: "Tink")
+        let sound = NSSound(named: "Glass")
         sound?.volume = 0.6
         return sound
     }()

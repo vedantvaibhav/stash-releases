@@ -40,13 +40,18 @@ struct TranscriptionPillView: View {
                 // space and centers the iconDisc.
                 iconDisc
             } else {
-                // Full pill: iconDisc, label, dot — no middle Spacer so
-                // both gaps stay at contentSpacing. Outer alignment .center
-                // (set on the surrounding .frame below) absorbs leftover
-                // pillWidth equally on both sides.
-                HStack(spacing: DesignTokens.Pill.contentSpacing) {
+                // Full pill with asymmetric spacing: icon→timer is tighter
+                // than timer→dot. HStack uses spacing: 0 and the gaps come
+                // from the label's leading/trailing padding. In completion
+                // mode (trailing is EmptyView), the label's trailing padding
+                // becomes extra right-side breathing room for the message
+                // text — intentional, gives "No audio" / "Pasted ✓" more
+                // padding without needing a mode-specific layout.
+                HStack(spacing: 0) {
                     iconDisc
                     label
+                        .padding(.leading, DesignTokens.Pill.iconToTimerSpacing)
+                        .padding(.trailing, DesignTokens.Pill.timerToDotSpacing)
                     trailing
                 }
                 .padding(.leading, DesignTokens.Pill.leadingPadding)
