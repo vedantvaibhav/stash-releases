@@ -39,12 +39,12 @@ enum DesignTokens {
         // matches `contentSpacing` (the gap between iconDisc and timer):
         //   visible gap = pillWidth - trailingPadding - dotSize - leadingPadding
         //                 - iconDiscSize - contentSpacing - labelWidth
-        // For a typical "MM:SS" label (~37pt at monospaced 14pt regular),
-        // pillWidth = 108 + tapTargetSize=18 lands the visible gap at ~8pt
-        // (matching contentSpacing). Hour-plus recordings ("1:23:45")
+        // For a typical "MM:SS" label (~40pt at monospaced 14pt regular),
+        // pillWidth = 104 + tapTargetSize=18 lands the visible gap at ~6-8pt
+        // (close to contentSpacing). Hour-plus recordings ("1:23:45")
         // overflow slightly — known edge case worth living with for the
         // typical-case symmetry.
-        static let width: CGFloat = 108
+        static let width: CGFloat = 104
         static let height: CGFloat = 32
         static let iconDiscSize: CGFloat = 24
         static let iconGlyphSize: CGFloat = 14
