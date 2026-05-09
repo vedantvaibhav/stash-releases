@@ -1192,82 +1192,44 @@ private struct AllNoteCard: View {
 
 // MARK: - Recent dictations (inline section in the Notes column)
 //
-// Lives above NotesListView in the Notes tab body. Always-visible header so
-// the recovery surface for the always-paste model is discoverable: when a
-// short transcript's auto-paste misses (Finder desktop, secure field,
-// permission revoked), the user can find their text here.
+// Lives above NotesListView in the Notes tab body. Rows are visually
+// indistinguishable from NoteListRow apart from the leading icon — voice
+// transcripts read as a peer artifact to written notes, just stored in a
+// separate file. Tapping copies the transcript to clipboard with a brief
+// flash; right-click yields Copy / Delete. The waveform glyph distinguishes
+// dictations from doc.text-iconed written notes.
 
 struct DictationsRecentSection: View {
     @ObservedObject private var storage = DictationsStorage.shared
-    @State private var isExpanded: Bool = false
     @State private var copyFlashId: UUID? = nil
 
-    /// Cap how tall the expanded list grows before internal scroll engages.
-    /// Keeps the Notes list visible even with hundreds of dictations.
-    private let maxExpandedHeight: CGFloat = 220
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            if isExpanded && !storage.entries.isEmpty {
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(storage.entries) { entry in
-                            DictationRow(
-                                entry: entry,
-                                copyFlashed: copyFlashId == entry.id,
-                                onTap: { handleTap(entry) },
-                                onDelete: { storage.delete(id: entry.id) }
-                            )
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 4)
-                }
-                .frame(maxHeight: maxExpandedHeight)
-            }
-            // Hairline separator between this section and whatever sits below.
-            Divider()
-                .opacity(0.06)
-                .padding(.horizontal, 12)
-                .padding(.top, isExpanded ? 4 : 0)
-        }
-    }
-
-    private var header: some View {
-        let hasEntries = !storage.entries.isEmpty
-        return Button {
-            guard hasEntries else { return }
-            withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: hasEntries
-                    ? (isExpanded ? "chevron.down" : "chevron.right")
-                    : "waveform")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(PanelSectionHeaderStyle.foreground)
-                    .frame(width: 11)
-                Text(headerTitle)
+        if storage.entries.isEmpty {
+            // Nothing to show. Don't reserve vertical space — the Notes
+            // list / empty-state below takes the full column.
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Recent dictations")
                     .font(PanelSectionHeaderStyle.font)
                     .foregroundStyle(PanelSectionHeaderStyle.foreground)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer()
+                    .frame(height: 16)
+                    .padding(.bottom, 8)
+                    .padding(.horizontal, 8)
+                ForEach(storage.entries) { entry in
+                    DictationListRow(
+                        entry: entry,
+                        copyFlashed: copyFlashId == entry.id,
+                        onTap: { handleTap(entry) },
+                        onDelete: { storage.delete(id: entry.id) }
+                    )
+                }
+                // Subtle gap between dictations and the notes header that
+                // follows. Matches the spacing the date-grouped notes list
+                // uses internally between groups.
+                Spacer().frame(height: 12)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(!hasEntries)
-    }
-
-    private var headerTitle: String {
-        let count = storage.entries.count
-        if count == 0 {
-            return "No dictations yet — hold ⌘⌘ to record"
-        }
-        return "Recent dictations  (\(count))"
     }
 
     private func handleTap(_ entry: DictationEntry) {
@@ -1280,37 +1242,48 @@ struct DictationsRecentSection: View {
     }
 }
 
-private struct DictationRow: View {
+/// Visually parallel to `NoteListRow` — same 22pt icon backdrop, single-line
+/// title, delete-on-hover trash. Differs from notes only in: leading icon
+/// (`waveform` vs `doc.text`/`mic.fill`), tap behavior (copy vs open editor),
+/// and an optional context menu.
+private struct DictationListRow: View {
     let entry: DictationEntry
     let copyFlashed: Bool
     let onTap: () -> Void
     let onDelete: () -> Void
 
-    @State private var isHovering = false
+    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(textPreview)
-                    .font(.system(size: 12.5, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text(metaLine)
-                    .font(.system(size: 10.5, weight: .regular))
-                    .foregroundStyle(DesignTokens.Typography.sectionColor)
-                    .lineLimit(1)
+            ZStack {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.white.opacity(0.07))
+                    .frame(width: 22, height: 22)
+                Image(systemName: "waveform")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.40))
             }
-            Spacer(minLength: 0)
-            if copyFlashed {
-                Text("Copied")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .transition(.opacity)
+
+            Text(textPreview)
+                .font(DesignTokens.Typography.itemFont)
+                .foregroundColor(DesignTokens.Typography.itemColor)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer()
+
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.40))
             }
+            .buttonStyle(.plain)
+            .opacity(isHovered ? 1 : 0)
+            .allowsHitTesting(isHovered)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .frame(height: 34)
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: PanelListRowHoverStyle.cornerRadius, style: .continuous)
@@ -1318,20 +1291,22 @@ private struct DictationRow: View {
         )
         .contentShape(Rectangle())
         .onTapGesture { onTap() }
-        .onHover { isHovering = $0 }
-        .animation(PanelListRowHoverStyle.animation, value: isHovering)
+        .animation(PanelListRowHoverStyle.animation, value: isHovered)
         .animation(PanelListRowHoverStyle.animation, value: copyFlashed)
+        .onHover { isHovered = $0 }
         .contextMenu {
             Button("Copy") { onTap() }
             Button("Delete", role: .destructive) { onDelete() }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text("Dictation: \(textPreview). \(metaLine)"))
+        .accessibilityLabel(Text("Dictation: \(textPreview)"))
     }
 
     private var rowFill: Color {
+        // Brief tap-flash on top of the hover wash so a quick tap is
+        // visible even before hover registers (e.g., trackpad clicks).
         if copyFlashed { return Color.white.opacity(0.18) }
-        if isHovering { return PanelListRowHoverStyle.hoverFill }
+        if isHovered { return PanelListRowHoverStyle.hoverFill }
         return Color.clear
     }
 
@@ -1339,26 +1314,5 @@ private struct DictationRow: View {
         let trimmed = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "(empty)" : trimmed
     }
-
-    private var metaLine: String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        let timeAgo = formatter.localizedString(for: entry.timestamp, relativeTo: Date())
-        let dur = formatDictationDuration(entry.durationSec)
-        if let app = entry.sourceAppName, !app.isEmpty {
-            return "\(timeAgo) · \(dur) · \(app)"
-        }
-        return "\(timeAgo) · \(dur)"
-    }
-}
-
-/// Compact duration: "6s", "14s", "1m 12s", "2m 30s". Dictations are always
-/// short (<5min by definition of the short path).
-fileprivate func formatDictationDuration(_ seconds: Int) -> String {
-    if seconds < 60 { return "\(seconds)s" }
-    let m = seconds / 60
-    let s = seconds % 60
-    if s == 0 { return "\(m)m" }
-    return "\(m)m \(s)s"
 }
 
