@@ -387,12 +387,28 @@ final class TranscriptionFloatingWidgetController: NSObject {
                 cancelAllPendingWork(except: .recording)
                 phase = .recording
                 // updateHosted FIRST so displayState.mode reflects the new
-                // mode by the time applyPhaseFrame measures content for
-                // dynamic sizing. applyPhaseFrame still runs before
-                // showCollapsedPanelIfNeeded so the slide-in animation
-                // captures the canonical phase target.
+                // mode by the time sizeForCurrentMode measures content for
+                // dynamic sizing.
                 updateHosted(mode: .recording(durationSeconds: ts.duration))
-                applyPhaseFrame(animated: oldPhase != .none)
+                // TranscriptionService publishes once per second during
+                // recording (duration tick). Re-anchoring the panel every
+                // tick yanks it back to the persisted snap zone mid-drag,
+                // so only re-anchor when there's an actual reason to: the
+                // initial transition into .recording, or a width change
+                // (the MM:SS → H:MM:SS bump at the 1-hour mark; the timer
+                // is monospaced so seconds-only ticks don't change width).
+                let phaseChanged = oldPhase != .recording
+                let newSize = sizeForCurrentMode()
+                let sizeChanged: Bool
+                if let current = panel?.frame.size {
+                    sizeChanged = abs(current.width - newSize.width) > 0.5
+                        || abs(current.height - newSize.height) > 0.5
+                } else {
+                    sizeChanged = true
+                }
+                if phaseChanged || sizeChanged {
+                    applyPhaseFrame(animated: oldPhase != .none)
+                }
                 showCollapsedPanelIfNeeded()
             }
             return
