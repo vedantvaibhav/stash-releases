@@ -332,11 +332,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// show.
     private var hideInFlight = false
 
-    /// Drag-to-snap state (mirrors the main tray's `snapToNearestZone` behavior).
-    /// `isMovableByWindowBackground` handles the live drag; this monitor observes
-    /// mouseDown / mouseUp on our panel to decide when a drag actually ended.
+    /// Drag-to-snap state. The pill's SwiftUI root fills the panel with an
+    /// opaque hit-claiming Capsule, so `isMovableByWindowBackground` never
+    /// engages — SwiftUI consumes every mouseDown before AppKit can vote.
+    /// Drag is driven explicitly via `NSWindow.performDrag(with:)` from the
+    /// local event monitor below; that bypasses all hit-testing.
     private static let snapZoneDefaultsKey = "TranscriptionPillSnapZone"
-    private var dragStartOrigin: NSPoint?
     private var dragMonitor: Any?
 
     var onOpenTranscription: (() -> Void)?
@@ -684,30 +685,44 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
     private func installDragMonitor() {
         guard dragMonitor == nil else { return }
-        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
-            self?.handleDragEvent(event)
-            return event
+        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            guard let self else { return event }
+            return self.handleDragEvent(event)
         }
     }
 
-    private func handleDragEvent(_ event: NSEvent) {
-        guard let panel, event.window === panel else { return }
-        switch event.type {
-        case .leftMouseDown:
-            dragStartOrigin = panel.frame.origin
-        case .leftMouseUp:
-            guard let start = dragStartOrigin else { return }
-            dragStartOrigin = nil
-            // Let AppKit finish processing `isMovableByWindowBackground` before
-            // we read the final origin.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let panel = self.panel else { return }
-                let moved = hypot(panel.frame.origin.x - start.x, panel.frame.origin.y - start.y) > 4
-                if moved { self.snapToNearestZone() }
-            }
-        default:
-            break
-        }
+    /// Returns `nil` when we hijack the event to drive a drag, or `event`
+    /// to let it pass through (e.g. taps on the stop button).
+    private func handleDragEvent(_ event: NSEvent) -> NSEvent? {
+        guard let panel, event.window === panel else { return event }
+        if isOverStopButton(event: event, in: panel) { return event }
+
+        let start = panel.frame.origin
+        // performDrag runs a modal tracking loop until mouseUp; it does not
+        // consult isMovableByWindowBackground or any hit-test rules, so it
+        // works even though SwiftUI's hit-claim swallowed the normal path.
+        panel.performDrag(with: event)
+        let moved = hypot(panel.frame.origin.x - start.x,
+                          panel.frame.origin.y - start.y) > 4
+        if moved { snapToNearestZone() }
+        return nil
+    }
+
+    /// True when the mouseDown is inside the recording-stop button's hit
+    /// rect — pass-through so SwiftUI's `.onTapGesture` on `StopRecordingButton`
+    /// can fire. Non-recording modes have no interactive control on the pill.
+    private func isOverStopButton(event: NSEvent, in panel: PillPanel) -> Bool {
+        guard case .recording = displayState.mode else { return false }
+        let p = event.locationInWindow
+        let w = panel.frame.size.width
+        let h = panel.frame.size.height
+        let dotSize = DesignTokens.Pill.recordingDotSize
+        let trailingPad = DesignTokens.Pill.trailingPadding
+        let centerX = w - trailingPad - dotSize / 2
+        let centerY = h / 2
+        let hitSlop: CGFloat = 6
+        let half = dotSize / 2 + hitSlop
+        return abs(p.x - centerX) <= half && abs(p.y - centerY) <= half
     }
 
     private func snapToNearestZone() {
