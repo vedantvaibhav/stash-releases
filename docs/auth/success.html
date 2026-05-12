@@ -132,14 +132,28 @@
 
       const SPACING = 28;
       const DOT_SIZE = 2;
-      const BASE_ALPHA = 0.15;
-      const SHIMMER_AMP = 0.15;
-      const PERIOD_MS = 3000;
+      const BASE_ALPHA = 0.13;
+      const PEAK_MIN = 0.17, PEAK_MAX = 0.30;
+      const DUR_MIN = 700, DUR_MAX = 1700;
+      const GAP_MIN = 9000, GAP_MAX = 22000;
 
       let dpr = Math.max(1, window.devicePixelRatio || 1);
       let dots = [];
       let raf = null;
       let resizePending = false;
+
+      // Stagger first flares across [0, GAP_MAX] so the field doesn't all start dark.
+      function initialSchedule(d, t) {
+        d.fs = t + Math.random() * GAP_MAX;
+        d.fe = d.fs + DUR_MIN + Math.random() * (DUR_MAX - DUR_MIN);
+        d.peak = PEAK_MIN + Math.random() * (PEAK_MAX - PEAK_MIN);
+      }
+
+      function rescheduleFlare(d, t) {
+        d.fs = t + GAP_MIN + Math.random() * (GAP_MAX - GAP_MIN);
+        d.fe = d.fs + DUR_MIN + Math.random() * (DUR_MAX - DUR_MIN);
+        d.peak = PEAK_MIN + Math.random() * (PEAK_MAX - PEAK_MIN);
+      }
 
       function layout() {
         resizePending = false;
@@ -157,22 +171,24 @@
         const rows = Math.ceil(h / SPACING) + 1;
         const offX = (w - (cols - 1) * SPACING) / 2;
         const offY = (h - (rows - 1) * SPACING) / 2;
+        const now = performance.now();
         for (let r = 0; r < rows; r++) {
           for (let c = 0; c < cols; c++) {
-            // Phase offset by diagonal index produces shimmer waves, not a uniform pulse.
-            dots.push({ x: offX + c * SPACING, y: offY + r * SPACING, p: (c + r) * 0.35 });
+            const d = { x: offX + c * SPACING, y: offY + r * SPACING, fs: 0, fe: 0, peak: 0 };
+            initialSchedule(d, now);
+            dots.push(d);
           }
         }
       }
 
-      function paint(alphaFor) {
+      function paintStatic() {
         const w = canvas.width / dpr;
         const h = canvas.height / dpr;
         ctx.clearRect(0, 0, w, h);
         ctx.fillStyle = '#fff';
+        ctx.globalAlpha = BASE_ALPHA;
         for (let i = 0; i < dots.length; i++) {
           const d = dots[i];
-          ctx.globalAlpha = alphaFor(d);
           ctx.fillRect(d.x, d.y, DOT_SIZE, DOT_SIZE);
         }
         ctx.globalAlpha = 1;
@@ -181,8 +197,23 @@
       function frame(t) {
         raf = null;
         if (document.hidden) return;
-        const omega = (2 * Math.PI) / PERIOD_MS;
-        paint(d => Math.max(0, BASE_ALPHA + SHIMMER_AMP * Math.sin(omega * t + d.p)));
+        const w = canvas.width / dpr;
+        const h = canvas.height / dpr;
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#fff';
+        for (let i = 0; i < dots.length; i++) {
+          const d = dots[i];
+          if (t >= d.fe) rescheduleFlare(d, t);
+          let alpha = BASE_ALPHA;
+          if (t >= d.fs) {
+            // Parabolic peak: 4p(1-p) is 1 at midpoint, 0 at endpoints.
+            const p = (t - d.fs) / (d.fe - d.fs);
+            alpha += d.peak * 4 * p * (1 - p);
+          }
+          ctx.globalAlpha = alpha;
+          ctx.fillRect(d.x, d.y, DOT_SIZE, DOT_SIZE);
+        }
+        ctx.globalAlpha = 1;
         raf = requestAnimationFrame(frame);
       }
 
@@ -198,15 +229,19 @@
       window.addEventListener('resize', () => {
         if (resizePending) return;
         resizePending = true;
-        requestAnimationFrame(() => { layout(); if (reduce) paint(() => BASE_ALPHA); });
+        requestAnimationFrame(() => { layout(); if (reduce) paintStatic(); });
       });
 
       document.addEventListener('visibilitychange', () => {
-        document.hidden ? stop() : start();
+        if (document.hidden) { stop(); return; }
+        // Reset flare schedules so resumed timestamps don't trigger a catch-up burst.
+        const now = performance.now();
+        for (let i = 0; i < dots.length; i++) initialSchedule(dots[i], now);
+        start();
       });
 
       layout();
-      if (reduce) paint(() => BASE_ALPHA);
+      if (reduce) paintStatic();
       else start();
     })();
   </script>
