@@ -279,6 +279,14 @@ private final class PillPanel: NSPanel {
     override var canBecomeKey: Bool { false }
 }
 
+// NSHostingView is opaque by default, so mouseDownCanMoveWindow returns false
+// and isMovableByWindowBackground never fires for it. Override to allow the OS
+// to move the pill when the user drags on non-interactive areas of the SwiftUI
+// view. Matches MovableHostingView in PanelController.swift.
+private final class MovablePillHostingView: NSHostingView<PillRootView> {
+    override var mouseDownCanMoveWindow: Bool { true }
+}
+
 // MARK: - Display state + root view
 
 final class PillDisplayState: ObservableObject {
@@ -303,7 +311,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private var panel: PillPanel?
     /// One persistent NSHostingView. Driven by `displayState.mode`; never
     /// replaced across phase transitions.
-    private var hosting: NSHostingView<PillRootView>?
+    private var hosting: MovablePillHostingView?
     private let displayState = PillDisplayState()
     private var cancellables = Set<AnyCancellable>()
     private var panelOpenForWidget = false
@@ -653,7 +661,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
             state: displayState,
             onStop: { [weak self] in self?.transcription?.stopRecording() }
         )
-        let host = NSHostingView(rootView: root)
+        let host = MovablePillHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: w, height: h)
         host.autoresizingMask = [.width, .height]
 
