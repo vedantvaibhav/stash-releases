@@ -730,7 +730,11 @@ final class TranscriptionService: NSObject, ObservableObject {
             "[BLANK_AUDIO]", "[blank_audio]", "[inaudible]", "[Inaudible]",
             "[music]", "[Music]", "[silence]", "[Silence]", "[noise]", "[Noise]",
             "[laughter]", "[Laughter]", "[applause]", "[Applause]",
-            "(No transcript)", "(no transcript)", "(silence)", "(inaudible)"
+            "(No transcript)", "(no transcript)", "(silence)", "(inaudible)",
+            // Added 2026-05-13
+            "(music)", "(Music)", "(applause)", "(Applause)",
+            "(laughter)", "(Laughter)", "(no audio)", "(No audio)",
+            "♪", "♫", "♬"
         ]
         var text = raw
         for token in tokenHallucinations {
@@ -741,6 +745,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         // Match case-insensitively line-by-line so a single hallucination phrase
         // embedded in real speech is not over-stripped.
         let semanticHallucinations: [String] = [
+            // Existing — kept verbatim
             "thank you for watching",
             "thanks for watching",
             "please subscribe",
@@ -770,11 +775,76 @@ final class TranscriptionService: NSObject, ObservableObject {
             "mm-hmm",
             "mm hmm",
             "...",
-            "…"
+            "…",
+            // Added 2026-05-13 — YouTube outro family (the gap that leaked through).
+            // Keep each phrase as the user-reported exact phrasing so future maintainers
+            // can grep for the source of a rule.
+            "if you have any questions or comments",
+            "if you have any questions or comments please post them in the comments",
+            "if you have any questions or comments, please post them in the comments",
+            "if you have any questions or comments please post them below",
+            "if you have any questions or comments, please post them below",
+            "please post them in the comments",
+            "post them in the comments",
+            "leave a comment below",
+            "leave a comment",
+            "let me know in the comments",
+            "let me know what you think in the comments",
+            "drop a comment",
+            "drop a comment below",
+            "comment below",
+            "see you in the next one",
+            "see you in the next video",
+            "see you on the next one",
+            "catch you in the next one",
+            "catch you next time",
+            "thanks so much for watching",
+            "thank you so much for watching",
+            // Extended subscribe family.
+            "hit the bell",
+            "ring the bell",
+            "smash the like button",
+            "tap the subscribe button",
+            "tap that subscribe button",
+            "click subscribe",
+            "click the subscribe button",
+            "follow me on",
+            // Multilingual high-frequency outros Whisper emits on silence. Match the
+            // raw script — Whisper does not transliterate these. Pass-2 lowercase
+            // normalisation is a no-op for non-Latin scripts and that's fine; we
+            // compare the trimmed lowercased line against each entry below.
+            "merci",
+            "merci d'avoir regardé",
+            "merci d'avoir regardé cette vidéo",
+            "merci de votre attention",
+            "abonnez-vous",
+            "n'oubliez pas de vous abonner",
+            "спасибо за просмотр",
+            "подписывайтесь на канал",
+            "ご視聴ありがとうございました",
+            "チャンネル登録お願いします",
+            "다음 영상에서 만나요",
+            "구독과 좋아요 부탁드립니다",
+            "gracias por ver",
+            "gracias por su atención",
+            "danke fürs zuschauen",
+            "obrigado por assistir",
+            "grazie per la visione"
         ]
+        // Trim set covers Latin + East Asian (CJK) + full-width punctuation.
+        // Whisper emits its native locale's punctuation; without these,
+        // "ご視聴ありがとうございました。" never matches the entry
+        // "ご視聴ありがとうございました" stored in semanticHallucinations.
+        let punctuationTrim = CharacterSet(charactersIn:
+            "-.,!? "                              // Latin
+            + "。、！？「」『』〔〕（）〈〉《》【】"   // Japanese / Chinese
+            + "！？，．：；"                       // Full-width variants
+            + "\u{200B}\u{3000}"                  // Zero-width space, ideographic space
+        )
+
         let lines = text.components(separatedBy: .newlines).filter { line in
             let stripped = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "-.,!? "))
+                .trimmingCharacters(in: punctuationTrim)
             guard !stripped.isEmpty else { return false }
             let normalised = stripped.lowercased()
             if semanticHallucinations.contains(where: { normalised == $0 }) { return false }
@@ -787,7 +857,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         // PASS 3 — full-output semantic match (handles multi-word phrases that
         // survived line filtering because they were the only line).
         let fullNormalised = cleaned.lowercased()
-            .trimmingCharacters(in: CharacterSet(charactersIn: ".,!? "))
+            .trimmingCharacters(in: punctuationTrim)
         if semanticHallucinations.contains(where: { fullNormalised == $0 }) {
             return nil
         }
@@ -935,4 +1005,14 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
         return content
     }
+
+    // MARK: - Test seam
+    //
+    // Re-exposes the private hallucination filter for unit tests. DEBUG-only
+    // so release builds keep the surface area minimal.
+    #if DEBUG
+    func testSanitiseWhisperOutput(_ raw: String) -> String? {
+        sanitiseWhisperOutput(raw)
+    }
+    #endif
 }
