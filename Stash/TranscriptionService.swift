@@ -820,10 +820,10 @@ final class TranscriptionService: NSObject, ObservableObject {
         let secs = durationSeconds % 60
         let durationString = mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
         let header: String
-        if error.lowercased().contains("warning") || error.lowercased().contains("hard-stop") {
-            header = "🟡 *Transcription event*"
-        } else if error.lowercased().contains("hallucination filter") {
+        if error.lowercased().contains("hallucination filter") {
             header = "🔵 *Filter rejection*"
+        } else if error.lowercased().contains("warning") || error.lowercased().contains("hard-stop") {
+            header = "🟡 *Transcription event*"
         } else {
             header = "🔴 *Transcription failed*"
         }
