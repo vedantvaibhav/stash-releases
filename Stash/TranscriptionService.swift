@@ -87,6 +87,23 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var autoStoppedAtLimit = false
     private var processingWatchdog: DispatchWorkItem?
 
+    /// Fires once at 85 min (5 min before the hard-stop at 5400s) to warn
+    /// the user that the recording is about to be auto-stopped.
+    private var durationWarningTimer: Timer?
+    /// Periodic sampler (every 30s) that checks the on-disk audio file size
+    /// and fires the 20 MB warning toast / the 24 MB hard-stop.
+    private var sizeMonitorTimer: Timer?
+    /// One-shot per recording session — prevents the duration warning toast
+    /// from re-firing if Combine publishes during the warning's hold window.
+    /// Reset to false in startRecording.
+    private var didShowDurationWarning = false
+    /// Same idea for the file-size warning.
+    private var didShowSizeWarning = false
+    /// Set true when the size-monitor's hard-stop trips, so processRecording
+    /// can surface the right toast message just like `autoStoppedAtLimit`
+    /// does for the duration limit.
+    private var autoStoppedAtSizeLimit = false
+
     // MARK: - Start
 
     func startRecording() {
@@ -98,6 +115,9 @@ final class TranscriptionService: NSObject, ObservableObject {
         // we flip the source out from under it here.
         errorMessage = nil
         completionMessage = nil
+        didShowDurationWarning = false
+        didShowSizeWarning = false
+        autoStoppedAtSizeLimit = false
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -205,8 +225,72 @@ final class TranscriptionService: NSObject, ObservableObject {
             }
             if let t = maxDurationTimer { RunLoop.main.add(t, forMode: .common) }
 
+            durationWarningTimer?.invalidate()
+            durationWarningTimer = Timer(timeInterval: 5100, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.isRecording, !self.didShowDurationWarning else { return }
+                    self.didShowDurationWarning = true
+                    self.showToast(
+                        "Recording will stop in 5 min — start a new session for more.",
+                        hold: DesignTokens.Pill.toastWarningHoldDuration
+                    )
+                    self.reportToSlack(
+                        error: "Duration warning fired at 85 min (5 min before hard cap)",
+                        durationSeconds: self.duration
+                    )
+                }
+            }
+            if let t = durationWarningTimer { RunLoop.main.add(t, forMode: .common) }
+
+            sizeMonitorTimer?.invalidate()
+            sizeMonitorTimer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.isRecording else { return }
+                    self.checkRecordingSize()
+                }
+            }
+            if let t = sizeMonitorTimer { RunLoop.main.add(t, forMode: .common) }
+            // Defensive immediate first sample. Timer's first tick is 30s
+            // after schedule; an attacker (or a very high-bitrate AAC
+            // configuration) could in principle grow the file past 20 MB
+            // inside that window. At t≈0 the file is usually empty/missing
+            // and the sample no-ops via the guards inside checkRecordingSize,
+            // but covering this here is cheap insurance.
+            checkRecordingSize()
+
         } catch {
             errorMessage = "Could not start recording — check your microphone and try again"
+        }
+    }
+
+    /// Lightweight size sampler. Reads only the file's attribute table —
+    /// `attributesOfItem(atPath:)` is fast and doesn't memory-map the file.
+    /// Warns once at 20 MB; hard-stops at 24 MB (1 MB head-room before
+    /// Whisper's 25 MB cap). Both events report to Slack.
+    private func checkRecordingSize() {
+        guard let url = recordingURL else { return }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        guard let bytes = attrs?[.size] as? Int else { return }
+        let mb = Double(bytes) / 1_048_576.0
+
+        let warnAtMB: Double = 20
+        let stopAtMB: Double = 24
+
+        if !didShowSizeWarning, mb >= warnAtMB {
+            didShowSizeWarning = true
+            showToast(
+                "Approaching upload limit — recording will stop soon. Start a new session for more.",
+                hold: DesignTokens.Pill.toastWarningHoldDuration
+            )
+            reportToSlack(
+                error: "Size warning fired at \(String(format: "%.1f", mb)) MB (threshold \(warnAtMB) MB)",
+                durationSeconds: duration
+            )
+        }
+
+        if mb >= stopAtMB {
+            autoStoppedAtSizeLimit = true
+            stopRecording()
         }
     }
 
@@ -257,6 +341,10 @@ final class TranscriptionService: NSObject, ObservableObject {
         levelTimer = nil
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
+        durationWarningTimer?.invalidate()
+        durationWarningTimer = nil
+        sizeMonitorTimer?.invalidate()
+        sizeMonitorTimer = nil
         recorder?.stop()
         recorder = nil
         isRecording = false
@@ -485,8 +573,26 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         if autoStoppedAtLimit {
             autoStoppedAtLimit = false
-            lastErrorForBanner = "90-minute limit reached — processing what was captured. Start a new session for the rest."
-            clearBannerAfterDelay(6.0)
+            showToast(
+                "Recording stopped at 90-min limit. Processing what was captured.",
+                hold: DesignTokens.Pill.toastWarningHoldDuration
+            )
+            reportToSlack(
+                error: "Duration hard-stop fired at 90 min",
+                durationSeconds: durationSeconds
+            )
+        }
+
+        if autoStoppedAtSizeLimit {
+            autoStoppedAtSizeLimit = false
+            showToast(
+                "Recording stopped — file size limit reached. Processing what was captured.",
+                hold: DesignTokens.Pill.toastWarningHoldDuration
+            )
+            reportToSlack(
+                error: "Size hard-stop fired at >=24 MB",
+                durationSeconds: durationSeconds
+            )
         }
 
         // MARK: Whisper — with one auto-retry on transient errors
