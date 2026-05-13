@@ -246,11 +246,6 @@ fileprivate func formatPillDuration(_ seconds: Int) -> String {
 // Tap target = visible dot. The earlier 18pt invisible-tap-area produced an
 // asymmetric label→dot gap (the tap area's invisible left side ate into the
 // gap), making the pill look unbalanced relative to the iconDisc→label gap.
-//
-// Uses `.onTapGesture` (not `Button`) so the parent panel's window-drag
-// (`isMovableByWindowBackground = true`) is still reachable from the trailing
-// region — a Button would swallow click-and-drag and fire its action on
-// mouse-up, accidentally stopping recording when the user tried to drag.
 
 private struct StopRecordingButton: View {
     let onStop: () -> Void
@@ -311,6 +306,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private enum Phase { case none, recording, processing, completion }
     private var phase: Phase = .none
     private var completionWorkItem: DispatchWorkItem?
+    /// The completion message currently being held by `completionWorkItem`.
+    /// Used to avoid re-scheduling the hide timer on every sync() tick while
+    /// the same message stays in `ts.completionMessage` — important for
+    /// mid-recording warnings where duration ticks would otherwise reset the
+    /// hold indefinitely.
+    private var heldCompletionMessage: String?
 
     /// Bumped on every show/hide animation start. The completion handler of
     /// each animation checks the token: a stale completion (e.g., hide's
@@ -324,16 +325,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// show.
     private var hideInFlight = false
 
-    /// Drag-to-snap state (mirrors the main tray's `snapToNearestZone` behavior).
-    /// `isMovableByWindowBackground` handles the live drag; this monitor observes
-    /// mouseDown / mouseUp on our panel to decide when a drag actually ended.
-    private static let snapZoneDefaultsKey = "TranscriptionPillSnapZone"
-    private var dragStartOrigin: NSPoint?
-    private var dragMonitor: Any?
-
     var onOpenTranscription: (() -> Void)?
 
     func attach(transcription: TranscriptionService) {
+        // One-time cleanup of the snap-zone key persisted by prior builds
+        // that tried to support drag-to-snap on the pill. The pill is now
+        // fixed at top-center and nothing reads this key.
+        UserDefaults.standard.removeObject(forKey: "TranscriptionPillSnapZone")
+
         self.transcription = transcription
         transcription.objectWillChange
             .receive(on: DispatchQueue.main)
@@ -343,9 +342,6 @@ final class TranscriptionFloatingWidgetController: NSObject {
     }
 
     deinit {
-        // NSEvent monitors are NOT auto-removed on deallocation; they hold
-        // references to their handler closure and stay live until removed.
-        if let m = dragMonitor { NSEvent.removeMonitor(m) }
         completionWorkItem?.cancel()
     }
 
@@ -364,12 +360,47 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        // Recording supersedes everything. The takeover runs inside a single
-        // Transaction with `disablesAnimations` so SwiftUI sees the mode
-        // mutation as one atomic non-animated change — without the wrap, a
-        // residual completion-state pill would cross-fade out as the recording
-        // view fades in (the user-visible "ghost flash"). Subsequent mutations
-        // (recording → processing → completion) animate normally.
+        // Completion supersedes recording so mid-recording warnings (85-min,
+        // 20-MB) can briefly flash on the pill, then return to recording mode
+        // when their hold expires (see expireCompletion). End-of-recording
+        // completions ("Note saved", "No audio", "Failed") work the same way,
+        // they just see isRecording==false at expiry and hide instead.
+        //
+        // Ghost-flash guard: residual completion state at the start of a new
+        // recording is cleared in TranscriptionService.startRecording
+        // (completionMessage = nil), so this ordering does not introduce
+        // a stale-completion flash when a new recording begins.
+        if let msg = ts.completionMessage {
+            let oldPhase = phase
+            cancelAllPendingWork(except: .completion)
+            phase = .completion
+            updateHosted(mode: .completion(message: msg))
+            applyPhaseFrame(animated: oldPhase != .none)
+            showCollapsedPanelIfNeeded()
+
+            // Only schedule the hide timer when entering completion for a NEW
+            // message. Without this guard, every sync() tick (e.g., duration
+            // ticking during a mid-recording warning) would re-arm the timer
+            // and the completion would never expire.
+            if heldCompletionMessage != msg {
+                heldCompletionMessage = msg
+                completionWorkItem?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.expireCompletion()
+                }
+                completionWorkItem = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
+            }
+            return
+        }
+
+        // Recording supersedes everything below. The takeover runs inside a
+        // single Transaction with `disablesAnimations` so SwiftUI sees the
+        // mode mutation as one atomic non-animated change — without the wrap,
+        // a residual completion-state pill would cross-fade out as the
+        // recording view fades in (the user-visible "ghost flash").
+        // Subsequent mutations (recording → processing → completion) animate
+        // normally.
         if ts.isRecording {
             let oldPhase = phase
             var transaction = Transaction()
@@ -377,6 +408,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
             withTransaction(transaction) {
                 cancelAllPendingWork(except: .recording)
                 phase = .recording
+                heldCompletionMessage = nil
                 // updateHosted FIRST so displayState.mode reflects the new
                 // mode by the time applyPhaseFrame measures content for
                 // dynamic sizing. applyPhaseFrame still runs before
@@ -389,28 +421,11 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        if let msg = ts.completionMessage {
-            let oldPhase = phase
-            cancelAllPendingWork(except: .completion)
-            phase = .completion
-            updateHosted(mode: .completion(message: msg))
-            applyPhaseFrame(animated: oldPhase != .none)
-            showCollapsedPanelIfNeeded()
-
-            let work = DispatchWorkItem { [weak self] in
-                self?.hidePanel()
-                self?.phase = .none
-                self?.completionWorkItem = nil
-            }
-            completionWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
-            return
-        }
-
         if ts.isProcessing {
             let oldPhase = phase
             cancelAllPendingWork(except: .processing)
             phase = .processing
+            heldCompletionMessage = nil
             updateHosted(mode: .processing)
             applyPhaseFrame(animated: oldPhase != .none)
             showCollapsedPanelIfNeeded()
@@ -420,7 +435,38 @@ final class TranscriptionFloatingWidgetController: NSObject {
         if phase != .completion {
             hidePanel()
             phase = .none
+            heldCompletionMessage = nil
         }
+    }
+
+    /// Fires when the completion's hold timer expires. Returns the pill to
+    /// the right downstream state:
+    ///   - recording still active (mid-recording warning case) → recording
+    ///   - processing still active (hard-stop completion before async work
+    ///     finishes) → processing
+    ///   - neither → hide
+    /// Without this, the post-completion behaviour would always be "hide,"
+    /// which is wrong for both warnings and hard-stop transitions.
+    private func expireCompletion() {
+        guard phase == .completion else { return }
+        completionWorkItem = nil
+        heldCompletionMessage = nil
+        if let ts = transcription {
+            if ts.isRecording {
+                phase = .recording
+                updateHosted(mode: .recording(durationSeconds: ts.duration))
+                applyPhaseFrame(animated: true)
+                return
+            }
+            if ts.isProcessing {
+                phase = .processing
+                updateHosted(mode: .processing)
+                applyPhaseFrame(animated: true)
+                return
+            }
+        }
+        hidePanel()
+        phase = .none
     }
 
     /// Resize the panel frame to match the current `phase`. Animated when
@@ -550,20 +596,8 @@ final class TranscriptionFloatingWidgetController: NSObject {
         })
     }
 
-    /// Read the persisted snap zone, falling back to `.topCenter`.
-    private func currentSnapZone() -> PanelSnapZone {
-        if let raw = UserDefaults.standard.string(forKey: Self.snapZoneDefaultsKey),
-           let zone = PanelSnapZone(rawValue: raw) {
-            return zone
-        }
-        return .topCenter
-    }
-
-    /// Position the panel at the persisted snap zone using the given size.
-    /// `duration` defaults to drag-snap's settle timing; phase changes
-    /// override with their own value. `timingFunction` lets phase changes
-    /// pass an ease-in-out curve while drag-snap keeps the heavier ease-out
-    /// cubic-bezier.
+    /// Position the panel at its fixed top-center anchor using the given size.
+    /// The pill is not draggable; this is the only zone it ever uses.
     private func applyPhaseAwareFrame(
         size: CGSize,
         animated: Bool,
@@ -571,7 +605,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
         timingFunction: CAMediaTimingFunction? = nil
     ) {
         guard let screen = NSScreen.main else { return }
-        let target = currentSnapZone().visibleFrame(size: size, screen: screen.visibleFrame)
+        let target = PanelSnapZone.topCenter.visibleFrame(size: size, screen: screen.visibleFrame)
         applyPanelFrame(target, animated: animated, duration: duration, timingFunction: timingFunction)
     }
 
@@ -646,7 +680,6 @@ final class TranscriptionFloatingWidgetController: NSObject {
         p.hidesOnDeactivate = false
         p.isFloatingPanel = true
         p.becomesKeyOnlyIfNeeded = false
-        p.isMovableByWindowBackground = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         let root = PillRootView(
@@ -662,52 +695,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
         panel = p
 
         restorePosition()
-        installDragMonitor()
     }
 
-    /// First launch uses the menu-bar default (top-center). Subsequent
-    /// launches restore whichever corner the user last snapped the pill into.
+    /// Position the pill at its fixed top-center anchor. The pill is not
+    /// draggable; there's no per-user position to restore.
     private func restorePosition() {
         let size = NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
         applyPhaseAwareFrame(size: size, animated: false)
-    }
-
-    // MARK: Drag-to-snap
-
-    private func installDragMonitor() {
-        guard dragMonitor == nil else { return }
-        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
-            self?.handleDragEvent(event)
-            return event
-        }
-    }
-
-    private func handleDragEvent(_ event: NSEvent) {
-        guard let panel, event.window === panel else { return }
-        switch event.type {
-        case .leftMouseDown:
-            dragStartOrigin = panel.frame.origin
-        case .leftMouseUp:
-            guard let start = dragStartOrigin else { return }
-            dragStartOrigin = nil
-            // Let AppKit finish processing `isMovableByWindowBackground` before
-            // we read the final origin.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let panel = self.panel else { return }
-                let moved = hypot(panel.frame.origin.x - start.x, panel.frame.origin.y - start.y) > 4
-                if moved { self.snapToNearestZone() }
-            }
-        default:
-            break
-        }
-    }
-
-    private func snapToNearestZone() {
-        guard let panel, let screen = NSScreen.main else { return }
-        let vf = screen.visibleFrame
-        let size = panel.frame.size
-        let zone = PanelSnapZone.nearest(to: panel.frame, size: size, screen: vf)
-        UserDefaults.standard.set(zone.rawValue, forKey: Self.snapZoneDefaultsKey)
-        applyPhaseAwareFrame(size: size, animated: true)
     }
 }
