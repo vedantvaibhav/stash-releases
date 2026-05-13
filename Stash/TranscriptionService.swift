@@ -58,6 +58,12 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Shown inside the RecordingBanner so the user can actually read the failure
     /// message (the pill's "Failed ✗" alone disappears too fast). Auto-clears after 4 s.
     @Published var lastErrorForBanner: String? = nil
+    /// Mirror of the most recently-requested toast. The pill controller
+    /// observes this via Combine and forwards new values to
+    /// `TranscriptionFloatingWidgetController.showToast(_:)`. Cleared
+    /// immediately after consumption so the controller's sink doesn't
+    /// re-fire on every objectWillChange tick.
+    @Published var pendingToast: TranscriptionToastMessage? = nil
     /// Set by `processRecording` before branching so the onNoteCreated callback
     /// (in PanelController) knows whether to auto-open the editor (long) or show
     /// the list with the new quick-transcript pinned at the top (short).
@@ -589,6 +595,17 @@ final class TranscriptionService: NSObject, ObservableObject {
                 clearBannerAfterDelay()
             }
         }
+    }
+
+    /// Show a toast below the pill. Used for error and warning copy that
+    /// shouldn't morph the pill itself. The `hold` parameter defaults to
+    /// `DesignTokens.Pill.toastDefaultHoldDuration` (4.5s); warnings pass
+    /// `DesignTokens.Pill.toastWarningHoldDuration` (6.0s).
+    ///
+    /// Assigns through `pendingToast`; the floating widget controller's
+    /// sink picks it up and forwards to its `showToast(_:)` panel API.
+    private func showToast(_ text: String, hold: TimeInterval = DesignTokens.Pill.toastDefaultHoldDuration) {
+        pendingToast = TranscriptionToastMessage(text: text, hold: hold)
     }
 
     private func showCompletion(_ message: String) {

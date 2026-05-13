@@ -94,6 +94,18 @@ enum DesignTokens {
         static let contentRemovalDuration: TimeInterval = 0.08
         static let contentInsertionDelay: TimeInterval = 0.16
         static let contentInsertionDuration: TimeInterval = 0.16
+
+        // Toast — separate panel below the pill carrying error / warning text.
+        // Same height as the pill so the visual rhythm stays consistent;
+        // width is dynamic via NSString sizing, like the pill itself.
+        static let toastGapBelow: CGFloat = 8
+        static let toastEnterDuration: TimeInterval = 0.15
+        static let toastExitDuration: TimeInterval = 0.20
+        static let toastDefaultHoldDuration: TimeInterval = 4.5
+        static let toastWarningHoldDuration: TimeInterval = 6.0
+        // Vertical slide on enter/exit (positive = slides down on enter,
+        // slides up on exit). Small offset so the motion is subtle.
+        static let toastSlideOffset: CGFloat = 6
     }
 
     enum Typography {
