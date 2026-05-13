@@ -407,7 +407,13 @@ final class TranscriptionFloatingWidgetController: NSObject {
                     sizeChanged = true
                 }
                 if phaseChanged || sizeChanged {
-                    applyPhaseFrame(animated: oldPhase != .none)
+                    // DIAGNOSTIC: temporarily disabled to determine whether
+                    // per-tick applyPhaseFrame is the cause of mid-drag yank.
+                    // If drag works smoothly with this disabled, the gate is
+                    // broken (likely panel.frame.size reading mid-animation
+                    // values). Restore with a lastAppliedPhaseSize comparison.
+                    _ = (phaseChanged, sizeChanged) // keep referenced
+                    // applyPhaseFrame(animated: oldPhase != .none)
                 }
                 showCollapsedPanelIfNeeded()
             }
