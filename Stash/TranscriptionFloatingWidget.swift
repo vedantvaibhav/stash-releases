@@ -274,15 +274,6 @@ private final class PillPanel: NSPanel {
     override var canBecomeKey: Bool { false }
 }
 
-/// Sibling panel to PillPanel carrying error / warning text. Same
-/// borderless + nonactivating config so it never steals focus or
-/// activates the app. Sized and positioned by the controller; the
-/// hosting view is a plain NSHostingView (no drag, no
-/// mouseDownCanMoveWindow override).
-private final class ToastPanel: NSPanel {
-    override var canBecomeKey: Bool { false }
-}
-
 // MARK: - Display state + root view
 
 final class PillDisplayState: ObservableObject {
@@ -312,19 +303,15 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private var cancellables = Set<AnyCancellable>()
     private var panelOpenForWidget = false
 
-    // Toast — separate sibling panel beneath the pill. Independent of the
-    // pill's phase machine: showing / hiding the toast must NOT call
-    // applyPhaseFrame, must NOT touch the pill panel, must NOT cancel
-    // completionWorkItem.
-    private var toastPanel: ToastPanel?
-    private var toastHosting: NSHostingView<TranscriptionToastRootView>?
-    private let toastState = TranscriptionToastDisplayState()
-    private var toastAnimationToken: UInt64 = 0
-    private var toastExitWorkItem: DispatchWorkItem?
-
     private enum Phase { case none, recording, processing, completion }
     private var phase: Phase = .none
     private var completionWorkItem: DispatchWorkItem?
+    /// The completion message currently being held by `completionWorkItem`.
+    /// Used to avoid re-scheduling the hide timer on every sync() tick while
+    /// the same message stays in `ts.completionMessage` — important for
+    /// mid-recording warnings where duration ticks would otherwise reset the
+    /// hold indefinitely.
+    private var heldCompletionMessage: String?
 
     /// Bumped on every show/hide animation start. The completion handler of
     /// each animation checks the token: a stale completion (e.g., hide's
@@ -351,22 +338,11 @@ final class TranscriptionFloatingWidgetController: NSObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.sync() }
             .store(in: &cancellables)
-        transcription.$pendingToast
-            .receive(on: DispatchQueue.main)
-            .compactMap { $0 }
-            .sink { [weak self, weak transcription] toast in
-                guard let self else { return }
-                self.showToast(toast)
-                // Clear synchronously so a repeat assignment fires Combine again.
-                transcription?.pendingToast = nil
-            }
-            .store(in: &cancellables)
         sync()
     }
 
     deinit {
         completionWorkItem?.cancel()
-        toastExitWorkItem?.cancel()
     }
 
     func setPanelOpenForWidget(_ open: Bool) {
@@ -384,12 +360,47 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        // Recording supersedes everything. The takeover runs inside a single
-        // Transaction with `disablesAnimations` so SwiftUI sees the mode
-        // mutation as one atomic non-animated change — without the wrap, a
-        // residual completion-state pill would cross-fade out as the recording
-        // view fades in (the user-visible "ghost flash"). Subsequent mutations
-        // (recording → processing → completion) animate normally.
+        // Completion supersedes recording so mid-recording warnings (85-min,
+        // 20-MB) can briefly flash on the pill, then return to recording mode
+        // when their hold expires (see expireCompletion). End-of-recording
+        // completions ("Note saved", "No audio", "Failed") work the same way,
+        // they just see isRecording==false at expiry and hide instead.
+        //
+        // Ghost-flash guard: residual completion state at the start of a new
+        // recording is cleared in TranscriptionService.startRecording
+        // (completionMessage = nil), so this ordering does not introduce
+        // a stale-completion flash when a new recording begins.
+        if let msg = ts.completionMessage {
+            let oldPhase = phase
+            cancelAllPendingWork(except: .completion)
+            phase = .completion
+            updateHosted(mode: .completion(message: msg))
+            applyPhaseFrame(animated: oldPhase != .none)
+            showCollapsedPanelIfNeeded()
+
+            // Only schedule the hide timer when entering completion for a NEW
+            // message. Without this guard, every sync() tick (e.g., duration
+            // ticking during a mid-recording warning) would re-arm the timer
+            // and the completion would never expire.
+            if heldCompletionMessage != msg {
+                heldCompletionMessage = msg
+                completionWorkItem?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.expireCompletion()
+                }
+                completionWorkItem = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
+            }
+            return
+        }
+
+        // Recording supersedes everything below. The takeover runs inside a
+        // single Transaction with `disablesAnimations` so SwiftUI sees the
+        // mode mutation as one atomic non-animated change — without the wrap,
+        // a residual completion-state pill would cross-fade out as the
+        // recording view fades in (the user-visible "ghost flash").
+        // Subsequent mutations (recording → processing → completion) animate
+        // normally.
         if ts.isRecording {
             let oldPhase = phase
             var transaction = Transaction()
@@ -397,6 +408,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
             withTransaction(transaction) {
                 cancelAllPendingWork(except: .recording)
                 phase = .recording
+                heldCompletionMessage = nil
                 // updateHosted FIRST so displayState.mode reflects the new
                 // mode by the time applyPhaseFrame measures content for
                 // dynamic sizing. applyPhaseFrame still runs before
@@ -409,28 +421,11 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        if let msg = ts.completionMessage {
-            let oldPhase = phase
-            cancelAllPendingWork(except: .completion)
-            phase = .completion
-            updateHosted(mode: .completion(message: msg))
-            applyPhaseFrame(animated: oldPhase != .none)
-            showCollapsedPanelIfNeeded()
-
-            let work = DispatchWorkItem { [weak self] in
-                self?.hidePanel()
-                self?.phase = .none
-                self?.completionWorkItem = nil
-            }
-            completionWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6, execute: work)
-            return
-        }
-
         if ts.isProcessing {
             let oldPhase = phase
             cancelAllPendingWork(except: .processing)
             phase = .processing
+            heldCompletionMessage = nil
             updateHosted(mode: .processing)
             applyPhaseFrame(animated: oldPhase != .none)
             showCollapsedPanelIfNeeded()
@@ -440,7 +435,38 @@ final class TranscriptionFloatingWidgetController: NSObject {
         if phase != .completion {
             hidePanel()
             phase = .none
+            heldCompletionMessage = nil
         }
+    }
+
+    /// Fires when the completion's hold timer expires. Returns the pill to
+    /// the right downstream state:
+    ///   - recording still active (mid-recording warning case) → recording
+    ///   - processing still active (hard-stop completion before async work
+    ///     finishes) → processing
+    ///   - neither → hide
+    /// Without this, the post-completion behaviour would always be "hide,"
+    /// which is wrong for both warnings and hard-stop transitions.
+    private func expireCompletion() {
+        guard phase == .completion else { return }
+        completionWorkItem = nil
+        heldCompletionMessage = nil
+        if let ts = transcription {
+            if ts.isRecording {
+                phase = .recording
+                updateHosted(mode: .recording(durationSeconds: ts.duration))
+                applyPhaseFrame(animated: true)
+                return
+            }
+            if ts.isProcessing {
+                phase = .processing
+                updateHosted(mode: .processing)
+                applyPhaseFrame(animated: true)
+                return
+            }
+        }
+        hidePanel()
+        phase = .none
     }
 
     /// Resize the panel frame to match the current `phase`. Animated when
@@ -676,200 +702,5 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private func restorePosition() {
         let size = NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
         applyPhaseAwareFrame(size: size, animated: false)
-    }
-
-    // MARK: - Toast
-
-    /// Build the toast panel lazily on first show. Mirrors `buildPanel()`'s
-    /// shape: borderless + nonactivating, transparent background, no shadow,
-    /// same window level as the pill (so it sits on top of normal app
-    /// windows but doesn't fight the pill for z-order).
-    private func buildToastPanel() {
-        guard toastPanel == nil else { return }
-        let h = DesignTokens.Pill.height
-        // Initial width is a placeholder — the controller resizes the panel
-        // to fit each message before showing it.
-        let w: CGFloat = 200
-        let level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.floatingWindow)) + 1)
-
-        let p = ToastPanel(
-            contentRect: NSRect(x: 0, y: 0, width: w, height: h),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        p.level = level
-        p.backgroundColor = .clear
-        p.isOpaque = false
-        p.hasShadow = false
-        p.hidesOnDeactivate = false
-        p.isFloatingPanel = true
-        p.becomesKeyOnlyIfNeeded = false
-        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        p.ignoresMouseEvents = true  // toast is passive — never intercepts clicks
-
-        let root = TranscriptionToastRootView(state: toastState)
-        let host = NSHostingView(rootView: root)
-        host.frame = NSRect(x: 0, y: 0, width: w, height: h)
-        host.autoresizingMask = [.width, .height]
-
-        p.contentView = host
-        toastHosting = host
-        toastPanel = p
-    }
-
-    /// Measure the text width using the same NSString sizing trick the pill
-    /// uses, then add symmetric horizontal padding so the capsule has visible
-    /// breathing room around the text.
-    private func sizeForToast(_ message: TranscriptionToastMessage) -> NSSize {
-        let labelW = measureLabelWidth(message.text, font: Self.completionLabelFont)
-        // Horizontal padding mirrors the pill's leading+trailing (4+8) plus an
-        // extra 12pt total breathing room because the toast has no leading
-        // glyph to balance the text. Total: 12 + labelW + 12.
-        let width = labelW + 24 + Self.measurementSafetyMargin
-        let height = DesignTokens.Pill.height
-        return NSSize(width: width, height: height)
-    }
-
-    /// Compute where the toast should sit. Centered horizontally on the
-    /// pill's centerX, fixed gap below the pill's bottom edge. Falls back
-    /// to flipping above the pill if there isn't room below (e.g., the pill
-    /// is near the bottom of the visible frame).
-    private func targetToastFrame(toastSize: NSSize) -> NSRect? {
-        guard let screen = NSScreen.main else { return nil }
-        let vf = screen.visibleFrame
-
-        // Pill's actual frame if available, otherwise the synthetic top-center
-        // anchor where the pill WOULD appear. The latter path is used by the
-        // DEBUG menu so toast triggers work standalone before the pill ever shows.
-        let pillFrame: NSRect
-        if let panel {
-            pillFrame = panel.frame
-        } else {
-            let pillSize = NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
-            pillFrame = PanelSnapZone.topCenter.visibleFrame(size: pillSize, screen: vf)
-        }
-        let centerX = pillFrame.midX
-        let gap = DesignTokens.Pill.toastGapBelow
-
-        // Default: below the pill.
-        var originY = pillFrame.minY - gap - toastSize.height
-        // If that goes below the visible frame, flip above the pill.
-        if originY < vf.minY {
-            originY = pillFrame.maxY + gap
-        }
-        let originX = centerX - toastSize.width / 2
-        // Clamp horizontally so the toast doesn't run off-screen on narrow displays.
-        let clampedX = max(vf.minX + 4, min(originX, vf.maxX - toastSize.width - 4))
-        return NSRect(x: clampedX, y: originY, width: toastSize.width, height: toastSize.height)
-    }
-
-    /// Show a toast. If a previous toast is still visible, slide it out fast
-    /// and slide the new one in (stacking-by-replacement). Each call schedules
-    /// its own dismiss via `toastExitWorkItem`; the token guard inside the
-    /// dismiss closure makes a stale dismiss a no-op.
-    func showToast(_ message: TranscriptionToastMessage) {
-        buildToastPanel()
-        guard let toastPanel else { return }
-
-        // Cancel any pending exit; we're going to show a new toast.
-        toastExitWorkItem?.cancel()
-        toastExitWorkItem = nil
-        toastAnimationToken &+= 1
-        let token = toastAnimationToken
-
-        // Size + position for the new message. We compute these now so the
-        // panel frame is ready, but defer the SwiftUI text swap until the
-        // panel is invisible (see "text swap timing" note below).
-        let size = sizeForToast(message)
-        guard let target = targetToastFrame(toastSize: size) else { return }
-
-        let alreadyVisible = toastPanel.isVisible && toastPanel.alphaValue > 0.01
-
-        if alreadyVisible {
-            // Stacking. Text swap timing — IMPORTANT:
-            //
-            // The naive approach (set toastState.current = message BEFORE the
-            // half-exit) lets SwiftUI's .transition(.opacity) cross-fade the
-            // old text into the new text at toastEnterDuration (150ms) while
-            // AppKit is fading the panel's alpha at toastExitDuration/2 (100ms).
-            // Two simultaneous fades at different rates = visible stutter.
-            //
-            // Instead we drive the SwiftUI swap from the AppKit completion
-            // handler: panel goes fully transparent first, THEN we update the
-            // text (invisible swap), THEN we fade the panel back in with the
-            // new text. SwiftUI never cross-fades; AppKit owns the visual
-            // transition end-to-end.
-            let startFrame = target.offsetBy(dx: 0, dy: DesignTokens.Pill.toastSlideOffset)
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = DesignTokens.Pill.toastExitDuration / 2
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                toastPanel.animator().alphaValue = 0
-            }, completionHandler: { [weak self] in
-                guard let self, self.toastAnimationToken == token else { return }
-                // Panel is now invisible — swap the text behind it.
-                self.toastState.current = message
-                toastPanel.setFrame(startFrame, display: false)
-                toastPanel.alphaValue = 0
-                toastPanel.orderFrontRegardless()
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = DesignTokens.Pill.toastEnterDuration
-                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    toastPanel.animator().setFrame(target, display: true)
-                    toastPanel.animator().alphaValue = 1
-                }, completionHandler: { [weak self] in
-                    guard let self, self.toastAnimationToken == token else { return }
-                    self.scheduleToastDismiss(after: message.hold, token: token)
-                })
-            })
-        } else {
-            // Fresh show — no previous content, no cross-fade risk. Set the
-            // SwiftUI state upfront so the first frame of the AppKit fade-in
-            // already has the correct text.
-            toastState.current = message
-            let startFrame = target.offsetBy(dx: 0, dy: DesignTokens.Pill.toastSlideOffset)
-            toastPanel.setFrame(startFrame, display: false)
-            toastPanel.alphaValue = 0
-            toastPanel.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = DesignTokens.Pill.toastEnterDuration
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                toastPanel.animator().setFrame(target, display: true)
-                toastPanel.animator().alphaValue = 1
-            }, completionHandler: { [weak self] in
-                guard let self, self.toastAnimationToken == token else { return }
-                self.scheduleToastDismiss(after: message.hold, token: token)
-            })
-        }
-    }
-
-    /// Schedule the slide-up + fade-out exit. The token guard ensures that
-    /// a `showToast` arriving during the hold cancels the stale dismiss.
-    private func scheduleToastDismiss(after hold: TimeInterval, token: UInt64) {
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.toastAnimationToken == token else { return }
-            self.hideToast(token: token)
-        }
-        toastExitWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + hold, execute: work)
-    }
-
-    /// Animate the toast out and clear `toastState.current`.
-    private func hideToast(token: UInt64) {
-        guard let toastPanel, toastPanel.isVisible else {
-            toastState.current = nil
-            return
-        }
-        let endFrame = toastPanel.frame.offsetBy(dx: 0, dy: -DesignTokens.Pill.toastSlideOffset)
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = DesignTokens.Pill.toastExitDuration
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            toastPanel.animator().setFrame(endFrame, display: true)
-            toastPanel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            guard let self, self.toastAnimationToken == token else { return }
-            toastPanel.orderOut(nil)
-            self.toastState.current = nil
-        })
     }
 }

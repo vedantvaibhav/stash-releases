@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		0FE9E933CE26FE9658571623 /* OnboardingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6936EAC02E35E905B68947 /* OnboardingViewModel.swift */; };
-		1462B4B6C60F8CC319F7D98A /* TranscriptionToastView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51191EC3CEF6E7C2A199616F /* TranscriptionToastView.swift */; };
 		15B0D4CD953CAD05728D230C /* OnboardingWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0519B42CA9511064669E43F /* OnboardingWindowController.swift */; };
 		A10000000000000000000001 /* StashApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* StashApp.swift */; };
 		A10000000000000000000002 /* PanelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* PanelController.swift */; };
@@ -47,7 +46,6 @@
 /* Begin PBXFileReference section */
 		2D6936EAC02E35E905B68947 /* OnboardingViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
 		390FE4D58D0921C3363047CA /* OnboardingMedia.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingMedia.swift; sourceTree = "<group>"; };
-		51191EC3CEF6E7C2A199616F /* TranscriptionToastView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TranscriptionToastView.swift; sourceTree = "<group>"; };
 		72C22EB592AD44098D9DD5CD /* AutoPasteService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoPasteService.swift; sourceTree = "<group>"; };
 		8EDE6F3AA0830AF7CE2A5E8C /* OnboardingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		A0519B42CA9511064669E43F /* OnboardingWindowController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingWindowController.swift; sourceTree = "<group>"; };
@@ -141,7 +139,6 @@
 				A0519B42CA9511064669E43F /* OnboardingWindowController.swift */,
 				2D6936EAC02E35E905B68947 /* OnboardingViewModel.swift */,
 				390FE4D58D0921C3363047CA /* OnboardingMedia.swift */,
-				51191EC3CEF6E7C2A199616F /* TranscriptionToastView.swift */,
 			);
 			path = Stash;
 			sourceTree = "<group>";
@@ -265,7 +262,6 @@
 				15B0D4CD953CAD05728D230C /* OnboardingWindowController.swift in Sources */,
 				0FE9E933CE26FE9658571623 /* OnboardingViewModel.swift in Sources */,
 				C31D6B67C9D9686615F26F67 /* OnboardingMedia.swift in Sources */,
-				1462B4B6C60F8CC319F7D98A /* TranscriptionToastView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
