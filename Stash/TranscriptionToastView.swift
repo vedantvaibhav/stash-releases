@@ -28,28 +28,35 @@ final class TranscriptionToastDisplayState: ObservableObject {
 struct TranscriptionToastView: View {
     @ObservedObject var state: TranscriptionToastDisplayState
 
-    var body: some View {
-        Group {
-            if let message = state.current {
-                HStack(spacing: 0) {
-                    Text(message.text)
-                        .font(.system(size: 14, weight: .regular))
-                        .foregroundStyle(Color.white.opacity(0.92))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(.horizontal, DesignTokens.Pill.leadingPadding
-                                 + DesignTokens.Pill.iconDiscSize / 2)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    // Pre-computed so the body's `.padding(.horizontal:)` argument is a
+    // simple `CGFloat` lookup rather than an inline arithmetic expression
+    // — the inline form was a contributor to SourceKit's type-check
+    // timeout on the body chain.
+    private var horizontalPadding: CGFloat {
+        DesignTokens.Pill.leadingPadding + DesignTokens.Pill.iconDiscSize / 2
+    }
+
+    @ViewBuilder
+    private var messageBody: some View {
+        if let message = state.current {
+            Text(message.text)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(Color.white.opacity(0.92))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .padding(.horizontal, horizontalPadding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black, in: Capsule())
-                .clipShape(Capsule())
                 .transition(.opacity)
-            } else {
-                Color.clear
-            }
+        } else {
+            Color.clear
         }
-        .animation(.easeInOut(duration: DesignTokens.Pill.toastEnterDuration),
-                   value: state.current)
+    }
+
+    var body: some View {
+        messageBody
+            .animation(.easeInOut(duration: DesignTokens.Pill.toastEnterDuration),
+                       value: state.current)
     }
 }
 

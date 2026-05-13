@@ -352,12 +352,13 @@ final class TranscriptionFloatingWidgetController: NSObject {
             .sink { [weak self] _ in self?.sync() }
             .store(in: &cancellables)
         transcription.$pendingToast
+            .receive(on: DispatchQueue.main)
             .compactMap { $0 }
             .sink { [weak self, weak transcription] toast in
                 guard let self else { return }
                 self.showToast(toast)
-                // Clear so a repeat assignment fires Combine again.
-                Task { @MainActor in transcription?.pendingToast = nil }
+                // Clear synchronously so a repeat assignment fires Combine again.
+                transcription?.pendingToast = nil
             }
             .store(in: &cancellables)
         sync()
