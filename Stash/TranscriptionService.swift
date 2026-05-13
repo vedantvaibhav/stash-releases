@@ -952,7 +952,44 @@ final class TranscriptionService: NSObject, ObservableObject {
             "gracias por su atención",
             "danke fürs zuschauen",
             "obrigado por assistir",
-            "grazie per la visione"
+            "grazie per la visione",
+            // Added 2026-05-13 (filter-gaps PR) — description/links family.
+            // User-reported leak: "Be sure to check the description for links in the
+            // previous video description for more information" slipped through after
+            // ~10s of silence. The attributionPatterns list (further down) didn't
+            // cover description/links/bio; this closes the gap at the line-match
+            // and full-output-match passes.
+            "check the description",
+            "in the description",
+            "description for links",
+            "links in the description",
+            "link in the description",
+            "links below",
+            "link below",
+            "in the description below",
+            "previous video description",
+            "more information in the description",
+            "click the link",
+            "link in bio",
+            "link in my bio",
+            // Watch-next family — Whisper hallucinates these when speaker pauses
+            // and the model fills with prior-video-recap phrasing.
+            "in the previous video",
+            "in my previous video",
+            "in the last video",
+            "previous episode",
+            "next episode",
+            "watch the next",
+            "as i mentioned in",
+            "as i said in the last",
+            // Generic creator outro family — extensions on top of what's already there.
+            "more information below",
+            "for more info",
+            "everything you need to know",
+            "all the links",
+            "check out the links",
+            "links are below",
+            "stay tuned"
         ]
         // Trim set covers Latin + East Asian (CJK) + full-width punctuation.
         // Whisper emits its native locale's punctuation; without these,
@@ -1004,7 +1041,31 @@ final class TranscriptionService: NSObject, ObservableObject {
             "visit us at", "find us at", "follow us on",
             "subscribe to our", "check out our", "more videos", "our website",
             "our channel", "our podcast", "this video was", "this episode was",
-            "produced by", "sponsored by", "brought to you by"
+            "produced by", "sponsored by", "brought to you by",
+            // Added 2026-05-13 (filter-gaps PR) — description / links / bio
+            "check the description",
+            "in the description",
+            "description for",
+            "link in bio",
+            "link in the bio",
+            "links in the",
+            "previous video",
+            "next video",
+            "link below",
+            "links below",
+            "in the comments below",
+            // Added 2026-05-13 (filter-gaps PR) — bell / subscribe-button family.
+            // These exist as whole-line entries in semanticHallucinations,
+            // but Whisper sometimes embeds them in longer hallucinated
+            // sentences ("And of course, hit that bell so you don't miss
+            // the next one"). Substring form catches the embedded case.
+            "hit the bell",
+            "ring the bell",
+            "smash the like",
+            "tap subscribe",
+            "tap that subscribe",
+            "click subscribe",
+            "follow me on"
         ]
         if attributionPatterns.contains(where: { fullNormalised.contains($0) }) {
             #if DEBUG

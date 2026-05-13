@@ -82,4 +82,20 @@ struct HallucinationFilterTests {
             #expect(svc.testSanitiseWhisperOutput(input) == nil, "expected rejection for: \(input)")
         }
     }
+
+    @Test func rejectsDescriptionLinksAndWatchNextFamilies() {
+        let svc = service()
+        let inputs = [
+            "Be sure to check the description for links in the previous video description for more information.",
+            "Be sure to check the description for links",
+            "Link in the description below.",
+            "As I mentioned in the previous video, here's what we covered.",
+            "Watch the next episode for more.",
+            "All the links are below in the description.",
+            "Click the link in my bio."
+        ]
+        for input in inputs {
+            #expect(svc.testSanitiseWhisperOutput(input) == nil, "expected rejection for description/watch-next: \(input)")
+        }
+    }
 }
