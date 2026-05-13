@@ -246,11 +246,6 @@ fileprivate func formatPillDuration(_ seconds: Int) -> String {
 // Tap target = visible dot. The earlier 18pt invisible-tap-area produced an
 // asymmetric label→dot gap (the tap area's invisible left side ate into the
 // gap), making the pill look unbalanced relative to the iconDisc→label gap.
-//
-// Uses `.onTapGesture` (not `Button`) so the parent panel's window-drag
-// (`isMovableByWindowBackground = true`) is still reachable from the trailing
-// region — a Button would swallow click-and-drag and fire its action on
-// mouse-up, accidentally stopping recording when the user tried to drag.
 
 private struct StopRecordingButton: View {
     let onStop: () -> Void
@@ -279,14 +274,6 @@ private final class PillPanel: NSPanel {
     override var canBecomeKey: Bool { false }
 }
 
-// NSHostingView is opaque by default, so mouseDownCanMoveWindow returns false
-// and isMovableByWindowBackground never fires for it. Override to allow the OS
-// to move the pill when the user drags on non-interactive areas of the SwiftUI
-// view. Matches MovableHostingView in PanelController.swift.
-private final class MovablePillHostingView: NSHostingView<PillRootView> {
-    override var mouseDownCanMoveWindow: Bool { true }
-}
-
 // MARK: - Display state + root view
 
 final class PillDisplayState: ObservableObject {
@@ -311,7 +298,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private var panel: PillPanel?
     /// One persistent NSHostingView. Driven by `displayState.mode`; never
     /// replaced across phase transitions.
-    private var hosting: MovablePillHostingView?
+    private var hosting: NSHostingView<PillRootView>?
     private let displayState = PillDisplayState()
     private var cancellables = Set<AnyCancellable>()
     private var panelOpenForWidget = false
@@ -332,17 +319,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// show.
     private var hideInFlight = false
 
-    /// Drag-to-snap state. The pill's SwiftUI root fills the panel with an
-    /// opaque hit-claiming Capsule, so `isMovableByWindowBackground` never
-    /// engages — SwiftUI consumes every mouseDown before AppKit can vote.
-    /// Drag is driven explicitly via `NSWindow.performDrag(with:)` from the
-    /// local event monitor below; that bypasses all hit-testing.
-    private static let snapZoneDefaultsKey = "TranscriptionPillSnapZone"
-    private var dragMonitor: Any?
-
     var onOpenTranscription: (() -> Void)?
 
     func attach(transcription: TranscriptionService) {
+        // One-time cleanup of the snap-zone key persisted by prior builds
+        // that tried to support drag-to-snap on the pill. The pill is now
+        // fixed at top-center and nothing reads this key.
+        UserDefaults.standard.removeObject(forKey: "TranscriptionPillSnapZone")
+
         self.transcription = transcription
         transcription.objectWillChange
             .receive(on: DispatchQueue.main)
@@ -352,9 +336,6 @@ final class TranscriptionFloatingWidgetController: NSObject {
     }
 
     deinit {
-        // NSEvent monitors are NOT auto-removed on deallocation; they hold
-        // references to their handler closure and stay live until removed.
-        if let m = dragMonitor { NSEvent.removeMonitor(m) }
         completionWorkItem?.cancel()
     }
 
@@ -387,34 +368,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
                 cancelAllPendingWork(except: .recording)
                 phase = .recording
                 // updateHosted FIRST so displayState.mode reflects the new
-                // mode by the time sizeForCurrentMode measures content for
-                // dynamic sizing.
+                // mode by the time applyPhaseFrame measures content for
+                // dynamic sizing. applyPhaseFrame still runs before
+                // showCollapsedPanelIfNeeded so the slide-in animation
+                // captures the canonical phase target.
                 updateHosted(mode: .recording(durationSeconds: ts.duration))
-                // TranscriptionService publishes once per second during
-                // recording (duration tick). Re-anchoring the panel every
-                // tick yanks it back to the persisted snap zone mid-drag,
-                // so only re-anchor when there's an actual reason to: the
-                // initial transition into .recording, or a width change
-                // (the MM:SS → H:MM:SS bump at the 1-hour mark; the timer
-                // is monospaced so seconds-only ticks don't change width).
-                let phaseChanged = oldPhase != .recording
-                let newSize = sizeForCurrentMode()
-                let sizeChanged: Bool
-                if let current = panel?.frame.size {
-                    sizeChanged = abs(current.width - newSize.width) > 0.5
-                        || abs(current.height - newSize.height) > 0.5
-                } else {
-                    sizeChanged = true
-                }
-                if phaseChanged || sizeChanged {
-                    // DIAGNOSTIC: temporarily disabled to determine whether
-                    // per-tick applyPhaseFrame is the cause of mid-drag yank.
-                    // If drag works smoothly with this disabled, the gate is
-                    // broken (likely panel.frame.size reading mid-animation
-                    // values). Restore with a lastAppliedPhaseSize comparison.
-                    _ = (phaseChanged, sizeChanged) // keep referenced
-                    // applyPhaseFrame(animated: oldPhase != .none)
-                }
+                applyPhaseFrame(animated: oldPhase != .none)
                 showCollapsedPanelIfNeeded()
             }
             return
@@ -581,20 +540,8 @@ final class TranscriptionFloatingWidgetController: NSObject {
         })
     }
 
-    /// Read the persisted snap zone, falling back to `.topCenter`.
-    private func currentSnapZone() -> PanelSnapZone {
-        if let raw = UserDefaults.standard.string(forKey: Self.snapZoneDefaultsKey),
-           let zone = PanelSnapZone(rawValue: raw) {
-            return zone
-        }
-        return .topCenter
-    }
-
-    /// Position the panel at the persisted snap zone using the given size.
-    /// `duration` defaults to drag-snap's settle timing; phase changes
-    /// override with their own value. `timingFunction` lets phase changes
-    /// pass an ease-in-out curve while drag-snap keeps the heavier ease-out
-    /// cubic-bezier.
+    /// Position the panel at its fixed top-center anchor using the given size.
+    /// The pill is not draggable; this is the only zone it ever uses.
     private func applyPhaseAwareFrame(
         size: CGSize,
         animated: Bool,
@@ -602,7 +549,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
         timingFunction: CAMediaTimingFunction? = nil
     ) {
         guard let screen = NSScreen.main else { return }
-        let target = currentSnapZone().visibleFrame(size: size, screen: screen.visibleFrame)
+        let target = PanelSnapZone.topCenter.visibleFrame(size: size, screen: screen.visibleFrame)
         applyPanelFrame(target, animated: animated, duration: duration, timingFunction: timingFunction)
     }
 
@@ -677,14 +624,13 @@ final class TranscriptionFloatingWidgetController: NSObject {
         p.hidesOnDeactivate = false
         p.isFloatingPanel = true
         p.becomesKeyOnlyIfNeeded = false
-        p.isMovableByWindowBackground = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         let root = PillRootView(
             state: displayState,
             onStop: { [weak self] in self?.transcription?.stopRecording() }
         )
-        let host = MovablePillHostingView(rootView: root)
+        let host = NSHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: w, height: h)
         host.autoresizingMask = [.width, .height]
 
@@ -693,66 +639,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
         panel = p
 
         restorePosition()
-        installDragMonitor()
     }
 
-    /// First launch uses the menu-bar default (top-center). Subsequent
-    /// launches restore whichever corner the user last snapped the pill into.
+    /// Position the pill at its fixed top-center anchor. The pill is not
+    /// draggable; there's no per-user position to restore.
     private func restorePosition() {
         let size = NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
         applyPhaseAwareFrame(size: size, animated: false)
-    }
-
-    // MARK: Drag-to-snap
-
-    private func installDragMonitor() {
-        guard dragMonitor == nil else { return }
-        dragMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
-            guard let self else { return event }
-            return self.handleDragEvent(event)
-        }
-    }
-
-    /// Returns `nil` when we hijack the event to drive a drag, or `event`
-    /// to let it pass through (e.g. taps on the stop button).
-    private func handleDragEvent(_ event: NSEvent) -> NSEvent? {
-        guard let panel, event.window === panel else { return event }
-        if isOverStopButton(event: event, in: panel) { return event }
-
-        let start = panel.frame.origin
-        // performDrag runs a modal tracking loop until mouseUp; it does not
-        // consult isMovableByWindowBackground or any hit-test rules, so it
-        // works even though SwiftUI's hit-claim swallowed the normal path.
-        panel.performDrag(with: event)
-        let moved = hypot(panel.frame.origin.x - start.x,
-                          panel.frame.origin.y - start.y) > 4
-        if moved { snapToNearestZone() }
-        return nil
-    }
-
-    /// True when the mouseDown is inside the recording-stop button's hit
-    /// rect — pass-through so SwiftUI's `.onTapGesture` on `StopRecordingButton`
-    /// can fire. Non-recording modes have no interactive control on the pill.
-    private func isOverStopButton(event: NSEvent, in panel: PillPanel) -> Bool {
-        guard case .recording = displayState.mode else { return false }
-        let p = event.locationInWindow
-        let w = panel.frame.size.width
-        let h = panel.frame.size.height
-        let dotSize = DesignTokens.Pill.recordingDotSize
-        let trailingPad = DesignTokens.Pill.trailingPadding
-        let centerX = w - trailingPad - dotSize / 2
-        let centerY = h / 2
-        let hitSlop: CGFloat = 6
-        let half = dotSize / 2 + hitSlop
-        return abs(p.x - centerX) <= half && abs(p.y - centerY) <= half
-    }
-
-    private func snapToNearestZone() {
-        guard let panel, let screen = NSScreen.main else { return }
-        let vf = screen.visibleFrame
-        let size = panel.frame.size
-        let zone = PanelSnapZone.nearest(to: panel.frame, size: size, screen: vf)
-        UserDefaults.standard.set(zone.rawValue, forKey: Self.snapZoneDefaultsKey)
-        applyPhaseAwareFrame(size: size, animated: true)
     }
 }
