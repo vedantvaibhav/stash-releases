@@ -108,6 +108,14 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// in stopRecording to skip Whisper entirely on near-silent input.
     /// Reset to -60 (silence floor) in startRecording.
     private var recordedPeakPower: Float = -60
+    /// Total seconds where averagePower crossed the voice-presence
+    /// threshold (-30 dBFS, around conversational speech at arm's length).
+    /// Accumulated in the levelTimer tick; used as a stricter pre-Whisper
+    /// silence gate than the peak-power check. A quiet room can sustain
+    /// -40 dBFS noise floor without ever crossing -30 dBFS, so this
+    /// catches silence-with-ambient-noise that the peak gate misses.
+    /// Reset to 0 in startRecording.
+    private var voiceActiveSeconds: Double = 0
 
     // MARK: - Start
 
@@ -124,6 +132,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         didShowSizeWarning = false
         autoStoppedAtSizeLimit = false
         recordedPeakPower = -60
+        voiceActiveSeconds = 0
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -204,12 +213,22 @@ final class TranscriptionService: NSObject, ObservableObject {
             if let t = durationTimer { RunLoop.main.add(t, forMode: .common) }
 
             levelTimer?.invalidate()
-            levelTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            let levelTickInterval: TimeInterval = 0.1
+            // Voice-presence threshold. -30 dBFS sits around conversational
+            // speech from arm's length; quiet rooms / mic self-noise rarely
+            // cross it. If field data shows legitimate quiet dictations
+            // being false-rejected, raise to -33 (do not go below -35 —
+            // ambient noise floor leaks above that).
+            let voicePresenceThresholdDBFS: Float = -30
+            levelTimer = Timer(timeInterval: levelTickInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
                     self.recorder?.updateMeters()
                     let level = self.recorder?.averagePower(forChannel: 0) ?? -60
                     self.recordedPeakPower = max(self.recordedPeakPower, level)
+                    if level > voicePresenceThresholdDBFS {
+                        self.voiceActiveSeconds += levelTickInterval
+                    }
                     self.audioLevel = max(0, (level + 60) / 60)
                 }
             }
@@ -320,8 +339,8 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         Task { @MainActor in
             do {
-                let text = try await callWhisper(audioData: audioData)
-                self.liveTranscript = text
+                let response = try await callWhisper(audioData: audioData)
+                self.liveTranscript = response.text
             } catch {
                 // Live chunk failure is non-fatal — next tick retries.
             }
@@ -392,6 +411,29 @@ final class TranscriptionService: NSObject, ObservableObject {
             #endif
             reportToSlack(
                 error: "Amplitude pre-check rejected — peak \(String(format: "%.1f", recordedPeakPower)) dBFS < \(amplitudeThresholdDBFS) dBFS (duration \(duration)s)",
+                durationSeconds: duration
+            )
+            showToast("No audio — try speaking closer to the mic.")
+            return
+        }
+
+        // Voice-active duration gate — peak-power can hit -42 dBFS from
+        // ambient noise alone. This second-layer check requires that some
+        // minimum amount of audio actually crossed the voice-presence
+        // threshold (counted in the level timer). Only engages for
+        // recordings long enough that a real dictation would have
+        // accumulated voice-active time; a brief 2s "okay" might only have
+        // 0.4s of voice-active audio and shouldn't be rejected.
+        let voiceActiveThresholdSeconds: Double = 1.5
+        let voiceGateMinDurationSeconds = 5
+        if duration >= voiceGateMinDurationSeconds,
+           voiceActiveSeconds < voiceActiveThresholdSeconds {
+            isProcessing = false
+            #if DEBUG
+            print("[Transcription] voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(recordedPeakPower) dBFS)")
+            #endif
+            reportToSlack(
+                error: "Voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(String(format: "%.1f", recordedPeakPower)) dBFS)",
                 durationSeconds: duration
             )
             showToast("No audio — try speaking closer to the mic.")
@@ -627,9 +669,9 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
 
         // MARK: Whisper — with one auto-retry on transient errors
-        let rawWhisperOutput: String
+        let whisperResponse: WhisperResponse
         do {
-            rawWhisperOutput = try await Task(priority: .userInitiated) {
+            whisperResponse = try await Task(priority: .userInitiated) {
                 try await self.callWhisper(audioData: audioData)
             }.value
         } catch let firstError as NSError {
@@ -637,7 +679,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 showCompletion("Retrying…")
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 do {
-                    rawWhisperOutput = try await Task(priority: .userInitiated) {
+                    whisperResponse = try await Task(priority: .userInitiated) {
                         try await self.callWhisper(audioData: audioData)
                     }.value
                 } catch {
@@ -653,7 +695,39 @@ final class TranscriptionService: NSObject, ObservableObject {
             return
         }
 
-        // MARK: Hallucination filter
+        let rawWhisperOutput = whisperResponse.text
+
+        // MARK: Confidence-signal gate
+        // Whisper itself knows when it hallucinated. With response_format=
+        // verbose_json the server returns per-segment `no_speech_prob`
+        // (model's estimate that the audio window contained no speech) and
+        // `avg_logprob` (per-token log-probability average; lower = less
+        // confident). Reject when the model is signalling "this was
+        // silence I made up." Thresholds picked from OpenAI Whisper's own
+        // defaults: no_speech_threshold=0.6, logprob_threshold=-1.0.
+        //
+        // Skipped when `segments` is empty (provider returned plain text).
+        // The substring filter below remains the backstop for that case
+        // and for hallucinations that slip past the model-confidence gate.
+        let noSpeechRejectionThreshold = 0.6
+        let logprobRejectionThreshold = -1.0
+        if let meanNSP = whisperResponse.meanNoSpeechProb,
+           let meanALP = whisperResponse.meanAvgLogprob,
+           meanNSP > noSpeechRejectionThreshold || meanALP < logprobRejectionThreshold {
+            isProcessing = false
+            let rawSnippet = String(rawWhisperOutput.prefix(120))
+            #if DEBUG
+            print("[Transcription] confidence-gate rejected — no_speech_prob=\(meanNSP), avg_logprob=\(meanALP) — \"\(rawSnippet)\"")
+            #endif
+            reportToSlack(
+                error: "Confidence gate rejected (no_speech_prob \(String(format: "%.2f", meanNSP)), avg_logprob \(String(format: "%.2f", meanALP)), duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
+                durationSeconds: durationSeconds
+            )
+            showToast("No audio — try speaking closer to the mic.")
+            return
+        }
+
+        // MARK: Hallucination filter (substring backstop)
         guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput, durationSeconds: durationSeconds) else {
             isProcessing = false
             let rawSnippet = String(rawWhisperOutput.prefix(120))
@@ -1173,7 +1247,30 @@ final class TranscriptionService: NSObject, ObservableObject {
         return cleaned
     }
 
-    private func callWhisper(audioData: Data) async throws -> String {
+    /// Parsed Whisper response. `segments` is empty when the provider
+    /// returned plain text rather than verbose_json — callers that depend
+    /// on confidence signals must handle the empty case.
+    struct WhisperResponse {
+        let text: String
+        let segments: [Segment]
+
+        struct Segment {
+            let noSpeechProb: Double
+            let avgLogprob: Double
+        }
+
+        /// Mean across segments, or nil when no segments are present.
+        var meanNoSpeechProb: Double? {
+            guard !segments.isEmpty else { return nil }
+            return segments.map(\.noSpeechProb).reduce(0, +) / Double(segments.count)
+        }
+        var meanAvgLogprob: Double? {
+            guard !segments.isEmpty else { return nil }
+            return segments.map(\.avgLogprob).reduce(0, +) / Double(segments.count)
+        }
+    }
+
+    private func callWhisper(audioData: Data) async throws -> WhisperResponse {
         guard let url = URL(string: whisperURL) else {
             throw NSError(domain: "Whisper", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Invalid Whisper URL"])
@@ -1199,13 +1296,17 @@ final class TranscriptionService: NSObject, ObservableObject {
         body.append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n".data(using: .utf8) ?? Data())
         body.append("0\r\n".data(using: .utf8) ?? Data())
 
-        body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
-        body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n".data(using: .utf8) ?? Data())
-        body.append("Meeting notes, action items, decisions, follow-ups. Names, dates, and technical terms should be transcribed accurately.\r\n".data(using: .utf8) ?? Data())
+        // Priming `prompt` field deliberately omitted (2026-05-13). Earlier
+        // versions sent "Meeting notes, action items..." — on near-silent
+        // audio Whisper has no acoustic content to anchor on and falls back
+        // to language-model output conditioned on the priming string,
+        // producing meeting/creator-style hallucinations. No prompt = no
+        // bias. If specialised vocab is needed later, prefer a much shorter
+        // neutral string and test the hallucination rate empirically.
 
         body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
         body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8) ?? Data())
-        body.append("text\r\n".data(using: .utf8) ?? Data())
+        body.append("verbose_json\r\n".data(using: .utf8) ?? Data())
 
         body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8) ?? Data())
@@ -1223,7 +1324,32 @@ final class TranscriptionService: NSObject, ObservableObject {
             throw NSError(domain: "Whisper", code: status,
                           userInfo: [NSLocalizedDescriptionKey: friendlyError(domain: "Whisper", status: status, body: responseText)])
         }
-        return responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return parseWhisperResponse(data: data, fallbackText: responseText)
+    }
+
+    /// Parse a Whisper response body. With `response_format=verbose_json`
+    /// the body is a JSON object containing `text` and a `segments` array
+    /// (each with `no_speech_prob` and `avg_logprob`). If the provider
+    /// instead returned plain text (legacy / non-conforming endpoint), we
+    /// fall back to using the raw body as the transcript with no segments.
+    private func parseWhisperResponse(data: Data, fallbackText: String) -> WhisperResponse {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let text = json["text"] as? String {
+            let rawSegments = json["segments"] as? [[String: Any]] ?? []
+            let segments = rawSegments.compactMap { dict -> WhisperResponse.Segment? in
+                guard let nsp = dict["no_speech_prob"] as? Double,
+                      let alp = dict["avg_logprob"] as? Double else { return nil }
+                return WhisperResponse.Segment(noSpeechProb: nsp, avgLogprob: alp)
+            }
+            return WhisperResponse(
+                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                segments: segments
+            )
+        }
+        return WhisperResponse(
+            text: fallbackText.trimmingCharacters(in: .whitespacesAndNewlines),
+            segments: []
+        )
     }
 
     // MARK: - Generic chat call
