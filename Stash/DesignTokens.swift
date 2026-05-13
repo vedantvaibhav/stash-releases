@@ -95,17 +95,15 @@ enum DesignTokens {
         static let contentInsertionDelay: TimeInterval = 0.16
         static let contentInsertionDuration: TimeInterval = 0.16
 
-        // Toast — separate panel below the pill carrying error / warning text.
-        // Same height as the pill so the visual rhythm stays consistent;
-        // width is dynamic via NSString sizing, like the pill itself.
-        static let toastGapBelow: CGFloat = 8
-        static let toastEnterDuration: TimeInterval = 0.15
-        static let toastExitDuration: TimeInterval = 0.20
-        static let toastDefaultHoldDuration: TimeInterval = 4.5
-        static let toastWarningHoldDuration: TimeInterval = 6.0
-        // Vertical slide on enter/exit (positive = slides down on enter,
-        // slides up on exit). Small offset so the motion is subtle.
-        static let toastSlideOffset: CGFloat = 6
+        // Completion hold durations — how long the pill displays a completion
+        // message before hiding (or returning to recording for mid-recording
+        // warnings). `completionDefaultHold` matches the historical 1.6s
+        // behaviour for end-of-recording results ("Note saved", "Pasted ✓",
+        // "No audio"). `completionWarningHold` is the longer hold used for
+        // mid-recording warnings (85-min, 20-MB) so the user has time to
+        // read them while the recording continues.
+        static let completionDefaultHold: TimeInterval = 1.6
+        static let completionWarningHold: TimeInterval = 3.5
     }
 
     enum Typography {
