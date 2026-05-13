@@ -103,15 +103,20 @@ struct HallucinationFilterTests {
         let svc = service()
         // Short clip (10s) with ≥2 outro-vocab tokens — the real Whisper-
         // hallucinated-outro fingerprint. Pass 5 catches these.
+        //
+        // Inputs deliberately avoid phrases that would trigger Pass 3c
+        // attributionPatterns (e.g., "previous video", "in the description",
+        // "more videos") — those would short-circuit before Pass 5 fires
+        // and the test would pass for the wrong reason.
         let inputs = [
-            "Subscribe to the channel.",                  // subscribe + channel = 2
-            "Watch my previous video for more.",          // watch + previous + video = 3
-            "Link in the description.",                   // link + description = 2
-            "Subscribe to my channel for more videos."    // subscribe + channel + videos = 3
+            "Subscribe to the channel.",        // subscribe + channel = 2; no attribution substring
+            "Subscribe and watch the channel.", // subscribe + watch + channel = 3
+            "Watch the tutorial episode.",      // watch + tutorial + episode = 3
+            "Comment on the stream."            // comment + stream = 2
         ]
         for input in inputs {
             #expect(svc.testSanitiseWhisperOutput(input, durationSeconds: 10) == nil,
-                    "expected short-recording rejection for: \(input)")
+                    "expected Pass-5 rejection for: \(input)")
         }
     }
 
