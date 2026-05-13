@@ -360,8 +360,8 @@ final class TranscriptionService: NSObject, ObservableObject {
             #endif
             errorMessage = "Recording failed — no audio captured"
             isProcessing = false
-            reportToSlack(error: lastErrorForBanner ?? errorMessage ?? "Unknown error", durationSeconds: duration)
-            showCompletion("Failed")
+            reportToSlack(error: errorMessage ?? "Audio guard failed", durationSeconds: duration)
+            showToast("Recording failed — no audio captured.")
             return
         }
 
@@ -375,10 +375,8 @@ final class TranscriptionService: NSObject, ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.isProcessing else { return }
                 self.isProcessing = false
-                self.lastErrorForBanner = "Processing timed out — please try again"
-                self.reportToSlack(error: self.lastErrorForBanner ?? self.errorMessage ?? "Unknown error", durationSeconds: self.duration)
-                self.showCompletion("Failed")
-                self.clearBannerAfterDelay()
+                self.reportToSlack(error: "Processing watchdog timed out (90s)", durationSeconds: self.duration)
+                self.showToast("Processing timed out — please try again.")
             }
         }
         processingWatchdog = watchdog
@@ -625,10 +623,12 @@ final class TranscriptionService: NSObject, ObservableObject {
         // MARK: Hallucination filter
         guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput) else {
             isProcessing = false
-            lastErrorForBanner = "Nothing captured — Whisper returned no usable speech. Try speaking closer to the mic."
-            reportToSlack(error: lastErrorForBanner ?? errorMessage ?? "Unknown error", durationSeconds: durationSeconds)
-            showCompletion("No audio")
-            clearBannerAfterDelay()
+            let rawSnippet = rawWhisperOutput.prefix(120)
+            reportToSlack(
+                error: "Hallucination filter rejected — raw: \"\(rawSnippet)\"",
+                durationSeconds: durationSeconds
+            )
+            showToast("No audio — try speaking closer to the mic.")
             return
         }
 
@@ -656,8 +656,11 @@ final class TranscriptionService: NSObject, ObservableObject {
                     durationSeconds: durationSeconds
                 )
                 deliverShortDictation(result)
-                lastErrorForBanner = "Couldn't clean transcript — showing raw version"
-                clearBannerAfterDelay()
+                showToast("Couldn't clean transcript — showing raw version.")
+                reportToSlack(
+                    error: "Short-path cleanup failed; raw delivered. \(userFacingMessage(for: error))",
+                    durationSeconds: durationSeconds
+                )
             }
         } else {
             do {
@@ -696,9 +699,12 @@ final class TranscriptionService: NSObject, ObservableObject {
                     onNoteCreated?(id)
                 }
                 isProcessing = false
-                showCompletion("Saved (raw)")
-                lastErrorForBanner = "Couldn't clean transcript — raw version saved"
-                clearBannerAfterDelay()
+                showCompletion("Note saved")
+                showToast("Couldn't clean the transcript — saved the raw version.")
+                reportToSlack(
+                    error: "Long-path cleanup failed; raw saved. \(userFacingMessage(for: error))",
+                    durationSeconds: durationSeconds
+                )
             }
         }
     }
@@ -790,10 +796,8 @@ final class TranscriptionService: NSObject, ObservableObject {
     private func reportFailure(_ error: Error, durationSeconds: Int) {
         isProcessing = false
         let friendly = userFacingMessage(for: error)
-        lastErrorForBanner = friendly
         reportToSlack(error: friendly, durationSeconds: durationSeconds)
-        showCompletion("Failed")
-        clearBannerAfterDelay()
+        showToast(friendly)
     }
 
     private func isTransientWhisperError(status: Int) -> Bool {
