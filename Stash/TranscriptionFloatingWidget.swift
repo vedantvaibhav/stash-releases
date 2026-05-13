@@ -736,9 +736,19 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// to flipping above the pill if there isn't room below (e.g., the pill
     /// is near the bottom of the visible frame).
     private func targetToastFrame(toastSize: NSSize) -> NSRect? {
-        guard let panel, let screen = NSScreen.main else { return nil }
+        guard let screen = NSScreen.main else { return nil }
         let vf = screen.visibleFrame
-        let pillFrame = panel.frame
+
+        // Pill's actual frame if available, otherwise the synthetic top-center
+        // anchor where the pill WOULD appear. The latter path is used by the
+        // DEBUG menu so toast triggers work standalone before the pill ever shows.
+        let pillFrame: NSRect
+        if let panel {
+            pillFrame = panel.frame
+        } else {
+            let pillSize = NSSize(width: DesignTokens.Pill.width, height: DesignTokens.Pill.height)
+            pillFrame = PanelSnapZone.topCenter.visibleFrame(size: pillSize, screen: vf)
+        }
         let centerX = pillFrame.midX
         let gap = DesignTokens.Pill.toastGapBelow
 

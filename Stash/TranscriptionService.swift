@@ -753,6 +753,16 @@ final class TranscriptionService: NSObject, ObservableObject {
         pendingToast = TranscriptionToastMessage(text: text, hold: hold)
     }
 
+    #if DEBUG
+    /// Public DEBUG seam: fires a toast through the same `pendingToast`
+    /// Combine pipeline production code uses. The widget controller's
+    /// sink picks it up and animates the toast. Called by the status-bar
+    /// Debug submenu for standalone UI testing.
+    func debugShowToast(_ message: TranscriptionToastMessage) {
+        pendingToast = message
+    }
+    #endif
+
     private func showCompletion(_ message: String) {
         completionMessage = message
         // Snapshot the message we just set so the delayed clear only fires

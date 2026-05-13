@@ -332,6 +332,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         resetItem.target = self
         menu.addItem(.separator())
         menu.addItem(resetItem)
+
+        // Debug ▸ submenu — fires every toast variant for UI testing.
+        let debugItem = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")
+        let debugSubmenu = NSMenu(title: "Debug")
+        for (title, selector) in debugMenuItems() {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            debugSubmenu.addItem(item)
+        }
+        debugItem.submenu = debugSubmenu
+        menu.addItem(debugItem)
         #endif
 
         statusItem?.menu = menu
@@ -366,6 +377,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppSettings.shared.hasCompletedOnboarding = false
             OnboardingWindowController.shared.reset()
             presentOnboarding(startStep: 0)
+        }
+    }
+
+    /// Map of debug-submenu titles to their `@objc` selectors. Defined as a
+    /// method (not a stored array) so the selectors resolve at call-site
+    /// against `self` rather than at file load.
+    private func debugMenuItems() -> [(String, Selector)] {
+        return [
+            ("Test toast: hallucination rejection",   #selector(debugTestToastRejection)),
+            ("Test toast: cleanup failure",           #selector(debugTestToastCleanupFailure)),
+            ("Test toast: network timeout",           #selector(debugTestToastNetworkTimeout)),
+            ("Test toast: 85-min warning",            #selector(debugTestToast85MinWarning)),
+            ("Test toast: 90-min hard-stop",          #selector(debugTestToast90MinHardStop)),
+            ("Test toast: 20-MB warning",             #selector(debugTestToast20MBWarning)),
+            ("Test toast: 24-MB hard-stop",           #selector(debugTestToast24MBHardStop)),
+            ("Test toast: stacking (3 in a row)",     #selector(debugTestToastStacking))
+        ]
+    }
+
+    private func debugFireToast(_ text: String, hold: TimeInterval) {
+        guard let svc = panelController?.transcriptionService else { return }
+        svc.debugShowToast(TranscriptionToastMessage(text: text, hold: hold))
+    }
+
+    @objc private func debugTestToastRejection() {
+        debugFireToast("No audio — try speaking closer to the mic.",
+                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
+    }
+    @objc private func debugTestToastCleanupFailure() {
+        debugFireToast("Couldn't clean the transcript — saved the raw version.",
+                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
+    }
+    @objc private func debugTestToastNetworkTimeout() {
+        debugFireToast("Network timed out — try again.",
+                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
+    }
+    @objc private func debugTestToast85MinWarning() {
+        debugFireToast("Recording will stop in 5 min — start a new session for more.",
+                       hold: DesignTokens.Pill.toastWarningHoldDuration)
+    }
+    @objc private func debugTestToast90MinHardStop() {
+        debugFireToast("Recording stopped at 90-min limit. Processing what was captured.",
+                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
+    }
+    @objc private func debugTestToast20MBWarning() {
+        debugFireToast("Approaching upload limit — recording will stop soon. Start a new session for more.",
+                       hold: DesignTokens.Pill.toastWarningHoldDuration)
+    }
+    @objc private func debugTestToast24MBHardStop() {
+        debugFireToast("Recording stopped — file size limit reached. Processing what was captured.",
+                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
+    }
+    @objc private func debugTestToastStacking() {
+        // Fire three toasts 300ms apart so the stack-swap animation is visible.
+        debugFireToast("First toast", hold: DesignTokens.Pill.toastDefaultHoldDuration)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.debugFireToast("Second toast", hold: DesignTokens.Pill.toastDefaultHoldDuration)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.debugFireToast("Third toast", hold: DesignTokens.Pill.toastDefaultHoldDuration)
         }
     }
     #endif
