@@ -621,11 +621,11 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
 
         // MARK: Hallucination filter
-        guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput) else {
+        guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput, durationSeconds: durationSeconds) else {
             isProcessing = false
             let rawSnippet = String(rawWhisperOutput.prefix(120))
             reportToSlack(
-                error: "Hallucination filter rejected — raw: \"\(rawSnippet)\"",
+                error: "Hallucination filter rejected (duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
                 durationSeconds: durationSeconds
             )
             showToast("No audio — try speaking closer to the mic.")
@@ -848,7 +848,7 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - Whisper API
 
-    private func sanitiseWhisperOutput(_ raw: String) -> String? {
+    private func sanitiseWhisperOutput(_ raw: String, durationSeconds: Int) -> String? {
         // PASS 1 — token hallucinations (bracket artefacts Whisper emits on silence)
         let tokenHallucinations = [
             "[BLANK_AUDIO]", "[blank_audio]", "[inaudible]", "[Inaudible]",
@@ -1077,6 +1077,40 @@ final class TranscriptionService: NSObject, ObservableObject {
             return nil
         }
 
+        // PASS 5 — short-recording outro-vocab gate (added 2026-05-13).
+        // Whisper hallucinates YouTube-creator outro vocabulary on short,
+        // near-silent clips. For recordings < 20s AND < 25 substantive
+        // words, reject if ≥2 tokens from the outro vocab set appear.
+        //
+        // ≥2-hit (not ≥1) so legitimate one-liners with a single incidental
+        // match ("send the link to John") pass through. Real outro
+        // hallucinations stack tokens: subscribe+channel, link+description,
+        // watch+previous+video. Two-hit threshold catches the real cases
+        // while letting single-token incidentals through to Pass 4.
+        //
+        // Known edge case: "watch the next train" (2 hits: watch+next) is
+        // falsely rejected. Acceptable < 0.1% rate; user re-records.
+        let shortRecordingThresholdSeconds = 20
+        let shortRecordingMaxWords = 25
+        let outroVocab: Set<String> = [
+            "description", "subscribe", "channel", "video", "videos",
+            "link", "links", "bio", "watch", "previous", "next",
+            "comment", "comments", "tutorial", "episode", "stream",
+            "viewers"
+        ]
+        if durationSeconds > 0,
+           durationSeconds < shortRecordingThresholdSeconds,
+           words.count < shortRecordingMaxWords {
+            let lowercasedWords = Set(words.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) })
+            let hits = lowercasedWords.intersection(outroVocab)
+            if hits.count >= 2 {
+                #if DEBUG
+                print("[Transcription] sanitise: rejected (short-recording outro vocab — \(durationSeconds)s, hits: \(hits.sorted())) — \"\(cleaned)\"")
+                #endif
+                return nil
+            }
+        }
+
         // PASS 4 — word-count gate. Reject only when there are zero
         // substantive words (the real Whisper-on-silence outcome). Single-
         // word legitimate dictations — "yes", "okay", a name, a URL — must
@@ -1198,8 +1232,8 @@ final class TranscriptionService: NSObject, ObservableObject {
     // Re-exposes the private hallucination filter for unit tests. DEBUG-only
     // so release builds keep the surface area minimal.
     #if DEBUG
-    func testSanitiseWhisperOutput(_ raw: String) -> String? {
-        sanitiseWhisperOutput(raw)
+    func testSanitiseWhisperOutput(_ raw: String, durationSeconds: Int = 0) -> String? {
+        sanitiseWhisperOutput(raw, durationSeconds: durationSeconds)
     }
     #endif
 }

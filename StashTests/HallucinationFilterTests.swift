@@ -98,4 +98,51 @@ struct HallucinationFilterTests {
             #expect(svc.testSanitiseWhisperOutput(input) == nil, "expected rejection for description/watch-next: \(input)")
         }
     }
+
+    @Test func rejectsShortRecordingWithMultipleOutroVocabHits() {
+        let svc = service()
+        // Short clip (10s) with ≥2 outro-vocab tokens — the real Whisper-
+        // hallucinated-outro fingerprint. Pass 5 catches these.
+        let inputs = [
+            "Subscribe to the channel.",                  // subscribe + channel = 2
+            "Watch my previous video for more.",          // watch + previous + video = 3
+            "Link in the description.",                   // link + description = 2
+            "Subscribe to my channel for more videos."    // subscribe + channel + videos = 3
+        ]
+        for input in inputs {
+            #expect(svc.testSanitiseWhisperOutput(input, durationSeconds: 10) == nil,
+                    "expected short-recording rejection for: \(input)")
+        }
+    }
+
+    @Test func acceptsShortLegitimateDictationWithOneOutroToken() {
+        let svc = service()
+        // Single-vocab-hit short clips — the headline false-positive risk
+        // the ≥2-hit rule was designed to prevent. Each input has exactly
+        // ONE outro-vocab token in a legitimate context and MUST pass.
+        // These inputs are also crafted to NOT trigger any other pass
+        // (no attributionPatterns substring, no semanticHallucinations
+        // whole-line equality).
+        let inputs = [
+            "Send the link to John.",       // link (1) only
+            "Save the link for later.",     // link (1) only
+            "Bob sent me the link.",        // link (1) only
+            "I will watch tomorrow.",       // watch (1) only
+            "The video is ready."           // video (1) only
+        ]
+        for input in inputs {
+            #expect(svc.testSanitiseWhisperOutput(input, durationSeconds: 5) != nil,
+                    "≥2-hit rule should not reject single-vocab-hit: \(input)")
+        }
+    }
+
+    @Test func acceptsLongerRecordingEvenWithOutroVocab() {
+        let svc = service()
+        // Same outro-vocab tokens, but in recordings >= 20s — Pass 5 does not apply.
+        // (The longer recording is more likely to be legitimate; if it's still
+        // hallucinated, the line-match / full-output / attribution passes catch it.)
+        let longLegit = "I want to follow up on what we discussed last week regarding the marketing channel and the campaign performance numbers, particularly around the description copy on the landing page and the link tracking."
+        #expect(svc.testSanitiseWhisperOutput(longLegit, durationSeconds: 60) != nil,
+                "expected acceptance for legitimate long content with outro vocab")
+    }
 }
