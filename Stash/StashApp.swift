@@ -333,7 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(resetItem)
 
-        // Debug ▸ submenu — fires every toast variant for UI testing.
+        // Debug ▸ submenu — fires every pill completion variant for UI testing.
         let debugItem = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")
         let debugSubmenu = NSMenu(title: "Debug")
         for (title, selector) in debugMenuItems() {
@@ -385,59 +385,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// against `self` rather than at file load.
     private func debugMenuItems() -> [(String, Selector)] {
         return [
-            ("Test toast: hallucination rejection",   #selector(debugTestToastRejection)),
-            ("Test toast: cleanup failure",           #selector(debugTestToastCleanupFailure)),
-            ("Test toast: network timeout",           #selector(debugTestToastNetworkTimeout)),
-            ("Test toast: 85-min warning",            #selector(debugTestToast85MinWarning)),
-            ("Test toast: 90-min hard-stop",          #selector(debugTestToast90MinHardStop)),
-            ("Test toast: 20-MB warning",             #selector(debugTestToast20MBWarning)),
-            ("Test toast: 24-MB hard-stop",           #selector(debugTestToast24MBHardStop)),
-            ("Test toast: stacking (3 in a row)",     #selector(debugTestToastStacking))
+            ("Test pill: filter rejection",  #selector(debugTestPillRejection)),
+            ("Test pill: cleanup failure",   #selector(debugTestPillCleanupFailure)),
+            ("Test pill: network timeout",   #selector(debugTestPillNetworkTimeout)),
+            ("Test pill: 5 min warning",     #selector(debugTestPill5MinWarning)),
+            ("Test pill: 90-min hard stop",  #selector(debugTestPill90MinHardStop)),
+            ("Test pill: 20-MB warning",     #selector(debugTestPill20MBWarning)),
+            ("Test pill: 24-MB hard stop",   #selector(debugTestPill24MBHardStop)),
+            ("Test pill: state stacking",    #selector(debugTestPillStacking))
         ]
     }
 
-    private func debugFireToast(_ text: String, hold: TimeInterval) {
+    private func debugFirePill(_ text: String, hold: TimeInterval = DesignTokens.Pill.completionDefaultHold) {
         guard let svc = panelController?.transcriptionService else { return }
-        svc.debugShowToast(TranscriptionToastMessage(text: text, hold: hold))
+        svc.debugShowCompletion(text, hold: hold)
     }
 
-    @objc private func debugTestToastRejection() {
-        debugFireToast("No audio — try speaking closer to the mic.",
-                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
-    }
-    @objc private func debugTestToastCleanupFailure() {
-        debugFireToast("Couldn't clean the transcript — saved the raw version.",
-                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
-    }
-    @objc private func debugTestToastNetworkTimeout() {
-        debugFireToast("Network timed out — try again.",
-                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
-    }
-    @objc private func debugTestToast85MinWarning() {
-        debugFireToast("Recording will stop in 5 min — start a new session for more.",
-                       hold: DesignTokens.Pill.toastWarningHoldDuration)
-    }
-    @objc private func debugTestToast90MinHardStop() {
-        debugFireToast("Recording stopped at 90-min limit. Processing what was captured.",
-                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
-    }
-    @objc private func debugTestToast20MBWarning() {
-        debugFireToast("Approaching upload limit — recording will stop soon. Start a new session for more.",
-                       hold: DesignTokens.Pill.toastWarningHoldDuration)
-    }
-    @objc private func debugTestToast24MBHardStop() {
-        debugFireToast("Recording stopped — file size limit reached. Processing what was captured.",
-                       hold: DesignTokens.Pill.toastDefaultHoldDuration)
-    }
-    @objc private func debugTestToastStacking() {
-        // Fire three toasts 300ms apart so the stack-swap animation is visible.
-        debugFireToast("First toast", hold: DesignTokens.Pill.toastDefaultHoldDuration)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            self?.debugFireToast("Second toast", hold: DesignTokens.Pill.toastDefaultHoldDuration)
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.debugFireToast("Third toast", hold: DesignTokens.Pill.toastDefaultHoldDuration)
-        }
+    @objc private func debugTestPillRejection()      { debugFirePill("No audio") }
+    @objc private func debugTestPillCleanupFailure() { debugFirePill("Saved (raw)") }
+    @objc private func debugTestPillNetworkTimeout() { debugFirePill("Network timeout") }
+    @objc private func debugTestPill5MinWarning()    { debugFirePill("5 min left", hold: DesignTokens.Pill.completionWarningHold) }
+    @objc private func debugTestPill90MinHardStop()  { debugFirePill("90-min limit") }
+    @objc private func debugTestPill20MBWarning()    { debugFirePill("Almost full", hold: DesignTokens.Pill.completionWarningHold) }
+    @objc private func debugTestPill24MBHardStop()   { debugFirePill("Size limit") }
+    @objc private func debugTestPillStacking() {
+        // Fire three completions 300ms apart. Only one should be visible at a
+        // time — the newer message replaces the older one without animating
+        // through hide/show, since the pill stays in .completion phase and
+        // only the SwiftUI body's mode prop updates.
+        debugFirePill("First")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.debugFirePill("Second") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.debugFirePill("Third") }
     }
     #endif
 }
