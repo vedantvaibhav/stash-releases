@@ -623,7 +623,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         // MARK: Hallucination filter
         guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput) else {
             isProcessing = false
-            let rawSnippet = rawWhisperOutput.prefix(120)
+            let rawSnippet = String(rawWhisperOutput.prefix(120))
             reportToSlack(
                 error: "Hallucination filter rejected — raw: \"\(rawSnippet)\"",
                 durationSeconds: durationSeconds
@@ -804,17 +804,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         status == 429 || (500...503).contains(status)
     }
 
-    private func clearBannerAfterDelay(_ delay: Double = 4.0) {
-        // Snapshot-guard: same shape as showCompletion's fix. Without it,
-        // an older banner's pending clear fires after the delay and wipes
-        // out a newer banner that arrived in the meantime.
-        let snapshot = lastErrorForBanner
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard self?.lastErrorForBanner == snapshot else { return }
-            self?.lastErrorForBanner = nil
-        }
-    }
-
     private func reportToSlack(error: String, durationSeconds: Int) {
         guard !APIKeys.slackErrorWebhookURL.isEmpty,
               let url = URL(string: APIKeys.slackErrorWebhookURL) else { return }
@@ -830,9 +819,17 @@ final class TranscriptionService: NSObject, ObservableObject {
         let mins = durationSeconds / 60
         let secs = durationSeconds % 60
         let durationString = mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
+        let header: String
+        if error.lowercased().contains("warning") || error.lowercased().contains("hard-stop") {
+            header = "🟡 *Transcription event*"
+        } else if error.lowercased().contains("hallucination filter") {
+            header = "🔵 *Filter rejection*"
+        } else {
+            header = "🔴 *Transcription failed*"
+        }
         let text = """
-        🔴 *Transcription failed*
-        *Error:* \(error)
+        \(header)
+        *Event:* \(error)
         *Duration recorded:* \(durationString)
         *App version:* \(appVersion) (\(buildNumber))
         *macOS:* \(osString)
