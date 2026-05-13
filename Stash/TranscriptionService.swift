@@ -794,7 +794,6 @@ final class TranscriptionService: NSObject, ObservableObject {
             "drop a comment below",
             "comment below",
             "see you in the next one",
-            "see you in the next video",
             "see you on the next one",
             "catch you in the next one",
             "catch you next time",
