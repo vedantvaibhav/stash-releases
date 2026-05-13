@@ -103,6 +103,11 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// can surface the right toast message just like `autoStoppedAtLimit`
     /// does for the duration limit.
     private var autoStoppedAtSizeLimit = false
+    /// Peak `averagePower(forChannel: 0)` observed during the current
+    /// recording (in dBFS). Updated on every levelTimer tick; consulted
+    /// in stopRecording to skip Whisper entirely on near-silent input.
+    /// Reset to -60 (silence floor) in startRecording.
+    private var recordedPeakPower: Float = -60
 
     // MARK: - Start
 
@@ -118,6 +123,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         didShowDurationWarning = false
         didShowSizeWarning = false
         autoStoppedAtSizeLimit = false
+        recordedPeakPower = -60
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -203,6 +209,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                     guard let self else { return }
                     self.recorder?.updateMeters()
                     let level = self.recorder?.averagePower(forChannel: 0) ?? -60
+                    self.recordedPeakPower = max(self.recordedPeakPower, level)
                     self.audioLevel = max(0, (level + 60) / 60)
                 }
             }
@@ -362,6 +369,32 @@ final class TranscriptionService: NSObject, ObservableObject {
             isProcessing = false
             reportToSlack(error: errorMessage ?? "Audio guard failed", durationSeconds: duration)
             showToast("Recording failed — no audio captured.")
+            return
+        }
+
+        // Amplitude pre-check — skip Whisper entirely if the loudest moment
+        // of the entire recording is below the silence threshold.
+        //
+        // -45 dBFS is well below conversational speech (-20 to -30 dBFS at
+        // arm's length) but above typical ambient hum / mic self-noise.
+        // If field data shows legitimate quiet dictations getting rejected,
+        // raise to -50 or -52. Do not go above -40 (real voices dip there).
+        //
+        // This rejection routes through the same "no audio" toast + Slack
+        // path as the hallucination filter, but tagged distinctly in the
+        // Slack message so triage can tell amplitude-rejection from
+        // filter-rejection.
+        let amplitudeThresholdDBFS: Float = -45
+        if recordedPeakPower < amplitudeThresholdDBFS {
+            isProcessing = false
+            #if DEBUG
+            print("[Transcription] amplitude pre-check rejected — peak \(recordedPeakPower) dBFS < threshold \(amplitudeThresholdDBFS) dBFS")
+            #endif
+            reportToSlack(
+                error: "Amplitude pre-check rejected — peak \(String(format: "%.1f", recordedPeakPower)) dBFS < \(amplitudeThresholdDBFS) dBFS (duration \(duration)s)",
+                durationSeconds: duration
+            )
+            showToast("No audio — try speaking closer to the mic.")
             return
         }
 
@@ -820,7 +853,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         let secs = durationSeconds % 60
         let durationString = mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
         let header: String
-        if error.lowercased().contains("hallucination filter") {
+        if error.lowercased().contains("hallucination filter") || error.lowercased().contains("amplitude pre-check") {
             header = "🔵 *Filter rejection*"
         } else if error.lowercased().contains("warning") || error.lowercased().contains("hard-stop") {
             header = "🟡 *Transcription event*"
