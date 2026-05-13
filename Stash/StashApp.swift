@@ -332,6 +332,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         resetItem.target = self
         menu.addItem(.separator())
         menu.addItem(resetItem)
+
+        // Debug ▸ submenu — fires every pill completion variant for UI testing.
+        let debugItem = NSMenuItem(title: "Debug", action: nil, keyEquivalent: "")
+        let debugSubmenu = NSMenu(title: "Debug")
+        for (title, selector) in debugMenuItems() {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            debugSubmenu.addItem(item)
+        }
+        debugItem.submenu = debugSubmenu
+        menu.addItem(debugItem)
         #endif
 
         statusItem?.menu = menu
@@ -367,6 +378,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             OnboardingWindowController.shared.reset()
             presentOnboarding(startStep: 0)
         }
+    }
+
+    /// Map of debug-submenu titles to their `@objc` selectors. Defined as a
+    /// method (not a stored array) so the selectors resolve at call-site
+    /// against `self` rather than at file load.
+    private func debugMenuItems() -> [(String, Selector)] {
+        return [
+            ("Test pill: filter rejection",  #selector(debugTestPillRejection)),
+            ("Test pill: cleanup failure",   #selector(debugTestPillCleanupFailure)),
+            ("Test pill: network timeout",   #selector(debugTestPillNetworkTimeout)),
+            ("Test pill: 5 min warning",     #selector(debugTestPill5MinWarning)),
+            ("Test pill: 90-min hard stop",  #selector(debugTestPill90MinHardStop)),
+            ("Test pill: 20-MB warning",     #selector(debugTestPill20MBWarning)),
+            ("Test pill: 24-MB hard stop",   #selector(debugTestPill24MBHardStop)),
+            ("Test pill: state stacking",    #selector(debugTestPillStacking))
+        ]
+    }
+
+    private func debugFirePill(_ text: String, hold: TimeInterval = DesignTokens.Pill.completionDefaultHold) {
+        guard let svc = panelController?.transcriptionService else { return }
+        svc.debugShowCompletion(text, hold: hold)
+    }
+
+    @objc private func debugTestPillRejection()      { debugFirePill("No audio") }
+    @objc private func debugTestPillCleanupFailure() { debugFirePill("Saved (raw)") }
+    @objc private func debugTestPillNetworkTimeout() { debugFirePill("Network timeout") }
+    @objc private func debugTestPill5MinWarning()    { debugFirePill("5 min left", hold: DesignTokens.Pill.completionWarningHold) }
+    @objc private func debugTestPill90MinHardStop()  { debugFirePill("90-min limit") }
+    @objc private func debugTestPill20MBWarning()    { debugFirePill("Almost full", hold: DesignTokens.Pill.completionWarningHold) }
+    @objc private func debugTestPill24MBHardStop()   { debugFirePill("Size limit") }
+    @objc private func debugTestPillStacking() {
+        // Fire three completions 300ms apart. Only one should be visible at a
+        // time — the newer message replaces the older one without animating
+        // through hide/show, since the pill stays in .completion phase and
+        // only the SwiftUI body's mode prop updates.
+        debugFirePill("First")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.debugFirePill("Second") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.debugFirePill("Third") }
     }
     #endif
 }

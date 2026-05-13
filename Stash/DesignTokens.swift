@@ -94,6 +94,16 @@ enum DesignTokens {
         static let contentRemovalDuration: TimeInterval = 0.08
         static let contentInsertionDelay: TimeInterval = 0.16
         static let contentInsertionDuration: TimeInterval = 0.16
+
+        // Completion hold durations — how long the pill displays a completion
+        // message before hiding (or returning to recording for mid-recording
+        // warnings). `completionDefaultHold` matches the historical 1.6s
+        // behaviour for end-of-recording results ("Note saved", "Pasted ✓",
+        // "No audio"). `completionWarningHold` is the longer hold used for
+        // mid-recording warnings (85-min, 20-MB) so the user has time to
+        // read them while the recording continues.
+        static let completionDefaultHold: TimeInterval = 1.6
+        static let completionWarningHold: TimeInterval = 3.5
     }
 
     enum Typography {

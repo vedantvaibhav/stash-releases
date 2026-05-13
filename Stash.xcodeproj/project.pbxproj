@@ -35,6 +35,7 @@
 		A10000000000000000000024 /* HeaderIconButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000024 /* HeaderIconButton.swift */; };
 		A10000000000000000000025 /* DesignTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000025 /* DesignTokens.swift */; };
 		A10000000000000000000028 /* NotesInlineCodeLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */; };
+		A3EBA5E6D38F418DAE2DAB9D /* AutoPasteService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72C22EB592AD44098D9DD5CD /* AutoPasteService.swift */; };
 		B8D39FF84C5D46CFF64B16CC /* FileQuickLookController.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD725516AE9C99F850F9EEAB /* FileQuickLookController.swift */; };
 		C31D6B67C9D9686615F26F67 /* OnboardingMedia.swift in Sources */ = {isa = PBXBuildFile; fileRef = 390FE4D58D0921C3363047CA /* OnboardingMedia.swift */; };
 		D9E043017A6345D76AC5A2BC /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EDE6F3AA0830AF7CE2A5E8C /* OnboardingView.swift */; };
@@ -46,6 +47,7 @@
 /* Begin PBXFileReference section */
 		2D6936EAC02E35E905B68947 /* OnboardingViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingViewModel.swift; sourceTree = "<group>"; };
 		390FE4D58D0921C3363047CA /* OnboardingMedia.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingMedia.swift; sourceTree = "<group>"; };
+		72C22EB592AD44098D9DD5CD /* AutoPasteService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoPasteService.swift; sourceTree = "<group>"; };
 		8EDE6F3AA0830AF7CE2A5E8C /* OnboardingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		A0519B42CA9511064669E43F /* OnboardingWindowController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OnboardingWindowController.swift; sourceTree = "<group>"; };
 		A20000000000000000000001 /* StashApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StashApp.swift; sourceTree = "<group>"; };

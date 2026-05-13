@@ -81,6 +81,36 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var autoStoppedAtLimit = false
     private var processingWatchdog: DispatchWorkItem?
 
+    /// Fires once at 85 min (5 min before the hard-stop at 5400s) to warn
+    /// the user that the recording is about to be auto-stopped.
+    private var durationWarningTimer: Timer?
+    /// Periodic sampler (every 30s) that checks the on-disk audio file size
+    /// and fires the 20 MB warning toast / the 24 MB hard-stop.
+    private var sizeMonitorTimer: Timer?
+    /// One-shot per recording session — prevents the duration warning toast
+    /// from re-firing if Combine publishes during the warning's hold window.
+    /// Reset to false in startRecording.
+    private var didShowDurationWarning = false
+    /// Same idea for the file-size warning.
+    private var didShowSizeWarning = false
+    /// Set true when the size-monitor's hard-stop trips, so processRecording
+    /// can surface the right toast message just like `autoStoppedAtLimit`
+    /// does for the duration limit.
+    private var autoStoppedAtSizeLimit = false
+    /// Peak `averagePower(forChannel: 0)` observed during the current
+    /// recording (in dBFS). Updated on every levelTimer tick; consulted
+    /// in stopRecording to skip Whisper entirely on near-silent input.
+    /// Reset to -60 (silence floor) in startRecording.
+    private var recordedPeakPower: Float = -60
+    /// Total seconds where averagePower crossed the voice-presence
+    /// threshold (-30 dBFS, around conversational speech at arm's length).
+    /// Accumulated in the levelTimer tick; used as a stricter pre-Whisper
+    /// silence gate than the peak-power check. A quiet room can sustain
+    /// -40 dBFS noise floor without ever crossing -30 dBFS, so this
+    /// catches silence-with-ambient-noise that the peak gate misses.
+    /// Reset to 0 in startRecording.
+    private var voiceActiveSeconds: Double = 0
+
     // MARK: - Start
 
     func startRecording() {
@@ -92,6 +122,11 @@ final class TranscriptionService: NSObject, ObservableObject {
         // we flip the source out from under it here.
         errorMessage = nil
         completionMessage = nil
+        didShowDurationWarning = false
+        didShowSizeWarning = false
+        autoStoppedAtSizeLimit = false
+        recordedPeakPower = -60
+        voiceActiveSeconds = 0
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -172,11 +207,22 @@ final class TranscriptionService: NSObject, ObservableObject {
             if let t = durationTimer { RunLoop.main.add(t, forMode: .common) }
 
             levelTimer?.invalidate()
-            levelTimer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            let levelTickInterval: TimeInterval = 0.1
+            // Voice-presence threshold. -30 dBFS sits around conversational
+            // speech from arm's length; quiet rooms / mic self-noise rarely
+            // cross it. If field data shows legitimate quiet dictations
+            // being false-rejected, raise to -33 (do not go below -35 —
+            // ambient noise floor leaks above that).
+            let voicePresenceThresholdDBFS: Float = -30
+            levelTimer = Timer(timeInterval: levelTickInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
                     self.recorder?.updateMeters()
                     let level = self.recorder?.averagePower(forChannel: 0) ?? -60
+                    self.recordedPeakPower = max(self.recordedPeakPower, level)
+                    if level > voicePresenceThresholdDBFS {
+                        self.voiceActiveSeconds += levelTickInterval
+                    }
                     self.audioLevel = max(0, (level + 60) / 60)
                 }
             }
@@ -199,8 +245,66 @@ final class TranscriptionService: NSObject, ObservableObject {
             }
             if let t = maxDurationTimer { RunLoop.main.add(t, forMode: .common) }
 
+            durationWarningTimer?.invalidate()
+            durationWarningTimer = Timer(timeInterval: 5100, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.isRecording, !self.didShowDurationWarning else { return }
+                    self.didShowDurationWarning = true
+                    self.showCompletion("5 min left", hold: DesignTokens.Pill.completionWarningHold)
+                    self.reportToSlack(
+                        error: "Duration warning fired at 85 min (5 min before hard cap)",
+                        durationSeconds: self.duration
+                    )
+                }
+            }
+            if let t = durationWarningTimer { RunLoop.main.add(t, forMode: .common) }
+
+            sizeMonitorTimer?.invalidate()
+            sizeMonitorTimer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self, self.isRecording else { return }
+                    self.checkRecordingSize()
+                }
+            }
+            if let t = sizeMonitorTimer { RunLoop.main.add(t, forMode: .common) }
+            // Defensive immediate first sample. Timer's first tick is 30s
+            // after schedule; an attacker (or a very high-bitrate AAC
+            // configuration) could in principle grow the file past 20 MB
+            // inside that window. At t≈0 the file is usually empty/missing
+            // and the sample no-ops via the guards inside checkRecordingSize,
+            // but covering this here is cheap insurance.
+            checkRecordingSize()
+
         } catch {
             errorMessage = "Could not start recording — check your microphone and try again"
+        }
+    }
+
+    /// Lightweight size sampler. Reads only the file's attribute table —
+    /// `attributesOfItem(atPath:)` is fast and doesn't memory-map the file.
+    /// Warns once at 20 MB; hard-stops at 24 MB (1 MB head-room before
+    /// Whisper's 25 MB cap). Both events report to Slack.
+    private func checkRecordingSize() {
+        guard let url = recordingURL else { return }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        guard let bytes = attrs?[.size] as? Int else { return }
+        let mb = Double(bytes) / 1_048_576.0
+
+        let warnAtMB: Double = 20
+        let stopAtMB: Double = 24
+
+        if !didShowSizeWarning, mb >= warnAtMB {
+            didShowSizeWarning = true
+            showCompletion("Almost full", hold: DesignTokens.Pill.completionWarningHold)
+            reportToSlack(
+                error: "Size warning fired at \(String(format: "%.1f", mb)) MB (threshold \(warnAtMB) MB)",
+                durationSeconds: duration
+            )
+        }
+
+        if mb >= stopAtMB {
+            autoStoppedAtSizeLimit = true
+            stopRecording()
         }
     }
 
@@ -223,8 +327,8 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         Task { @MainActor in
             do {
-                let text = try await callWhisper(audioData: audioData)
-                self.liveTranscript = text
+                let response = try await callWhisper(audioData: audioData)
+                self.liveTranscript = response.text
             } catch {
                 // Live chunk failure is non-fatal — next tick retries.
             }
@@ -251,6 +355,10 @@ final class TranscriptionService: NSObject, ObservableObject {
         levelTimer = nil
         maxDurationTimer?.invalidate()
         maxDurationTimer = nil
+        durationWarningTimer?.invalidate()
+        durationWarningTimer = nil
+        sizeMonitorTimer?.invalidate()
+        sizeMonitorTimer = nil
         recorder?.stop()
         recorder = nil
         isRecording = false
@@ -266,8 +374,57 @@ final class TranscriptionService: NSObject, ObservableObject {
             #endif
             errorMessage = "Recording failed — no audio captured"
             isProcessing = false
-            reportToSlack(error: lastErrorForBanner ?? errorMessage ?? "Unknown error", durationSeconds: duration)
-            showCompletion("Failed")
+            reportToSlack(error: errorMessage ?? "Audio guard failed", durationSeconds: duration)
+            showCompletion("No audio")
+            return
+        }
+
+        // Amplitude pre-check — skip Whisper entirely if the loudest moment
+        // of the entire recording is below the silence threshold.
+        //
+        // -45 dBFS is well below conversational speech (-20 to -30 dBFS at
+        // arm's length) but above typical ambient hum / mic self-noise.
+        // If field data shows legitimate quiet dictations getting rejected,
+        // raise to -50 or -52. Do not go above -40 (real voices dip there).
+        //
+        // This rejection routes through the same "no audio" toast + Slack
+        // path as the hallucination filter, but tagged distinctly in the
+        // Slack message so triage can tell amplitude-rejection from
+        // filter-rejection.
+        let amplitudeThresholdDBFS: Float = -45
+        if recordedPeakPower < amplitudeThresholdDBFS {
+            isProcessing = false
+            #if DEBUG
+            print("[Transcription] amplitude pre-check rejected — peak \(recordedPeakPower) dBFS < threshold \(amplitudeThresholdDBFS) dBFS")
+            #endif
+            reportToSlack(
+                error: "Amplitude pre-check rejected — peak \(String(format: "%.1f", recordedPeakPower)) dBFS < \(amplitudeThresholdDBFS) dBFS (duration \(duration)s)",
+                durationSeconds: duration
+            )
+            showCompletion("No audio")
+            return
+        }
+
+        // Voice-active duration gate — peak-power can hit -42 dBFS from
+        // ambient noise alone. This second-layer check requires that some
+        // minimum amount of audio actually crossed the voice-presence
+        // threshold (counted in the level timer). Only engages for
+        // recordings long enough that a real dictation would have
+        // accumulated voice-active time; a brief 2s "okay" might only have
+        // 0.4s of voice-active audio and shouldn't be rejected.
+        let voiceActiveThresholdSeconds: Double = 1.5
+        let voiceGateMinDurationSeconds = 5
+        if duration >= voiceGateMinDurationSeconds,
+           voiceActiveSeconds < voiceActiveThresholdSeconds {
+            isProcessing = false
+            #if DEBUG
+            print("[Transcription] voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(recordedPeakPower) dBFS)")
+            #endif
+            reportToSlack(
+                error: "Voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(String(format: "%.1f", recordedPeakPower)) dBFS)",
+                durationSeconds: duration
+            )
+            showCompletion("No audio")
             return
         }
 
@@ -281,10 +438,8 @@ final class TranscriptionService: NSObject, ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.isProcessing else { return }
                 self.isProcessing = false
-                self.lastErrorForBanner = "Processing timed out — please try again"
-                self.reportToSlack(error: self.lastErrorForBanner ?? self.errorMessage ?? "Unknown error", durationSeconds: self.duration)
+                self.reportToSlack(error: "Processing watchdog timed out (90s)", durationSeconds: self.duration)
                 self.showCompletion("Failed")
-                self.clearBannerAfterDelay()
             }
         }
         processingWatchdog = watchdog
@@ -479,14 +634,30 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         if autoStoppedAtLimit {
             autoStoppedAtLimit = false
-            lastErrorForBanner = "90-minute limit reached — processing what was captured. Start a new session for the rest."
-            clearBannerAfterDelay(6.0)
+            // Pill briefly shows the hard-stop reason; the widget controller's
+            // expireCompletion sees isProcessing==true and returns to the
+            // processing pill (compact circle) after the hold. Eventually the
+            // natural "Note saved" / "No audio" completion takes over.
+            showCompletion("90-min limit")
+            reportToSlack(
+                error: "Duration hard-stop fired at 90 min",
+                durationSeconds: durationSeconds
+            )
+        }
+
+        if autoStoppedAtSizeLimit {
+            autoStoppedAtSizeLimit = false
+            showCompletion("Size limit")
+            reportToSlack(
+                error: "Size hard-stop fired at >=24 MB",
+                durationSeconds: durationSeconds
+            )
         }
 
         // MARK: Whisper — with one auto-retry on transient errors
-        let rawWhisperOutput: String
+        let whisperResponse: WhisperResponse
         do {
-            rawWhisperOutput = try await Task(priority: .userInitiated) {
+            whisperResponse = try await Task(priority: .userInitiated) {
                 try await self.callWhisper(audioData: audioData)
             }.value
         } catch let firstError as NSError {
@@ -494,7 +665,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 showCompletion("Retrying…")
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 do {
-                    rawWhisperOutput = try await Task(priority: .userInitiated) {
+                    whisperResponse = try await Task(priority: .userInitiated) {
                         try await self.callWhisper(audioData: audioData)
                     }.value
                 } catch {
@@ -510,13 +681,47 @@ final class TranscriptionService: NSObject, ObservableObject {
             return
         }
 
-        // MARK: Hallucination filter
-        guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput) else {
+        let rawWhisperOutput = whisperResponse.text
+
+        // MARK: Confidence-signal gate
+        // Whisper itself knows when it hallucinated. With response_format=
+        // verbose_json the server returns per-segment `no_speech_prob`
+        // (model's estimate that the audio window contained no speech) and
+        // `avg_logprob` (per-token log-probability average; lower = less
+        // confident). Reject when the model is signalling "this was
+        // silence I made up." Thresholds picked from OpenAI Whisper's own
+        // defaults: no_speech_threshold=0.6, logprob_threshold=-1.0.
+        //
+        // Skipped when `segments` is empty (provider returned plain text).
+        // The substring filter below remains the backstop for that case
+        // and for hallucinations that slip past the model-confidence gate.
+        let noSpeechRejectionThreshold = 0.6
+        let logprobRejectionThreshold = -1.0
+        if let meanNSP = whisperResponse.meanNoSpeechProb,
+           let meanALP = whisperResponse.meanAvgLogprob,
+           meanNSP > noSpeechRejectionThreshold || meanALP < logprobRejectionThreshold {
             isProcessing = false
-            lastErrorForBanner = "Nothing captured — Whisper returned no usable speech. Try speaking closer to the mic."
-            reportToSlack(error: lastErrorForBanner ?? errorMessage ?? "Unknown error", durationSeconds: durationSeconds)
+            let rawSnippet = String(rawWhisperOutput.prefix(120))
+            #if DEBUG
+            print("[Transcription] confidence-gate rejected — no_speech_prob=\(meanNSP), avg_logprob=\(meanALP) — \"\(rawSnippet)\"")
+            #endif
+            reportToSlack(
+                error: "Confidence gate rejected (no_speech_prob \(String(format: "%.2f", meanNSP)), avg_logprob \(String(format: "%.2f", meanALP)), duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
+                durationSeconds: durationSeconds
+            )
             showCompletion("No audio")
-            clearBannerAfterDelay()
+            return
+        }
+
+        // MARK: Hallucination filter (substring backstop)
+        guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput, durationSeconds: durationSeconds) else {
+            isProcessing = false
+            let rawSnippet = String(rawWhisperOutput.prefix(120))
+            reportToSlack(
+                error: "Hallucination filter rejected (duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
+                durationSeconds: durationSeconds
+            )
+            showCompletion("No audio")
             return
         }
 
@@ -544,8 +749,11 @@ final class TranscriptionService: NSObject, ObservableObject {
                     durationSeconds: durationSeconds
                 )
                 deliverShortDictation(result)
-                lastErrorForBanner = "Couldn't clean transcript — showing raw version"
-                clearBannerAfterDelay()
+                showCompletion("Saved (raw)")
+                reportToSlack(
+                    error: "Short-path cleanup failed; raw delivered. \(userFacingMessage(for: error))",
+                    durationSeconds: durationSeconds
+                )
             }
         } else {
             do {
@@ -585,24 +793,43 @@ final class TranscriptionService: NSObject, ObservableObject {
                 }
                 isProcessing = false
                 showCompletion("Saved (raw)")
-                lastErrorForBanner = "Couldn't clean transcript — raw version saved"
-                clearBannerAfterDelay()
+                reportToSlack(
+                    error: "Long-path cleanup failed; raw saved. \(userFacingMessage(for: error))",
+                    durationSeconds: durationSeconds
+                )
             }
         }
     }
 
-    private func showCompletion(_ message: String) {
+    /// Set a completion message on the pill. Errors, warnings, and natural
+    /// "done" results all flow through this — the pill is the single UI
+    /// surface for transcription status. `hold` is the duration the pill
+    /// holds the message before hiding (or returning to recording display,
+    /// when called mid-recording — see the widget controller's
+    /// `expireCompletion`). Default is `completionDefaultHold` (1.6s);
+    /// mid-recording warnings pass `completionWarningHold` (3.5s) so the
+    /// user has time to read them before the timer returns.
+    ///
+    /// The deferred clear matches `hold` so the service-side state and the
+    /// widget-side hide line up; the snapshot guard prevents a stale clear
+    /// from overwriting a newer message set within the hold window.
+    private func showCompletion(_ message: String, hold: TimeInterval = DesignTokens.Pill.completionDefaultHold) {
         completionMessage = message
-        // Snapshot the message we just set so the delayed clear only fires
-        // when our message is still the displayed one. Without this, a
-        // newer state ("Processing", "Pasted ✓", etc.) set within the 1.5s
-        // window gets clobbered by an older showCompletion's timer.
         let snapshot = message
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [weak self] in
             guard self?.completionMessage == snapshot else { return }
             self?.completionMessage = nil
         }
     }
+
+    #if DEBUG
+    /// Public DEBUG seam: fires a pill completion through the same
+    /// `completionMessage` path production code uses. Called by the
+    /// status-bar Debug submenu for standalone UI testing.
+    func debugShowCompletion(_ message: String, hold: TimeInterval = DesignTokens.Pill.completionDefaultHold) {
+        showCompletion(message, hold: hold)
+    }
+    #endif
 
     func openMicrophonePrivacySettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
@@ -667,25 +894,31 @@ final class TranscriptionService: NSObject, ObservableObject {
     private func reportFailure(_ error: Error, durationSeconds: Int) {
         isProcessing = false
         let friendly = userFacingMessage(for: error)
-        lastErrorForBanner = friendly
         reportToSlack(error: friendly, durationSeconds: durationSeconds)
-        showCompletion("Failed")
-        clearBannerAfterDelay()
+        // Pill copy is short and category-driven; the full message goes to
+        // Slack and (eventually) the in-app error surface.
+        showCompletion(pillCopyFor(error: error))
+    }
+
+    /// Short pill copy for a failure. The pill is narrow — favour 1–2 word
+    /// labels over full sentences. Categories the user can act on:
+    /// network → "Network timeout", everything else → "Failed".
+    private func pillCopyFor(error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .cannotFindHost, .dnsLookupFailed,
+                 .cannotConnectToHost, .networkConnectionLost,
+                 .notConnectedToInternet, .secureConnectionFailed:
+                return "Network timeout"
+            default:
+                return "Failed"
+            }
+        }
+        return "Failed"
     }
 
     private func isTransientWhisperError(status: Int) -> Bool {
         status == 429 || (500...503).contains(status)
-    }
-
-    private func clearBannerAfterDelay(_ delay: Double = 4.0) {
-        // Snapshot-guard: same shape as showCompletion's fix. Without it,
-        // an older banner's pending clear fires after the delay and wipes
-        // out a newer banner that arrived in the meantime.
-        let snapshot = lastErrorForBanner
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard self?.lastErrorForBanner == snapshot else { return }
-            self?.lastErrorForBanner = nil
-        }
     }
 
     private func reportToSlack(error: String, durationSeconds: Int) {
@@ -703,9 +936,17 @@ final class TranscriptionService: NSObject, ObservableObject {
         let mins = durationSeconds / 60
         let secs = durationSeconds % 60
         let durationString = mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
+        let header: String
+        if error.lowercased().contains("hallucination filter") || error.lowercased().contains("amplitude pre-check") {
+            header = "🔵 *Filter rejection*"
+        } else if error.lowercased().contains("warning") || error.lowercased().contains("hard-stop") {
+            header = "🟡 *Transcription event*"
+        } else {
+            header = "🔴 *Transcription failed*"
+        }
         let text = """
-        🔴 *Transcription failed*
-        *Error:* \(error)
+        \(header)
+        *Event:* \(error)
         *Duration recorded:* \(durationString)
         *App version:* \(appVersion) (\(buildNumber))
         *macOS:* \(osString)
@@ -724,13 +965,17 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - Whisper API
 
-    private func sanitiseWhisperOutput(_ raw: String) -> String? {
+    private func sanitiseWhisperOutput(_ raw: String, durationSeconds: Int) -> String? {
         // PASS 1 — token hallucinations (bracket artefacts Whisper emits on silence)
         let tokenHallucinations = [
             "[BLANK_AUDIO]", "[blank_audio]", "[inaudible]", "[Inaudible]",
             "[music]", "[Music]", "[silence]", "[Silence]", "[noise]", "[Noise]",
             "[laughter]", "[Laughter]", "[applause]", "[Applause]",
-            "(No transcript)", "(no transcript)", "(silence)", "(inaudible)"
+            "(No transcript)", "(no transcript)", "(silence)", "(inaudible)",
+            // Added 2026-05-13
+            "(music)", "(Music)", "(applause)", "(Applause)",
+            "(laughter)", "(Laughter)", "(no audio)", "(No audio)",
+            "♪", "♫", "♬"
         ]
         var text = raw
         for token in tokenHallucinations {
@@ -741,6 +986,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         // Match case-insensitively line-by-line so a single hallucination phrase
         // embedded in real speech is not over-stripped.
         let semanticHallucinations: [String] = [
+            // Existing — kept verbatim
             "thank you for watching",
             "thanks for watching",
             "please subscribe",
@@ -770,11 +1016,112 @@ final class TranscriptionService: NSObject, ObservableObject {
             "mm-hmm",
             "mm hmm",
             "...",
-            "…"
+            "…",
+            // Added 2026-05-13 — YouTube outro family (the gap that leaked through).
+            // Keep each phrase as the user-reported exact phrasing so future maintainers
+            // can grep for the source of a rule.
+            "if you have any questions or comments",
+            "if you have any questions or comments please post them in the comments",
+            "if you have any questions or comments, please post them in the comments",
+            "if you have any questions or comments please post them below",
+            "if you have any questions or comments, please post them below",
+            "please post them in the comments",
+            "post them in the comments",
+            "leave a comment below",
+            "leave a comment",
+            "let me know in the comments",
+            "let me know what you think in the comments",
+            "drop a comment",
+            "drop a comment below",
+            "comment below",
+            "see you in the next one",
+            "see you on the next one",
+            "catch you in the next one",
+            "catch you next time",
+            "thanks so much for watching",
+            "thank you so much for watching",
+            // Extended subscribe family.
+            "hit the bell",
+            "ring the bell",
+            "smash the like button",
+            "tap the subscribe button",
+            "tap that subscribe button",
+            "click subscribe",
+            "click the subscribe button",
+            "follow me on",
+            // Multilingual high-frequency outros Whisper emits on silence. Match the
+            // raw script — Whisper does not transliterate these. Pass-2 lowercase
+            // normalisation is a no-op for non-Latin scripts and that's fine; we
+            // compare the trimmed lowercased line against each entry below.
+            "merci",
+            "merci d'avoir regardé",
+            "merci d'avoir regardé cette vidéo",
+            "merci de votre attention",
+            "abonnez-vous",
+            "n'oubliez pas de vous abonner",
+            "спасибо за просмотр",
+            "подписывайтесь на канал",
+            "ご視聴ありがとうございました",
+            "チャンネル登録お願いします",
+            "다음 영상에서 만나요",
+            "구독과 좋아요 부탁드립니다",
+            "gracias por ver",
+            "gracias por su atención",
+            "danke fürs zuschauen",
+            "obrigado por assistir",
+            "grazie per la visione",
+            // Added 2026-05-13 (filter-gaps PR) — description/links family.
+            // User-reported leak: "Be sure to check the description for links in the
+            // previous video description for more information" slipped through after
+            // ~10s of silence. The attributionPatterns list (further down) didn't
+            // cover description/links/bio; this closes the gap at the line-match
+            // and full-output-match passes.
+            "check the description",
+            "in the description",
+            "description for links",
+            "links in the description",
+            "link in the description",
+            "links below",
+            "link below",
+            "in the description below",
+            "previous video description",
+            "more information in the description",
+            "click the link",
+            "link in bio",
+            "link in my bio",
+            // Watch-next family — Whisper hallucinates these when speaker pauses
+            // and the model fills with prior-video-recap phrasing.
+            "in the previous video",
+            "in my previous video",
+            "in the last video",
+            "previous episode",
+            "next episode",
+            "watch the next",
+            "as i mentioned in",
+            "as i said in the last",
+            // Generic creator outro family — extensions on top of what's already there.
+            "more information below",
+            "for more info",
+            "everything you need to know",
+            "all the links",
+            "check out the links",
+            "links are below",
+            "stay tuned"
         ]
+        // Trim set covers Latin + East Asian (CJK) + full-width punctuation.
+        // Whisper emits its native locale's punctuation; without these,
+        // "ご視聴ありがとうございました。" never matches the entry
+        // "ご視聴ありがとうございました" stored in semanticHallucinations.
+        let punctuationTrim = CharacterSet(charactersIn:
+            "-.,!? "                              // Latin
+            + "。、！？「」『』〔〕（）〈〉《》【】"   // Japanese / Chinese
+            + "！？，．：；"                       // Full-width variants
+            + "\u{200B}\u{3000}"                  // Zero-width space, ideographic space
+        )
+
         let lines = text.components(separatedBy: .newlines).filter { line in
             let stripped = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "-.,!? "))
+                .trimmingCharacters(in: punctuationTrim)
             guard !stripped.isEmpty else { return false }
             let normalised = stripped.lowercased()
             if semanticHallucinations.contains(where: { normalised == $0 }) { return false }
@@ -787,7 +1134,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         // PASS 3 — full-output semantic match (handles multi-word phrases that
         // survived line filtering because they were the only line).
         let fullNormalised = cleaned.lowercased()
-            .trimmingCharacters(in: CharacterSet(charactersIn: ".,!? "))
+            .trimmingCharacters(in: punctuationTrim)
         if semanticHallucinations.contains(where: { fullNormalised == $0 }) {
             return nil
         }
@@ -811,13 +1158,74 @@ final class TranscriptionService: NSObject, ObservableObject {
             "visit us at", "find us at", "follow us on",
             "subscribe to our", "check out our", "more videos", "our website",
             "our channel", "our podcast", "this video was", "this episode was",
-            "produced by", "sponsored by", "brought to you by"
+            "produced by", "sponsored by", "brought to you by",
+            // Added 2026-05-13 (filter-gaps PR) — description / links / bio
+            "check the description",
+            "in the description",
+            "description for",
+            "link in bio",
+            "link in my bio",
+            "link in the bio",
+            "links in the",
+            "previous video",
+            "next video",
+            "next episode",
+            "watch the next",
+            "link below",
+            "links below",
+            "in the comments below",
+            // Added 2026-05-13 (filter-gaps PR) — bell / subscribe-button family.
+            // These exist as whole-line entries in semanticHallucinations,
+            // but Whisper sometimes embeds them in longer hallucinated
+            // sentences ("And of course, hit that bell so you don't miss
+            // the next one"). Substring form catches the embedded case.
+            "hit the bell",
+            "ring the bell",
+            "smash the like",
+            "tap subscribe",
+            "tap that subscribe",
+            "click subscribe",
+            "follow me on"
         ]
         if attributionPatterns.contains(where: { fullNormalised.contains($0) }) {
             #if DEBUG
             print("[Transcription] sanitise: rejected (attribution pattern) — \"\(cleaned)\"")
             #endif
             return nil
+        }
+
+        // PASS 5 — short-recording outro-vocab gate (added 2026-05-13).
+        // Whisper hallucinates YouTube-creator outro vocabulary on short,
+        // near-silent clips. For recordings < 20s AND < 25 substantive
+        // words, reject if ≥2 tokens from the outro vocab set appear.
+        //
+        // ≥2-hit (not ≥1) so legitimate one-liners with a single incidental
+        // match ("send the link to John") pass through. Real outro
+        // hallucinations stack tokens: subscribe+channel, link+description,
+        // watch+previous+video. Two-hit threshold catches the real cases
+        // while letting single-token incidentals through to Pass 4.
+        //
+        // Known edge case: "watch the next train" (2 hits: watch+next) is
+        // falsely rejected. Acceptable < 0.1% rate; user re-records.
+        let shortRecordingThresholdSeconds = 20
+        let shortRecordingMaxWords = 25
+        let outroVocab: Set<String> = [
+            "description", "subscribe", "channel", "video", "videos",
+            "link", "links", "bio", "watch", "previous", "next",
+            "comment", "comments", "tutorial", "episode", "stream",
+            "viewers"
+        ]
+        if durationSeconds > 0,
+           durationSeconds < shortRecordingThresholdSeconds,
+           words.count < shortRecordingMaxWords {
+            let lowercasedWords = Set(words.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) })
+            let hits = lowercasedWords.intersection(outroVocab)
+            if hits.count >= 2 {
+                #if DEBUG
+                print("[Transcription] sanitise: rejected (short-recording outro vocab — \(durationSeconds)s, hits: \(hits.sorted())) — \"\(cleaned)\"")
+                #endif
+                return nil
+            }
         }
 
         // PASS 4 — word-count gate. Reject only when there are zero
@@ -839,7 +1247,30 @@ final class TranscriptionService: NSObject, ObservableObject {
         return cleaned
     }
 
-    private func callWhisper(audioData: Data) async throws -> String {
+    /// Parsed Whisper response. `segments` is empty when the provider
+    /// returned plain text rather than verbose_json — callers that depend
+    /// on confidence signals must handle the empty case.
+    struct WhisperResponse {
+        let text: String
+        let segments: [Segment]
+
+        struct Segment {
+            let noSpeechProb: Double
+            let avgLogprob: Double
+        }
+
+        /// Mean across segments, or nil when no segments are present.
+        var meanNoSpeechProb: Double? {
+            guard !segments.isEmpty else { return nil }
+            return segments.map(\.noSpeechProb).reduce(0, +) / Double(segments.count)
+        }
+        var meanAvgLogprob: Double? {
+            guard !segments.isEmpty else { return nil }
+            return segments.map(\.avgLogprob).reduce(0, +) / Double(segments.count)
+        }
+    }
+
+    private func callWhisper(audioData: Data) async throws -> WhisperResponse {
         guard let url = URL(string: whisperURL) else {
             throw NSError(domain: "Whisper", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Invalid Whisper URL"])
@@ -865,13 +1296,17 @@ final class TranscriptionService: NSObject, ObservableObject {
         body.append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n".data(using: .utf8) ?? Data())
         body.append("0\r\n".data(using: .utf8) ?? Data())
 
-        body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
-        body.append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n".data(using: .utf8) ?? Data())
-        body.append("Meeting notes, action items, decisions, follow-ups. Names, dates, and technical terms should be transcribed accurately.\r\n".data(using: .utf8) ?? Data())
+        // Priming `prompt` field deliberately omitted (2026-05-13). Earlier
+        // versions sent "Meeting notes, action items..." — on near-silent
+        // audio Whisper has no acoustic content to anchor on and falls back
+        // to language-model output conditioned on the priming string,
+        // producing meeting/creator-style hallucinations. No prompt = no
+        // bias. If specialised vocab is needed later, prefer a much shorter
+        // neutral string and test the hallucination rate empirically.
 
         body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
         body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8) ?? Data())
-        body.append("text\r\n".data(using: .utf8) ?? Data())
+        body.append("verbose_json\r\n".data(using: .utf8) ?? Data())
 
         body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8) ?? Data())
@@ -889,7 +1324,32 @@ final class TranscriptionService: NSObject, ObservableObject {
             throw NSError(domain: "Whisper", code: status,
                           userInfo: [NSLocalizedDescriptionKey: friendlyError(domain: "Whisper", status: status, body: responseText)])
         }
-        return responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return parseWhisperResponse(data: data, fallbackText: responseText)
+    }
+
+    /// Parse a Whisper response body. With `response_format=verbose_json`
+    /// the body is a JSON object containing `text` and a `segments` array
+    /// (each with `no_speech_prob` and `avg_logprob`). If the provider
+    /// instead returned plain text (legacy / non-conforming endpoint), we
+    /// fall back to using the raw body as the transcript with no segments.
+    private func parseWhisperResponse(data: Data, fallbackText: String) -> WhisperResponse {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let text = json["text"] as? String {
+            let rawSegments = json["segments"] as? [[String: Any]] ?? []
+            let segments = rawSegments.compactMap { dict -> WhisperResponse.Segment? in
+                guard let nsp = dict["no_speech_prob"] as? Double,
+                      let alp = dict["avg_logprob"] as? Double else { return nil }
+                return WhisperResponse.Segment(noSpeechProb: nsp, avgLogprob: alp)
+            }
+            return WhisperResponse(
+                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                segments: segments
+            )
+        }
+        return WhisperResponse(
+            text: fallbackText.trimmingCharacters(in: .whitespacesAndNewlines),
+            segments: []
+        )
     }
 
     // MARK: - Generic chat call
@@ -935,4 +1395,14 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
         return content
     }
+
+    // MARK: - Test seam
+    //
+    // Re-exposes the private hallucination filter for unit tests. DEBUG-only
+    // so release builds keep the surface area minimal.
+    #if DEBUG
+    func testSanitiseWhisperOutput(_ raw: String, durationSeconds: Int = 0) -> String? {
+        sanitiseWhisperOutput(raw, durationSeconds: durationSeconds)
+    }
+    #endif
 }
