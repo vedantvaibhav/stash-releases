@@ -58,12 +58,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Shown inside the RecordingBanner so the user can actually read the failure
     /// message (the pill's "Failed ✗" alone disappears too fast). Auto-clears after 4 s.
     @Published var lastErrorForBanner: String? = nil
-    /// Mirror of the most recently-requested toast. The pill controller
-    /// observes this via Combine and forwards new values to
-    /// `TranscriptionFloatingWidgetController.showToast(_:)`. Cleared
-    /// immediately after consumption so the controller's sink doesn't
-    /// re-fire on every objectWillChange tick.
-    @Published var pendingToast: TranscriptionToastMessage? = nil
     /// Set by `processRecording` before branching so the onNoteCreated callback
     /// (in PanelController) knows whether to auto-open the editor (long) or show
     /// the list with the new quick-transcript pinned at the top (short).
@@ -256,10 +250,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 Task { @MainActor in
                     guard let self, self.isRecording, !self.didShowDurationWarning else { return }
                     self.didShowDurationWarning = true
-                    self.showToast(
-                        "Recording will stop in 5 min — start a new session for more.",
-                        hold: DesignTokens.Pill.toastWarningHoldDuration
-                    )
+                    self.showCompletion("5 min left", hold: DesignTokens.Pill.completionWarningHold)
                     self.reportToSlack(
                         error: "Duration warning fired at 85 min (5 min before hard cap)",
                         durationSeconds: self.duration
@@ -304,10 +295,7 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         if !didShowSizeWarning, mb >= warnAtMB {
             didShowSizeWarning = true
-            showToast(
-                "Approaching upload limit — recording will stop soon. Start a new session for more.",
-                hold: DesignTokens.Pill.toastWarningHoldDuration
-            )
+            showCompletion("Almost full", hold: DesignTokens.Pill.completionWarningHold)
             reportToSlack(
                 error: "Size warning fired at \(String(format: "%.1f", mb)) MB (threshold \(warnAtMB) MB)",
                 durationSeconds: duration
@@ -387,7 +375,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             errorMessage = "Recording failed — no audio captured"
             isProcessing = false
             reportToSlack(error: errorMessage ?? "Audio guard failed", durationSeconds: duration)
-            showToast("Recording failed — no audio captured.")
+            showCompletion("No audio")
             return
         }
 
@@ -413,7 +401,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 error: "Amplitude pre-check rejected — peak \(String(format: "%.1f", recordedPeakPower)) dBFS < \(amplitudeThresholdDBFS) dBFS (duration \(duration)s)",
                 durationSeconds: duration
             )
-            showToast("No audio — try speaking closer to the mic.")
+            showCompletion("No audio")
             return
         }
 
@@ -436,7 +424,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 error: "Voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(String(format: "%.1f", recordedPeakPower)) dBFS)",
                 durationSeconds: duration
             )
-            showToast("No audio — try speaking closer to the mic.")
+            showCompletion("No audio")
             return
         }
 
@@ -451,7 +439,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 guard let self, self.isProcessing else { return }
                 self.isProcessing = false
                 self.reportToSlack(error: "Processing watchdog timed out (90s)", durationSeconds: self.duration)
-                self.showToast("Processing timed out — please try again.")
+                self.showCompletion("Failed")
             }
         }
         processingWatchdog = watchdog
@@ -646,10 +634,11 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         if autoStoppedAtLimit {
             autoStoppedAtLimit = false
-            showToast(
-                "Recording stopped at 90-min limit. Processing what was captured.",
-                hold: DesignTokens.Pill.toastWarningHoldDuration
-            )
+            // Pill briefly shows the hard-stop reason; the widget controller's
+            // expireCompletion sees isProcessing==true and returns to the
+            // processing pill (compact circle) after the hold. Eventually the
+            // natural "Note saved" / "No audio" completion takes over.
+            showCompletion("90-min limit")
             reportToSlack(
                 error: "Duration hard-stop fired at 90 min",
                 durationSeconds: durationSeconds
@@ -658,10 +647,7 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         if autoStoppedAtSizeLimit {
             autoStoppedAtSizeLimit = false
-            showToast(
-                "Recording stopped — file size limit reached. Processing what was captured.",
-                hold: DesignTokens.Pill.toastWarningHoldDuration
-            )
+            showCompletion("Size limit")
             reportToSlack(
                 error: "Size hard-stop fired at >=24 MB",
                 durationSeconds: durationSeconds
@@ -723,7 +709,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 error: "Confidence gate rejected (no_speech_prob \(String(format: "%.2f", meanNSP)), avg_logprob \(String(format: "%.2f", meanALP)), duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
                 durationSeconds: durationSeconds
             )
-            showToast("No audio — try speaking closer to the mic.")
+            showCompletion("No audio")
             return
         }
 
@@ -735,7 +721,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 error: "Hallucination filter rejected (duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
                 durationSeconds: durationSeconds
             )
-            showToast("No audio — try speaking closer to the mic.")
+            showCompletion("No audio")
             return
         }
 
@@ -763,7 +749,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                     durationSeconds: durationSeconds
                 )
                 deliverShortDictation(result)
-                showToast("Couldn't clean transcript — showing raw version.")
+                showCompletion("Saved (raw)")
                 reportToSlack(
                     error: "Short-path cleanup failed; raw delivered. \(userFacingMessage(for: error))",
                     durationSeconds: durationSeconds
@@ -806,8 +792,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                     onNoteCreated?(id)
                 }
                 isProcessing = false
-                showCompletion("Note saved")
-                showToast("Couldn't clean the transcript — saved the raw version.")
+                showCompletion("Saved (raw)")
                 reportToSlack(
                     error: "Long-path cleanup failed; raw saved. \(userFacingMessage(for: error))",
                     durationSeconds: durationSeconds
@@ -816,39 +801,35 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
     }
 
-    /// Show a toast below the pill. Used for error and warning copy that
-    /// shouldn't morph the pill itself. The `hold` parameter defaults to
-    /// `DesignTokens.Pill.toastDefaultHoldDuration` (4.5s); warnings pass
-    /// `DesignTokens.Pill.toastWarningHoldDuration` (6.0s).
+    /// Set a completion message on the pill. Errors, warnings, and natural
+    /// "done" results all flow through this — the pill is the single UI
+    /// surface for transcription status. `hold` is the duration the pill
+    /// holds the message before hiding (or returning to recording display,
+    /// when called mid-recording — see the widget controller's
+    /// `expireCompletion`). Default is `completionDefaultHold` (1.6s);
+    /// mid-recording warnings pass `completionWarningHold` (3.5s) so the
+    /// user has time to read them before the timer returns.
     ///
-    /// Assigns through `pendingToast`; the floating widget controller's
-    /// sink picks it up and forwards to its `showToast(_:)` panel API.
-    private func showToast(_ text: String, hold: TimeInterval = DesignTokens.Pill.toastDefaultHoldDuration) {
-        pendingToast = TranscriptionToastMessage(text: text, hold: hold)
-    }
-
-    #if DEBUG
-    /// Public DEBUG seam: fires a toast through the same `pendingToast`
-    /// Combine pipeline production code uses. The widget controller's
-    /// sink picks it up and animates the toast. Called by the status-bar
-    /// Debug submenu for standalone UI testing.
-    func debugShowToast(_ message: TranscriptionToastMessage) {
-        pendingToast = message
-    }
-    #endif
-
-    private func showCompletion(_ message: String) {
+    /// The deferred clear matches `hold` so the service-side state and the
+    /// widget-side hide line up; the snapshot guard prevents a stale clear
+    /// from overwriting a newer message set within the hold window.
+    private func showCompletion(_ message: String, hold: TimeInterval = DesignTokens.Pill.completionDefaultHold) {
         completionMessage = message
-        // Snapshot the message we just set so the delayed clear only fires
-        // when our message is still the displayed one. Without this, a
-        // newer state ("Processing", "Pasted ✓", etc.) set within the 1.5s
-        // window gets clobbered by an older showCompletion's timer.
         let snapshot = message
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + hold) { [weak self] in
             guard self?.completionMessage == snapshot else { return }
             self?.completionMessage = nil
         }
     }
+
+    #if DEBUG
+    /// Public DEBUG seam: fires a pill completion through the same
+    /// `completionMessage` path production code uses. Called by the
+    /// status-bar Debug submenu for standalone UI testing.
+    func debugShowCompletion(_ message: String, hold: TimeInterval = DesignTokens.Pill.completionDefaultHold) {
+        showCompletion(message, hold: hold)
+    }
+    #endif
 
     func openMicrophonePrivacySettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
@@ -914,7 +895,26 @@ final class TranscriptionService: NSObject, ObservableObject {
         isProcessing = false
         let friendly = userFacingMessage(for: error)
         reportToSlack(error: friendly, durationSeconds: durationSeconds)
-        showToast(friendly)
+        // Pill copy is short and category-driven; the full message goes to
+        // Slack and (eventually) the in-app error surface.
+        showCompletion(pillCopyFor(error: error))
+    }
+
+    /// Short pill copy for a failure. The pill is narrow — favour 1–2 word
+    /// labels over full sentences. Categories the user can act on:
+    /// network → "Network timeout", everything else → "Failed".
+    private func pillCopyFor(error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .cannotFindHost, .dnsLookupFailed,
+                 .cannotConnectToHost, .networkConnectionLost,
+                 .notConnectedToInternet, .secureConnectionFailed:
+                return "Network timeout"
+            default:
+                return "Failed"
+            }
+        }
+        return "Failed"
     }
 
     private func isTransientWhisperError(status: Int) -> Bool {
