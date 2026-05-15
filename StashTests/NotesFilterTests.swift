@@ -73,3 +73,36 @@ struct NotesFilterTests {
         #expect(NotesFilter.manual.rawValue     == "manual")
     }
 }
+
+/// Round-trip tests for `NotesFilter` persistence shape — guards against
+/// raw-value drift that would silently reset every user's filter to `.all`
+/// on next launch. Does NOT touch `AppSettings.shared` directly because
+/// that would require swizzling its `ud` reference; instead these tests
+/// verify the contract that `AppSettings` consumes (raw string in, enum out).
+struct NotesFilterPersistenceTests {
+
+    private func makeSuite() -> UserDefaults {
+        let suiteName = "qp.notesFilterTests.\(UUID().uuidString)"
+        guard let ud = UserDefaults(suiteName: suiteName) else {
+            fatalError("UserDefaults suite creation failed — unexpected for a random UUID name")
+        }
+        ud.removePersistentDomain(forName: suiteName)
+        return ud
+    }
+
+    @Test func roundTripsEveryCaseThroughUserDefaults() {
+        let ud = makeSuite()
+        let key = "qp.notesActiveFilter"
+        for filter in NotesFilter.allCases {
+            ud.set(filter.rawValue, forKey: key)
+            let read = ud.string(forKey: key).flatMap(NotesFilter.init(rawValue:))
+            #expect(read == filter)
+        }
+    }
+
+    @Test func unknownRawValueFallsBackToNil() {
+        // AppSettings.init defaults `.all` when init(rawValue:) returns nil.
+        let result = NotesFilter(rawValue: "not-a-real-case")
+        #expect(result == nil)
+    }
+}
