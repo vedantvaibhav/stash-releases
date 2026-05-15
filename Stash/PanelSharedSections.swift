@@ -508,8 +508,26 @@ struct SharedNotesColumn: View {
     @State private var deleteConfirmNote: NoteItem? = nil
     @State private var quickNoteHovered = false
     @State private var selectedNoteTab: NoteEditorTab = .overview
+    @ObservedObject private var appSettings = AppSettings.shared
 
     private enum NoteEditorTab { case transcript, overview }
+
+    /// Notes matching the active filter. `notesStorage.notes` order is preserved.
+    private var filteredNotes: [NoteItem] {
+        let f = appSettings.notesActiveFilter
+        guard f != .all else { return notesStorage.notes }
+        return notesStorage.notes.filter { f.matches($0) }
+    }
+
+    /// Match counts per filter — computed once per `body` rebuild so the
+    /// popover and the active-filter title both read consistent values.
+    private var filterCounts: [NotesFilter: Int] {
+        var result: [NotesFilter: Int] = [:]
+        for filter in NotesFilter.allCases {
+            result[filter] = notesStorage.notes.filter { filter.matches($0) }.count
+        }
+        return result
+    }
 
     var body: some View {
         Group {
@@ -550,21 +568,37 @@ struct SharedNotesColumn: View {
     // MARK: Notes list
 
     private var notesListView: some View {
-        let menuTopPadding: CGFloat = forCardsMode ? 40 : 94
+        // Original values were 40 (cards) and 94 (panel), tuned to land the
+        // new-note choice card just below the TabBar's "+" button. Adding the
+        // ~38pt-tall filter bar pushes the available space down — the menu
+        // anchor (outer ZStack `.topTrailing`) does NOT shift with VStack
+        // content, so the card would overlap the bar's bottom edge in cards
+        // mode (40pt anchor vs ~38pt bar = 2pt clearance — visually broken).
+        // Bumped to bar_height + 8pt visual gap = ~46pt cards / 100pt panel
+        // so the card always opens a clear distance below the bar.
+        let menuTopPadding: CGFloat = forCardsMode ? 46 : 100
 
         return ZStack(alignment: .topTrailing) {
             VStack(alignment: .leading, spacing: 0) {
-                // List or empty state
+                // Sticky filter bar — pinned above the scrollable list.
+                NotesFilterBar(
+                    activeFilter: $appSettings.notesActiveFilter,
+                    counts: filterCounts
+                )
+
+                // List, empty-state, or filter-empty-state
                 if notesStorage.notes.isEmpty {
                     PanelEmptyState(
                         title: "No notes yet",
                         subtitle: "Write a note or transcribe your next meeting"
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if filteredNotes.isEmpty {
+                    filterEmptyStateLine
                 } else {
                     let listed: [NoteItem] = {
-                        guard let cap = maxListNotes else { return notesStorage.notes }
-                        return Array(notesStorage.notes.prefix(cap))
+                        guard let cap = maxListNotes else { return filteredNotes }
+                        return Array(filteredNotes.prefix(cap))
                     }()
                     NotesListView(
                         notes: listed,
@@ -599,6 +633,29 @@ struct SharedNotesColumn: View {
         }
         .animation(.easeIn(duration: 0.15), value: showNewNoteChoiceMenu)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Shown when storage has notes but the active filter excludes all of them.
+    /// The filter bar stays operable — only the list area shows the empty line.
+    private var filterEmptyStateLine: some View {
+        let copy: String = {
+            switch appSettings.notesActiveFilter {
+            case .meetings:   return "No meetings yet — long recordings (5+ min) will appear here."
+            case .quickNotes: return "No quick notes yet — short dictations will appear here."
+            case .manual:     return "No manual notes yet — tap + to create one."
+            case .all:        return ""   // unreachable: .all + notes-not-empty never hits this branch
+            }
+        }()
+
+        return VStack(spacing: 0) {
+            Text(copy)
+                .font(.system(size: 13))
+                .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.5))
+                .padding(.horizontal, 8)
+                .padding(.top, 24)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     /// Opens a new blank note with the editor focused (transcription remains on the tab-bar mic).
