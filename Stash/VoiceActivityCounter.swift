@@ -1,9 +1,16 @@
 import Foundation
 
-/// Counts seconds of voice activity using a 1-second sliding window of
-/// *peak* power, not per-tick average. Replaces the prior accumulator
+/// Counts seconds of voice activity using a 1-second **tumbling window**
+/// of *peak* power, not per-tick average. Replaces the prior accumulator
 /// that under-counted real speech because natural micro-pauses between
 /// words drop the running average below the threshold momentarily.
+///
+/// "Tumbling" rather than "sliding" — windows do not overlap; each completed
+/// window is evaluated, credited or not, then drained for the next second.
+/// Partial trailing windows at recording-stop are silently discarded.
+/// Acceptable because gate thresholds (1.0 / 1.5 / 3.0s in
+/// `TranscriptionService.stopRecording`) are integer-second comparisons —
+/// a sub-1s remainder cannot change the gate outcome.
 ///
 /// Caller invariant: `observe(power:)` is called at a fixed cadence
 /// (100ms in production). The counter assumes 10 observations equals
@@ -20,7 +27,8 @@ struct VoiceActivityCounter {
     /// Samples per 1s window. With a 100ms tick this is 10.
     private let samplesPerSecond: Int
 
-    /// Most recent N samples (ring-buffer semantics — wraps once full).
+    /// Buffer of samples in the current (in-progress) window. Drained
+    /// to empty each time a full second's worth has been observed.
     private var window: [Float] = []
 
     /// Accumulated voice-active seconds.
