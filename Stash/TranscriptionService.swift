@@ -410,6 +410,10 @@ final class TranscriptionService: NSObject, ObservableObject {
                 error: "Amplitude pre-check rejected — peak \(String(format: "%.1f", recordedPeakPower)) dBFS < \(amplitudeThresholdDBFS) dBFS (duration \(duration)s)",
                 durationSeconds: duration
             )
+            if duration >= 20 {
+                let placeholder = "(\(duration)s recording — peak \(String(format: "%.1f", recordedPeakPower)) dBFS, no audio detected)"
+                autoSaveLongRejection(rawTranscript: placeholder, durationSeconds: duration)
+            }
             showCompletion("No audio")
             return
         }
@@ -449,6 +453,10 @@ final class TranscriptionService: NSObject, ObservableObject {
                 error: "Voice-active gate rejected (\(tier) tier: \(String(format: "%.2f", voiceActive))s active in \(duration)s, peak \(String(format: "%.1f", recordedPeakPower)) dBFS)",
                 durationSeconds: duration
             )
+            if duration >= 20 {
+                let placeholder = "(\(duration)s recording — \(String(format: "%.1f", voiceActive))s voice-active, peak \(String(format: "%.1f", recordedPeakPower)) dBFS)"
+                autoSaveLongRejection(rawTranscript: placeholder, durationSeconds: duration)
+            }
             showCompletion("No audio")
             return
         }
@@ -727,6 +735,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 error: "Confidence gate rejected (\(tierLabel) tier: NSP \(String(format: "%.2f", meanNSP)), ALP \(String(format: "%.2f", meanALP)), duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
                 durationSeconds: durationSeconds
             )
+            autoSaveLongRejection(rawTranscript: rawWhisperOutput, durationSeconds: durationSeconds)
             showCompletion("No audio")
             return
         }
@@ -739,6 +748,7 @@ final class TranscriptionService: NSObject, ObservableObject {
                 error: "Hallucination filter rejected (duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
                 durationSeconds: durationSeconds
             )
+            autoSaveLongRejection(rawTranscript: rawWhisperOutput, durationSeconds: durationSeconds)
             showCompletion("No audio")
             return
         }
@@ -916,6 +926,32 @@ final class TranscriptionService: NSObject, ObservableObject {
         // Pill copy is short and category-driven; the full message goes to
         // Slack and (eventually) the in-app error surface.
         showCompletion(pillCopyFor(error: error))
+    }
+
+    /// Auto-save the raw Whisper output as a "[Possibly silent — review]"
+    /// note for any recording rejected by a gate. The recovery surface for
+    /// long rejections — see 2026-05-15 over-correction fix.
+    ///
+    /// Default behaviour: skip for <20s (hallucination-dominated bucket
+    /// where every rejection would clutter Notes).
+    ///
+    /// `forceAutoSave` overrides the 20s minimum — used by the replay path,
+    /// where the user has already lost the audio once to a network failure
+    /// and we should never silently drop on the retry.
+    private func autoSaveLongRejection(rawTranscript: String, durationSeconds: Int, forceAutoSave: Bool = false) {
+        guard forceAutoSave || durationSeconds >= 20 else { return }
+        guard let storage = notesStorage else { return }
+        let id = storage.savePossiblySilentNote(
+            rawTranscript: rawTranscript,
+            durationSeconds: durationSeconds
+        )
+        storage.refreshNotes()
+        // Deliberately NOT calling onNoteCreated — this is a triage note,
+        // not a finished one. User will find it in the list when they
+        // open the panel; we don't yank focus or open the editor.
+        #if DEBUG
+        print("[Transcription] autoSaveLongRejection — saved note id=\(id), \(durationSeconds)s, \(rawTranscript.count) chars, forced=\(forceAutoSave)")
+        #endif
     }
 
     /// Short pill copy for a failure. The pill is narrow — favour 1–2 word

@@ -799,7 +799,6 @@ private struct NoteListRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Icon with boxed background
             ZStack {
                 RoundedRectangle(cornerRadius: 4, style: .continuous)
                     .fill(Color.white.opacity(0.07))
@@ -809,9 +808,24 @@ private struct NoteListRow: View {
                     .foregroundColor(.white.opacity(0.40))
             }
 
+            // Warning glyph rendered to the LEFT of the title for possibly-silent
+            // rejections. Saturated yellow at low alpha so it reads as caution
+            // without screaming.
+            if note.isPossiblySilentRejection {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Color(red: 0.95, green: 0.78, blue: 0.30).opacity(0.85))
+                    .accessibilityLabel("Possibly silent recording — review")
+            }
+
             Text(note.title)
                 .font(DesignTokens.Typography.itemFont)
-                .foregroundColor(DesignTokens.Typography.itemColor)
+                .italic(note.isPossiblySilentRejection)
+                .foregroundColor(
+                    note.isPossiblySilentRejection
+                        ? DesignTokens.Typography.itemColor.opacity(0.85)
+                        : DesignTokens.Typography.itemColor
+                )
                 .lineLimit(1)
                 .truncationMode(.tail)
 

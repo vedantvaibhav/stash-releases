@@ -26,6 +26,11 @@ struct NoteItem: Identifiable {
     let lastEdited: Date
     let origin: NoteOrigin
     let duration: Int   // seconds; 0 for written notes
+    /// True when this note was auto-saved from a long recording rejection.
+    /// NoteListRow renders these with italics and a warning glyph so the
+    /// user knows to review-and-keep or delete. See 2026-05-15 over-correction
+    /// fix — long rejections are never silently dropped.
+    let isPossiblySilentRejection: Bool
 }
 
 /// Parsed sections of a new-format note.
@@ -38,6 +43,12 @@ struct ParsedNote {
 
 /// Manages notes at ~/Library/Application Support/QuickPanel/notes/ as `.txt` (plain) or `.rtf` (rich).
 final class NotesStorage: ObservableObject {
+    /// Title prefix used by `savePossiblySilentNote` so the list row can
+    /// render the note with italics + warning glyph, and so the user can
+    /// scan and triage at a glance. Matched on the leading prefix only —
+    /// `NotesStorage.titlePreviewDateAndOrigin` sets the flag.
+    static let possiblySilentTitlePrefix = "[Possibly silent — review] "
+
     /// First-line prefix for notes saved from `TranscriptionService` (used to pick list icon).
     static let transcribedMeetingTitlePrefix = "Meeting — "
 
@@ -127,7 +138,15 @@ final class NotesStorage: ObservableObject {
         var items: [NoteItem] = []
         for (id, url) in byId {
             let (title, preview, lastEdited, origin, duration) = titlePreviewDateAndOrigin(for: url)
-            items.append(NoteItem(id: id, title: title, preview: preview, lastEdited: lastEdited, origin: origin, duration: duration))
+            items.append(NoteItem(
+                id: id,
+                title: title,
+                preview: preview,
+                lastEdited: lastEdited,
+                origin: origin,
+                duration: duration,
+                isPossiblySilentRejection: title.hasPrefix(Self.possiblySilentTitlePrefix)
+            ))
         }
         items.sort { $0.lastEdited > $1.lastEdited }
         return items
@@ -271,6 +290,31 @@ final class NotesStorage: ObservableObject {
         let id = createNewNote()
         let isoDate = ISO8601DateFormatter().string(from: Date())
         let content = "---TRANSCRIPT---\n\(text)\n---META---\nduration: \(durationSeconds)\ndate: \(isoDate)\ntype: quick"
+        saveNote(id: id, text: content, debounceListRefresh: false)
+        return id
+    }
+
+    /// Save the raw Whisper output for a long recording that was rejected
+    /// by any gate. The note appears in the regular notes list, prefixed
+    /// with `possiblySilentTitlePrefix`, and is visually distinguished
+    /// (italics + warning glyph) in NoteListRow. User can read the raw
+    /// transcript and either keep or delete. **Never** silently drops a
+    /// long recording — that was the worst sin of the 2026-05-15
+    /// over-correction.
+    @discardableResult
+    func savePossiblySilentNote(rawTranscript: String, durationSeconds: Int) -> String {
+        // Bound the preview snippet for the title; the full text lives in
+        // the body. 60 chars matches NoteItem.title trimming downstream.
+        let trimmed = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let snippet = String(trimmed.prefix(60))
+        let titleLine = Self.possiblySilentTitlePrefix + (snippet.isEmpty ? "(no text)" : snippet)
+        let id = createNewNote()
+        let isoDate = ISO8601DateFormatter().string(from: Date())
+        let body = trimmed.isEmpty ? "(Whisper returned no text — likely silence.)" : trimmed
+        // Store under TRANSCRIPT so it loads cleanly through cleanedDisplayText.
+        // The title prefix is part of the transcript first line so it survives
+        // the existing parser, which uses the first non-empty line as the title.
+        let content = "---TRANSCRIPT---\n\(titleLine)\n\n\(body)\n---META---\nduration: \(durationSeconds)\ndate: \(isoDate)\ntype: quick"
         saveNote(id: id, text: content, debounceListRefresh: false)
         return id
     }
