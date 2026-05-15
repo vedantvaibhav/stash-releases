@@ -809,12 +809,11 @@ private struct NoteListRow: View {
             }
 
             // Warning glyph rendered to the LEFT of the title for possibly-silent
-            // rejections. Saturated yellow at low alpha so it reads as caution
-            // without screaming.
+            // rejections. Color from DesignTokens.Icon.tintWarning.
             if note.isPossiblySilentRejection {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(Color(red: 0.95, green: 0.78, blue: 0.30).opacity(0.85))
+                    .foregroundColor(DesignTokens.Icon.tintWarning)
                     .accessibilityLabel("Possibly silent recording — review")
             }
 

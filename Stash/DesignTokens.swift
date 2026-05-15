@@ -11,6 +11,9 @@ enum DesignTokens {
         static let tintRecording    = Color(red: 0.863, green: 0.149, blue: 0.149) // #DC2626
         static let tintPlusButton   = Color.white.opacity(0.45)
         static let tintMuted        = Color.white.opacity(0.72)
+        // Muted yellow used by NoteListRow's possibly-silent-rejection
+        // warning glyph. Low alpha so it reads as caution without screaming.
+        static let tintWarning      = Color(red: 0.95, green: 0.78, blue: 0.30).opacity(0.85)
 
         // Active background (mic while recording)
         static let backgroundActive = Color(red: 0.102, green: 0.102, blue: 0.102) // #1A1A1A

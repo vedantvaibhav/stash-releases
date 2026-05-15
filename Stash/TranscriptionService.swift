@@ -941,11 +941,12 @@ final class TranscriptionService: NSObject, ObservableObject {
     private func autoSaveLongRejection(rawTranscript: String, durationSeconds: Int, forceAutoSave: Bool = false) {
         guard forceAutoSave || durationSeconds >= 20 else { return }
         guard let storage = notesStorage else { return }
+        // savePossiblySilentNote → saveNote(debounceListRefresh: false) → an
+        // immediate refreshNotes already fires; no explicit refresh needed.
         let id = storage.savePossiblySilentNote(
             rawTranscript: rawTranscript,
             durationSeconds: durationSeconds
         )
-        storage.refreshNotes()
         // Deliberately NOT calling onNoteCreated — this is a triage note,
         // not a finished one. User will find it in the list when they
         // open the panel; we don't yank focus or open the editor.

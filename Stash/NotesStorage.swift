@@ -49,6 +49,11 @@ final class NotesStorage: ObservableObject {
     /// `NotesStorage.titlePreviewDateAndOrigin` sets the flag.
     static let possiblySilentTitlePrefix = "[Possibly silent — review] "
 
+    /// Body fallback for `savePossiblySilentNote` when Whisper returned no
+    /// transcript at all (e.g., the recording was rejected pre-Whisper by
+    /// the amplitude or voice-active gate).
+    static let possiblySilentEmptyBody = "(Whisper returned no text — likely silence.)"
+
     /// First-line prefix for notes saved from `TranscriptionService` (used to pick list icon).
     static let transcribedMeetingTitlePrefix = "Meeting — "
 
@@ -310,7 +315,7 @@ final class NotesStorage: ObservableObject {
         let titleLine = Self.possiblySilentTitlePrefix + (snippet.isEmpty ? "(no text)" : snippet)
         let id = createNewNote()
         let isoDate = ISO8601DateFormatter().string(from: Date())
-        let body = trimmed.isEmpty ? "(Whisper returned no text — likely silence.)" : trimmed
+        let body = trimmed.isEmpty ? Self.possiblySilentEmptyBody : trimmed
         // Store under TRANSCRIPT so it loads cleanly through cleanedDisplayText.
         // The title prefix is part of the transcript first line so it survives
         // the existing parser, which uses the first non-empty line as the title.
@@ -406,14 +411,37 @@ final class NotesStorage: ObservableObject {
 
     /// Strips section markers and META from new-format notes for clean display.
     /// Meeting notes return transcript + overview combined; others return transcript only.
+    ///
+    /// For possibly-silent rejections, also strips the leading title-prefix
+    /// line so the open-note body doesn't duplicate what the list row already
+    /// shows. The prefix stays on disk (the parser uses it to set the
+    /// `isPossiblySilentRejection` flag) — this is a display-only strip.
     private static func cleanedDisplayText(from raw: String) -> String {
         guard raw.hasPrefix("---TRANSCRIPT---") else { return raw }
         let transcript = parseSection(from: raw, named: "TRANSCRIPT")
         let overview   = parseSection(from: raw, named: "OVERVIEW")
+        let strippedTranscript = stripPossiblySilentTitlePrefix(from: transcript)
         if !overview.isEmpty {
-            return transcript.isEmpty ? overview : transcript + "\n\n---\n\n" + overview
+            return strippedTranscript.isEmpty ? overview : strippedTranscript + "\n\n---\n\n" + overview
         }
-        return transcript
+        return strippedTranscript
+    }
+
+    /// If the transcript's first non-empty line starts with the
+    /// possibly-silent title prefix, drop that whole line for display.
+    /// Avoids the cosmetic duplication where the list-row title and the
+    /// note's first body line are identical.
+    private static func stripPossiblySilentTitlePrefix(from transcript: String) -> String {
+        guard transcript.hasPrefix(possiblySilentTitlePrefix) else { return transcript }
+        // Split off the first line; return whatever follows (trimmed of any
+        // leading blank line). Use Substring to avoid an extra copy.
+        if let firstNewline = transcript.firstIndex(of: "\n") {
+            let rest = transcript[transcript.index(after: firstNewline)...]
+            return rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Prefix is the entire transcript (no body) — drop everything; the
+        // empty-body fallback will be re-applied on next save.
+        return ""
     }
 
     private static func defaultNoteAttributes() -> [NSAttributedString.Key: Any] {
