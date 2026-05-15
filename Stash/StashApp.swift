@@ -392,7 +392,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Test pill: 90-min hard stop",  #selector(debugTestPill90MinHardStop)),
             ("Test pill: 20-MB warning",     #selector(debugTestPill20MBWarning)),
             ("Test pill: 24-MB hard stop",   #selector(debugTestPill24MBHardStop)),
-            ("Test pill: state stacking",    #selector(debugTestPillStacking))
+            ("Test pill: state stacking",    #selector(debugTestPillStacking)),
+            ("Open rejection log",           #selector(debugOpenRejectionLog))
         ]
     }
 
@@ -416,6 +417,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         debugFirePill("First")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.debugFirePill("Second") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.debugFirePill("Third") }
+    }
+
+    @objc private func debugOpenRejectionLog() {
+        let url = RejectionLog.shared.logURL
+        // If the file doesn't exist yet (no rejections this session),
+        // write an empty array so Finder can reveal it.
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? Data("[]".utf8).write(to: url)
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
     #endif
 }

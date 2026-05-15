@@ -26,6 +26,7 @@
 		A10000000000000000000010 /* PanelSharedSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* PanelSharedSections.swift */; };
 		A10000000000000000000013 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* TranscriptionService.swift */; };
 		A10000000000000000000029 /* VoiceActivityCounter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000029 /* VoiceActivityCounter.swift */; };
+		A1000000000000000000002A /* RejectionLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002A /* RejectionLog.swift */; };
 		A10000000000000000000014 /* TranscriptionFloatingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000014 /* TranscriptionFloatingWidget.swift */; };
 		A10000000000000000000016 /* SupabaseConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* SupabaseConfig.swift */; };
 		A10000000000000000000017 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* AuthService.swift */; };
@@ -70,6 +71,7 @@
 		A20000000000000000000010 /* PanelSharedSections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelSharedSections.swift; sourceTree = "<group>"; };
 		A20000000000000000000013 /* TranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionService.swift; sourceTree = "<group>"; };
 		A20000000000000000000029 /* VoiceActivityCounter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceActivityCounter.swift; sourceTree = "<group>"; };
+		A2000000000000000000002A /* RejectionLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RejectionLog.swift; sourceTree = "<group>"; };
 		A20000000000000000000014 /* TranscriptionFloatingWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionFloatingWidget.swift; sourceTree = "<group>"; };
 		A20000000000000000000016 /* SupabaseConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseConfig.swift; sourceTree = "<group>"; };
 		A20000000000000000000017 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
@@ -132,6 +134,7 @@
 				A20000000000000000000025 /* DesignTokens.swift */,
 				A20000000000000000000013 /* TranscriptionService.swift */,
 				A20000000000000000000029 /* VoiceActivityCounter.swift */,
+				A2000000000000000000002A /* RejectionLog.swift */,
 				A20000000000000000000014 /* TranscriptionFloatingWidget.swift */,
 				A20000000000000000000016 /* SupabaseConfig.swift */,
 				A20000000000000000000017 /* AuthService.swift */,
@@ -255,6 +258,7 @@
 				A10000000000000000000010 /* PanelSharedSections.swift in Sources */,
 				A10000000000000000000013 /* TranscriptionService.swift in Sources */,
 				A10000000000000000000029 /* VoiceActivityCounter.swift in Sources */,
+				A1000000000000000000002A /* RejectionLog.swift in Sources */,
 				A10000000000000000000014 /* TranscriptionFloatingWidget.swift in Sources */,
 				A10000000000000000000016 /* SupabaseConfig.swift in Sources */,
 				A10000000000000000000017 /* AuthService.swift in Sources */,

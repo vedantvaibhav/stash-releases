@@ -414,6 +414,13 @@ final class TranscriptionService: NSObject, ObservableObject {
                 let placeholder = "(\(duration)s recording — peak \(String(format: "%.1f", recordedPeakPower)) dBFS, no audio detected)"
                 autoSaveLongRejection(rawTranscript: placeholder, durationSeconds: duration)
             }
+            logRejection(
+                gate: "amplitude_pre_check",
+                rawText: "",
+                durationSeconds: duration,
+                voiceActiveSeconds: voiceActivityCounter.voiceActiveSeconds,
+                peakPowerDBFS: Double(recordedPeakPower)
+            )
             showCompletion("No audio")
             return
         }
@@ -457,6 +464,13 @@ final class TranscriptionService: NSObject, ObservableObject {
                 let placeholder = "(\(duration)s recording — \(String(format: "%.1f", voiceActive))s voice-active, peak \(String(format: "%.1f", recordedPeakPower)) dBFS)"
                 autoSaveLongRejection(rawTranscript: placeholder, durationSeconds: duration)
             }
+            logRejection(
+                gate: "voice_active_pre_whisper",
+                rawText: "",
+                durationSeconds: duration,
+                voiceActiveSeconds: voiceActive,
+                peakPowerDBFS: Double(recordedPeakPower)
+            )
             showCompletion("No audio")
             return
         }
@@ -735,6 +749,13 @@ final class TranscriptionService: NSObject, ObservableObject {
                 error: "Confidence gate rejected (\(tierLabel) tier: NSP \(String(format: "%.2f", meanNSP)), ALP \(String(format: "%.2f", meanALP)), duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
                 durationSeconds: durationSeconds
             )
+            logRejection(
+                gate: "confidence",
+                rawText: rawWhisperOutput,
+                durationSeconds: durationSeconds,
+                noSpeechProb: meanNSP,
+                avgLogprob: meanALP
+            )
             autoSaveLongRejection(rawTranscript: rawWhisperOutput, durationSeconds: durationSeconds)
             showCompletion("No audio")
             return
@@ -747,6 +768,13 @@ final class TranscriptionService: NSObject, ObservableObject {
             reportToSlack(
                 error: "Hallucination filter rejected (duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
                 durationSeconds: durationSeconds
+            )
+            logRejection(
+                gate: "sanitise",
+                rawText: rawWhisperOutput,
+                durationSeconds: durationSeconds,
+                noSpeechProb: whisperResponse.meanNoSpeechProb,
+                avgLogprob: whisperResponse.meanAvgLogprob
             )
             autoSaveLongRejection(rawTranscript: rawWhisperOutput, durationSeconds: durationSeconds)
             showCompletion("No audio")
@@ -953,6 +981,29 @@ final class TranscriptionService: NSObject, ObservableObject {
         #if DEBUG
         print("[Transcription] autoSaveLongRejection — saved note id=\(id), \(durationSeconds)s, \(rawTranscript.count) chars, forced=\(forceAutoSave)")
         #endif
+    }
+
+    /// Persist a rejection to the DEBUG log. Best-effort; failures are
+    /// silently swallowed inside RejectionLog.
+    private func logRejection(
+        gate: String,
+        rawText: String,
+        durationSeconds: Int,
+        noSpeechProb: Double? = nil,
+        avgLogprob: Double? = nil,
+        voiceActiveSeconds: Double? = nil,
+        peakPowerDBFS: Double? = nil
+    ) {
+        RejectionLog.shared.append(.init(
+            timestamp: Date(),
+            durationSeconds: durationSeconds,
+            rawText: rawText,
+            gate: gate,
+            noSpeechProb: noSpeechProb,
+            avgLogprob: avgLogprob,
+            voiceActiveSeconds: voiceActiveSeconds,
+            peakPowerDBFS: peakPowerDBFS
+        ))
     }
 
     /// Short pill copy for a failure. The pill is narrow — favour 1–2 word
