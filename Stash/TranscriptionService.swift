@@ -121,14 +121,9 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// in stopRecording to skip Whisper entirely on near-silent input.
     /// Reset to -60 (silence floor) in startRecording.
     private var recordedPeakPower: Float = -60
-    /// Total seconds where averagePower crossed the voice-presence
-    /// threshold (-30 dBFS, around conversational speech at arm's length).
-    /// Accumulated in the levelTimer tick; used as a stricter pre-Whisper
-    /// silence gate than the peak-power check. A quiet room can sustain
-    /// -40 dBFS noise floor without ever crossing -30 dBFS, so this
-    /// catches silence-with-ambient-noise that the peak gate misses.
-    /// Reset to 0 in startRecording.
-    private var voiceActiveSeconds: Double = 0
+    /// Replaces the prior per-tick accumulator. Owns the 1s sliding-window
+    /// peak-based voice-active counter. Reset in startRecording.
+    private var voiceActivityCounter = VoiceActivityCounter()
 
     // MARK: - Start
 
@@ -145,7 +140,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         didShowSizeWarning = false
         autoStoppedAtSizeLimit = false
         recordedPeakPower = -60
-        voiceActiveSeconds = 0
+        voiceActivityCounter = VoiceActivityCounter()
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -227,21 +222,16 @@ final class TranscriptionService: NSObject, ObservableObject {
 
             levelTimer?.invalidate()
             let levelTickInterval: TimeInterval = 0.1
-            // Voice-presence threshold. -30 dBFS sits around conversational
-            // speech from arm's length; quiet rooms / mic self-noise rarely
-            // cross it. If field data shows legitimate quiet dictations
-            // being false-rejected, raise to -33 (do not go below -35 —
-            // ambient noise floor leaks above that).
-            let voicePresenceThresholdDBFS: Float = -30
             levelTimer = Timer(timeInterval: levelTickInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
                     self.recorder?.updateMeters()
                     let level = self.recorder?.averagePower(forChannel: 0) ?? -60
                     self.recordedPeakPower = max(self.recordedPeakPower, level)
-                    if level > voicePresenceThresholdDBFS {
-                        self.voiceActiveSeconds += levelTickInterval
-                    }
+                    // Windowed counter: peak across a 1s window, not per-tick
+                    // average. Natural speech micro-pauses no longer kill the
+                    // count. Threshold -32 dBFS — see VoiceActivityCounter.
+                    self.voiceActivityCounter.observe(power: level)
                     self.audioLevel = max(0, (level + 60) / 60)
                 }
             }
@@ -424,23 +414,39 @@ final class TranscriptionService: NSObject, ObservableObject {
             return
         }
 
-        // Voice-active duration gate — peak-power can hit -42 dBFS from
-        // ambient noise alone. This second-layer check requires that some
-        // minimum amount of audio actually crossed the voice-presence
-        // threshold (counted in the level timer). Only engages for
-        // recordings long enough that a real dictation would have
-        // accumulated voice-active time; a brief 2s "okay" might only have
-        // 0.4s of voice-active audio and shouldn't be rejected.
-        let voiceActiveThresholdSeconds: Double = 1.5
+        // Voice-active duration gate — tier-aware (2026-05-15 over-correction fix).
+        //
+        // - Short (5–7s):      reject if voice-active < 1.0s
+        // - <5s:               skip the gate entirely — a 2s "okay" or 3s "yes"
+        //                      can have only 0.4–0.5s of voice-active audio.
+        //                      Pre-existing behaviour preserved (`voiceGateMinDurationSeconds = 5`).
+        // - Moderate (8-29s):  reject if voice-active < 1.5s
+        // - Conservative (>=30s): reject ONLY if voice-active < 3.0s AND peak < -35 dBFS
+        //
+        // Conservative AND-condition stops a slightly quiet meeting (peak around
+        // -33 dBFS) from being silently dropped — the previous flat 1.5s gate
+        // killed several legitimate 7–49s recordings on 2026-05-15.
+        let voiceActive = voiceActivityCounter.voiceActiveSeconds
+        let tier = DurationTier.tier(forSeconds: duration)
         let voiceGateMinDurationSeconds = 5
-        if duration >= voiceGateMinDurationSeconds,
-           voiceActiveSeconds < voiceActiveThresholdSeconds {
+        let voiceGateRejected: Bool
+        switch tier {
+        case .short:
+            // Preserve the existing 5s floor — sub-5s legitimate one-liners
+            // are too short for the voice-active count to be meaningful.
+            voiceGateRejected = duration >= voiceGateMinDurationSeconds && voiceActive < 1.0
+        case .moderate:
+            voiceGateRejected = voiceActive < 1.5
+        case .conservative:
+            voiceGateRejected = voiceActive < 3.0 && recordedPeakPower < -35
+        }
+        if voiceGateRejected {
             isProcessing = false
             #if DEBUG
-            print("[Transcription] voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(recordedPeakPower) dBFS)")
+            print("[Transcription] voice-active gate rejected (\(tier)) — \(String(format: "%.2f", voiceActive))s active in \(duration)s recording (peak \(recordedPeakPower) dBFS)")
             #endif
             reportToSlack(
-                error: "Voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(String(format: "%.1f", recordedPeakPower)) dBFS)",
+                error: "Voice-active gate rejected (\(tier) tier: \(String(format: "%.2f", voiceActive))s active in \(duration)s, peak \(String(format: "%.1f", recordedPeakPower)) dBFS)",
                 durationSeconds: duration
             )
             showCompletion("No audio")
