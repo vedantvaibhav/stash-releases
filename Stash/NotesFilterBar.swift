@@ -18,6 +18,7 @@ struct NotesFilterBar: View {
     let counts: [NotesFilter: Int]
 
     @State private var isPopoverShown = false
+    @State private var keyMonitor: Any?
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
@@ -54,6 +55,8 @@ struct NotesFilterBar: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         // No background — the bar reads as part of the column, not a separate UI element.
+        .onAppear { installKeyMonitor() }
+        .onDisappear { removeKeyMonitor() }
     }
 
     private var filterIconButton: some View {
@@ -68,9 +71,40 @@ struct NotesFilterBar: View {
         }
     }
 
-    /// Public toggle entry point for the keyboard-shortcut follow-up task.
-    func toggleFromShortcut() {
-        isPopoverShown.toggle()
+    private func installKeyMonitor() {
+        // Idempotent — `.onAppear` can fire after a re-entry.
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            guard self.shouldHandleFKey(event: event) else { return event }
+            self.isPopoverShown.toggle()
+            return nil   // swallow the keystroke
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+
+    /// Returns true ONLY if this `keyDown` is a bare `F` press (no modifiers)
+    /// AND no text field is first responder. Layout-independent — uses
+    /// `charactersIgnoringModifiers` rather than `keyCode`. Pressing F while
+    /// the popover is already open is intentional close behavior (no
+    /// `guard !isPopoverShown` clause here).
+    private func shouldHandleFKey(event: NSEvent) -> Bool {
+        let disallowed: NSEvent.ModifierFlags = [.command, .option, .control]
+        if !event.modifierFlags.intersection(disallowed).isEmpty { return false }
+
+        guard event.charactersIgnoringModifiers?.lowercased() == "f" else { return false }
+
+        if let responder = NSApp.keyWindow?.firstResponder, responder is NSText {
+            // `NSTextView` inherits from `NSText`, so this catches both SwiftUI
+            // TextField field editors and the new-note `NSTextView`.
+            return false
+        }
+        return true
     }
 }
 
