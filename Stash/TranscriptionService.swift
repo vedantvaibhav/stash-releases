@@ -12,6 +12,25 @@ struct ShortTranscriptResult: Identifiable, Equatable {
     let durationSeconds: Int
 }
 
+/// Filter posture chosen by duration. Real long recordings are almost never
+/// hallucinations, so the conservative tier requires multiple gates to fire
+/// before rejecting. Short clips remain aggressive because false-positives
+/// there are cheap (the user re-records in 5s) and the hallucination rate
+/// is highest in that bucket. See 2026-05-15 over-correction fix.
+private enum DurationTier {
+    case short          // <  8s — aggressive: all gates strict
+    case moderate       // 8–29s — moderate: gates apply at relaxed thresholds
+    case conservative   // >=30s — reject only if MULTIPLE gates fire; substring patterns advisory
+
+    static func tier(forSeconds duration: Int) -> DurationTier {
+        switch duration {
+        case ..<8:  return .short
+        case ..<30: return .moderate
+        default:    return .conservative
+        }
+    }
+}
+
 /// Transcription + meeting notes via OpenAI-compatible API (provider auto-detected from key prefix).
 @MainActor
 final class TranscriptionService: NSObject, ObservableObject {
@@ -683,30 +702,23 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         let rawWhisperOutput = whisperResponse.text
 
-        // MARK: Confidence-signal gate
-        // Whisper itself knows when it hallucinated. With response_format=
-        // verbose_json the server returns per-segment `no_speech_prob`
-        // (model's estimate that the audio window contained no speech) and
-        // `avg_logprob` (per-token log-probability average; lower = less
-        // confident). Reject when the model is signalling "this was
-        // silence I made up." Thresholds picked from OpenAI Whisper's own
-        // defaults: no_speech_threshold=0.6, logprob_threshold=-1.0.
-        //
-        // Skipped when `segments` is empty (provider returned plain text).
-        // The substring filter below remains the backstop for that case
-        // and for hallucinations that slip past the model-confidence gate.
-        let noSpeechRejectionThreshold = 0.6
-        let logprobRejectionThreshold = -1.0
+        // MARK: Confidence-signal gate (duration-tiered, 2026-05-15)
+        // Tier-aware: short bucket keeps OpenAI's defaults (NSP > 0.6 OR ALP < -1.0).
+        // Moderate bucket bumps NSP to 0.80 (a 0.68 hit on a real 15s clip used to
+        // false-reject). Conservative bucket (>=30s) requires BOTH NSP > 0.85 AND
+        // ALP < -0.8 — long recordings are almost never hallucinations and the AND
+        // gate stops a single noisy segment from killing an otherwise healthy track.
         if let meanNSP = whisperResponse.meanNoSpeechProb,
            let meanALP = whisperResponse.meanAvgLogprob,
-           meanNSP > noSpeechRejectionThreshold || meanALP < logprobRejectionThreshold {
+           confidenceGateRejects(meanNSP: meanNSP, meanALP: meanALP, durationSeconds: durationSeconds) {
             isProcessing = false
             let rawSnippet = String(rawWhisperOutput.prefix(120))
+            let tierLabel = String(describing: DurationTier.tier(forSeconds: durationSeconds))
             #if DEBUG
-            print("[Transcription] confidence-gate rejected — no_speech_prob=\(meanNSP), avg_logprob=\(meanALP) — \"\(rawSnippet)\"")
+            print("[Transcription] confidence-gate rejected (\(tierLabel)) — NSP=\(meanNSP), ALP=\(meanALP) — \"\(rawSnippet)\"")
             #endif
             reportToSlack(
-                error: "Confidence gate rejected (no_speech_prob \(String(format: "%.2f", meanNSP)), avg_logprob \(String(format: "%.2f", meanALP)), duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
+                error: "Confidence gate rejected (\(tierLabel) tier: NSP \(String(format: "%.2f", meanNSP)), ALP \(String(format: "%.2f", meanALP)), duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
                 durationSeconds: durationSeconds
             )
             showCompletion("No audio")
@@ -965,6 +977,27 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - Whisper API
 
+    /// Tier-aware confidence gate. Returns true when Whisper's own confidence
+    /// signals say the audio was silence-the-model-made-up. Thresholds:
+    ///
+    /// - Short    (<8s) : NSP > 0.60 OR  ALP < -1.0   (OpenAI defaults)
+    /// - Moderate (8-29s): NSP > 0.80 OR  ALP < -1.0   (NSP relaxed)
+    /// - Conservative (>=30s): NSP > 0.85 AND ALP < -0.8 (both must fire)
+    ///
+    /// Caller is responsible for only invoking this when both means are
+    /// available (`segments` non-empty); we accept the values directly so
+    /// the helper is unit-testable without a `WhisperResponse` fixture.
+    private func confidenceGateRejects(meanNSP: Double, meanALP: Double, durationSeconds: Int) -> Bool {
+        switch DurationTier.tier(forSeconds: durationSeconds) {
+        case .short:
+            return meanNSP > 0.60 || meanALP < -1.0
+        case .moderate:
+            return meanNSP > 0.80 || meanALP < -1.0
+        case .conservative:
+            return meanNSP > 0.85 && meanALP < -0.8
+        }
+    }
+
     private func sanitiseWhisperOutput(_ raw: String, durationSeconds: Int) -> String? {
         // PASS 1 — token hallucinations (bracket artefacts Whisper emits on silence)
         let tokenHallucinations = [
@@ -1119,6 +1152,9 @@ final class TranscriptionService: NSObject, ObservableObject {
             + "\u{200B}\u{3000}"                  // Zero-width space, ideographic space
         )
 
+        // PASS 2 — line-by-line semantic match. Applies in all tiers — the
+        // risk of a real meeting containing a line equal to a known outro
+        // hallucination is functionally zero, so no tier exception here.
         let lines = text.components(separatedBy: .newlines).filter { line in
             let stripped = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 .trimmingCharacters(in: punctuationTrim)
@@ -1133,10 +1169,18 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         // PASS 3 — full-output semantic match (handles multi-word phrases that
         // survived line filtering because they were the only line).
+        // Tier-gated: conservative bucket logs instead of rejecting.
         let fullNormalised = cleaned.lowercased()
             .trimmingCharacters(in: punctuationTrim)
+        let tier = DurationTier.tier(forSeconds: durationSeconds)
         if semanticHallucinations.contains(where: { fullNormalised == $0 }) {
-            return nil
+            if tier == .conservative {
+                #if DEBUG
+                print("[Transcription] sanitise: advisory (conservative tier, full-match semantic) — \"\(cleaned)\"")
+                #endif
+            } else {
+                return nil
+            }
         }
 
         // Substantive word list — used by PASS 4 (word-count gate). Tokens
@@ -1188,10 +1232,16 @@ final class TranscriptionService: NSObject, ObservableObject {
             "follow me on"
         ]
         if attributionPatterns.contains(where: { fullNormalised.contains($0) }) {
-            #if DEBUG
-            print("[Transcription] sanitise: rejected (attribution pattern) — \"\(cleaned)\"")
-            #endif
-            return nil
+            if tier == .conservative {
+                #if DEBUG
+                print("[Transcription] sanitise: advisory (conservative tier, attribution) — \"\(cleaned)\"")
+                #endif
+            } else {
+                #if DEBUG
+                print("[Transcription] sanitise: rejected (attribution pattern) — \"\(cleaned)\"")
+                #endif
+                return nil
+            }
         }
 
         // PASS 5 — short-recording outro-vocab gate (added 2026-05-13).
@@ -1403,6 +1453,10 @@ final class TranscriptionService: NSObject, ObservableObject {
     #if DEBUG
     func testSanitiseWhisperOutput(_ raw: String, durationSeconds: Int = 0) -> String? {
         sanitiseWhisperOutput(raw, durationSeconds: durationSeconds)
+    }
+
+    func testConfidenceGateRejects(meanNSP: Double, meanALP: Double, durationSeconds: Int) -> Bool {
+        confidenceGateRejects(meanNSP: meanNSP, meanALP: meanALP, durationSeconds: durationSeconds)
     }
     #endif
 }
