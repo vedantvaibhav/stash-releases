@@ -116,6 +116,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         panelController?.setup()
 
+        // Start the persistent upload retry queue. Hands replays back to
+        // the active TranscriptionService through processRecording, which
+        // routes them through the normal sanitise→Note flow.
+        UploadRetryQueue.shared.start { [weak self] audioData, duration in
+            guard let svc = self?.panelController?.transcriptionService else { return false }
+            return await svc.replayPendingUpload(audioData: audioData, durationSeconds: duration)
+        }
+
         installDoubleTapMonitor()
 
         Task {

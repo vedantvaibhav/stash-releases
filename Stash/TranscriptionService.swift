@@ -504,6 +504,122 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Persistent retry queue replay
+
+    /// Re-enter the processing pipeline for an audio payload that was
+    /// previously enqueued by UploadRetryQueue. Returns true if the audio
+    /// completed through to a saved note OR a justified rejection (gate-
+    /// related — these are not "should retry" failures). Returns false
+    /// only if the call failed in a way that should keep the entry on
+    /// disk for another attempt.
+    ///
+    /// We use a small wrapper around processRecording's existing flow
+    /// rather than calling it directly because processRecording sets
+    /// pipeline-side UI state (isProcessing, the watchdog) that don't
+    /// apply to a silent background replay. Replay does its own minimal
+    /// Whisper call + sanitise + save, and returns the appropriate flag.
+    func replayPendingUpload(audioData: Data, durationSeconds: Int) async -> Bool {
+        // If NotesStorage isn't wired yet (panel setup hasn't completed),
+        // keep the entry queued for the next flush rather than dropping it.
+        guard let storage = notesStorage else {
+            #if DEBUG
+            print("[Transcription] replayPendingUpload deferred — notesStorage not yet wired")
+            #endif
+            return false
+        }
+        do {
+            let whisper = try await callWhisper(audioData: audioData)
+            // Apply confidence + sanitise gates. On rejection during replay
+            // we always force auto-save (forceAutoSave: true) — the user has
+            // already lost the audio once to a network failure; the recovery
+            // surface must work regardless of duration.
+            if let nsp = whisper.meanNoSpeechProb, let alp = whisper.meanAvgLogprob,
+               confidenceGateRejects(meanNSP: nsp, meanALP: alp, durationSeconds: durationSeconds) {
+                autoSaveLongRejection(rawTranscript: whisper.text, durationSeconds: durationSeconds, forceAutoSave: true)
+                logRejection(gate: "confidence_replay", rawText: whisper.text, durationSeconds: durationSeconds, noSpeechProb: nsp, avgLogprob: alp)
+                return true
+            }
+            guard let raw = sanitiseWhisperOutput(whisper.text, durationSeconds: durationSeconds) else {
+                autoSaveLongRejection(rawTranscript: whisper.text, durationSeconds: durationSeconds, forceAutoSave: true)
+                logRejection(gate: "sanitise_replay", rawText: whisper.text, durationSeconds: durationSeconds)
+                return true
+            }
+            // Short vs long delivery — same as processRecording but without
+            // the pill UI (we're in background). Chat-cleanup failures are
+            // routed to Slack so a regressing model is just as visible on
+            // replay as on a fresh recording — the production path
+            // (processRecording) does the same.
+            //
+            // onNoteCreated deliberately not fired — replay runs in
+            // background. The user finds the note via the list on next
+            // panel open. Firing onNoteCreated here would yank focus to
+            // Stash unexpectedly while the user is in another app.
+            let isShort = durationSeconds < 300
+            if isShort {
+                let cleaned: String
+                do {
+                    cleaned = try await callChat(
+                        systemPrompt: Self.promptShortClean,
+                        userMessage: raw,
+                        maxTokens: 400,
+                        model: APIConstants.chatModelForShortClean
+                    )
+                } catch {
+                    cleaned = raw
+                    reportToSlack(
+                        error: "Replay short-path cleanup failed; raw delivered — \(userFacingMessage(for: error))",
+                        durationSeconds: durationSeconds
+                    )
+                }
+                storage.saveQuickNote(text: cleaned, durationSeconds: durationSeconds)
+                storage.refreshNotes()
+            } else {
+                let cleaned: String
+                let overview: String
+                do {
+                    async let transcriptCall = callChat(
+                        systemPrompt: Self.promptLongTranscript,
+                        userMessage: raw,
+                        maxTokens: 3000,
+                        model: APIConstants.chatModel
+                    )
+                    async let overviewCall = callChat(
+                        systemPrompt: Self.promptLongOverview,
+                        userMessage: raw,
+                        maxTokens: 1500,
+                        model: APIConstants.chatModel
+                    )
+                    let (c, o) = try await (transcriptCall, overviewCall)
+                    cleaned = c
+                    overview = o
+                } catch {
+                    cleaned = raw
+                    overview = "Overview unavailable — raw transcript saved below."
+                    reportToSlack(
+                        error: "Replay long-path cleanup failed; raw saved — \(userFacingMessage(for: error))",
+                        durationSeconds: durationSeconds
+                    )
+                }
+                storage.saveMeetingNote(
+                    transcript: cleaned,
+                    overview: overview,
+                    durationSeconds: durationSeconds
+                )
+                storage.refreshNotes()
+            }
+            return true
+        } catch {
+            // URLError ⇒ keep on disk; other errors ⇒ also keep (conservative —
+            // don't lose audio just because Whisper returned 400 once). Slack
+            // gets a heads-up so a stuck queue is visible to triage.
+            reportToSlack(
+                error: "Replay failed; entry kept queued — \(userFacingMessage(for: error)) (duration \(durationSeconds)s)",
+                durationSeconds: durationSeconds
+            )
+            return false
+        }
+    }
+
     // MARK: - LLM prompts
 
     private static let promptShortClean = """
@@ -701,26 +817,50 @@ final class TranscriptionService: NSObject, ObservableObject {
             )
         }
 
-        // MARK: Whisper — with one auto-retry on transient errors
+        // MARK: Whisper — with one auto-retry on transient errors (HTTP 429/5xx OR transient URLError)
+        //
+        // Two `catch` arms with `where` clauses select the retry-eligible
+        // cases by exact type. The default `catch` re-throws via reportFailure.
+        // Why typed catch (rather than `error as? URLError` inside one block):
+        // `error as NSError?` always binds — easy to write a bug like "treat
+        // every error as a Whisper error". Typed catches make the intent
+        // checkable by the compiler.
         let whisperResponse: WhisperResponse
         do {
             whisperResponse = try await Task(priority: .userInitiated) {
                 try await self.callWhisper(audioData: audioData)
             }.value
-        } catch let firstError as NSError {
-            if isTransientWhisperError(status: firstError.code) {
-                showCompletion("Retrying…")
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                do {
-                    whisperResponse = try await Task(priority: .userInitiated) {
-                        try await self.callWhisper(audioData: audioData)
-                    }.value
-                } catch {
-                    reportFailure(error, durationSeconds: durationSeconds)
-                    return
-                }
-            } else {
-                reportFailure(firstError, durationSeconds: durationSeconds)
+        } catch let urlError as URLError where isTransientURLError(urlError) {
+            // Transient network error — sleep 2s, single retry. If retry
+            // also fails, persist for later via UploadRetryQueue.
+            showCompletion("Retrying…")
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            do {
+                whisperResponse = try await Task(priority: .userInitiated) {
+                    try await self.callWhisper(audioData: audioData)
+                }.value
+            } catch let retryError as URLError where isTransientURLError(retryError) {
+                UploadRetryQueue.shared.enqueue(audioData: audioData, durationSeconds: durationSeconds)
+                reportToSlack(
+                    error: "Upload queued for retry — \(retryError.localizedDescription) (duration \(durationSeconds)s)",
+                    durationSeconds: durationSeconds
+                )
+                showCompletion("Will retry")
+                return
+            } catch {
+                reportFailure(error, durationSeconds: durationSeconds)
+                return
+            }
+        } catch let nsError as NSError where nsError.domain == "Whisper" && isTransientWhisperError(status: nsError.code) {
+            // HTTP-transient (429 / 5xx) — sleep 2s, single retry.
+            showCompletion("Retrying…")
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            do {
+                whisperResponse = try await Task(priority: .userInitiated) {
+                    try await self.callWhisper(audioData: audioData)
+                }.value
+            } catch {
+                reportFailure(error, durationSeconds: durationSeconds)
                 return
             }
         } catch {
@@ -1025,6 +1165,19 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     private func isTransientWhisperError(status: Int) -> Bool {
         status == 429 || (500...503).contains(status)
+    }
+
+    /// Network-layer transient errors worth a single retry. URLError codes
+    /// that signal "the request didn't actually reach a server" — DNS
+    /// failure, hung connection, dropped wifi mid-upload. Permanent client
+    /// errors (4xx other than 429) are NOT here; they fail fast.
+    private func isTransientURLError(_ urlError: URLError) -> Bool {
+        switch urlError.code {
+        case .timedOut, .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost:
+            return true
+        default:
+            return false
+        }
     }
 
     private func reportToSlack(error: String, durationSeconds: Int) {
@@ -1421,7 +1574,11 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 40
+        // Dynamic timeout: 40s baseline, +1s per 50KB of payload. Cap at 600s.
+        // A 5MB upload gets 100s; 25MB gets ~500s. Covers the hotel-wifi case.
+        let baselineTimeout: TimeInterval = 40
+        let perBytePenalty = TimeInterval(audioData.count) / 50_000
+        request.timeoutInterval = min(600, max(baselineTimeout, baselineTimeout + perBytePenalty))
 
         let boundary = "Boundary-\(UUID().uuidString)"
         request.setValue("Bearer \(transcriptionAuthKey)", forHTTPHeaderField: "Authorization")
