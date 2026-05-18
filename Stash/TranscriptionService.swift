@@ -97,19 +97,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// can surface the right toast message just like `autoStoppedAtLimit`
     /// does for the duration limit.
     private var autoStoppedAtSizeLimit = false
-    /// Peak `averagePower(forChannel: 0)` observed during the current
-    /// recording (in dBFS). Updated on every levelTimer tick; consulted
-    /// in stopRecording to skip Whisper entirely on near-silent input.
-    /// Reset to -60 (silence floor) in startRecording.
-    private var recordedPeakPower: Float = -60
-    /// Total seconds where averagePower crossed the voice-presence
-    /// threshold (-30 dBFS, around conversational speech at arm's length).
-    /// Accumulated in the levelTimer tick; used as a stricter pre-Whisper
-    /// silence gate than the peak-power check. A quiet room can sustain
-    /// -40 dBFS noise floor without ever crossing -30 dBFS, so this
-    /// catches silence-with-ambient-noise that the peak gate misses.
-    /// Reset to 0 in startRecording.
-    private var voiceActiveSeconds: Double = 0
 
     // MARK: - Start
 
@@ -125,8 +112,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         didShowDurationWarning = false
         didShowSizeWarning = false
         autoStoppedAtSizeLimit = false
-        recordedPeakPower = -60
-        voiceActiveSeconds = 0
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -208,21 +193,14 @@ final class TranscriptionService: NSObject, ObservableObject {
 
             levelTimer?.invalidate()
             let levelTickInterval: TimeInterval = 0.1
-            // Voice-presence threshold. -30 dBFS sits around conversational
-            // speech from arm's length; quiet rooms / mic self-noise rarely
-            // cross it. If field data shows legitimate quiet dictations
-            // being false-rejected, raise to -33 (do not go below -35 —
-            // ambient noise floor leaks above that).
-            let voicePresenceThresholdDBFS: Float = -30
             levelTimer = Timer(timeInterval: levelTickInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
                     self.recorder?.updateMeters()
                     let level = self.recorder?.averagePower(forChannel: 0) ?? -60
-                    self.recordedPeakPower = max(self.recordedPeakPower, level)
-                    if level > voicePresenceThresholdDBFS {
-                        self.voiceActiveSeconds += levelTickInterval
-                    }
+                    // audioLevel drives the pill's level meter. Computed from the
+                    // current sample, not from a peak; we don't need to track peak
+                    // anymore now that gate decisions are gone.
                     self.audioLevel = max(0, (level + 60) / 60)
                 }
             }
@@ -379,54 +357,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             return
         }
 
-        // Amplitude pre-check — skip Whisper entirely if the loudest moment
-        // of the entire recording is below the silence threshold.
-        //
-        // -45 dBFS is well below conversational speech (-20 to -30 dBFS at
-        // arm's length) but above typical ambient hum / mic self-noise.
-        // If field data shows legitimate quiet dictations getting rejected,
-        // raise to -50 or -52. Do not go above -40 (real voices dip there).
-        //
-        // This rejection routes through the same "no audio" toast + Slack
-        // path as the hallucination filter, but tagged distinctly in the
-        // Slack message so triage can tell amplitude-rejection from
-        // filter-rejection.
-        let amplitudeThresholdDBFS: Float = -45
-        if recordedPeakPower < amplitudeThresholdDBFS {
-            isProcessing = false
-            #if DEBUG
-            print("[Transcription] amplitude pre-check rejected — peak \(recordedPeakPower) dBFS < threshold \(amplitudeThresholdDBFS) dBFS")
-            #endif
-            reportToSlack(
-                error: "Amplitude pre-check rejected — peak \(String(format: "%.1f", recordedPeakPower)) dBFS < \(amplitudeThresholdDBFS) dBFS (duration \(duration)s)",
-                durationSeconds: duration
-            )
-            showCompletion("No audio")
-            return
-        }
 
-        // Voice-active duration gate — peak-power can hit -42 dBFS from
-        // ambient noise alone. This second-layer check requires that some
-        // minimum amount of audio actually crossed the voice-presence
-        // threshold (counted in the level timer). Only engages for
-        // recordings long enough that a real dictation would have
-        // accumulated voice-active time; a brief 2s "okay" might only have
-        // 0.4s of voice-active audio and shouldn't be rejected.
-        let voiceActiveThresholdSeconds: Double = 1.5
-        let voiceGateMinDurationSeconds = 5
-        if duration >= voiceGateMinDurationSeconds,
-           voiceActiveSeconds < voiceActiveThresholdSeconds {
-            isProcessing = false
-            #if DEBUG
-            print("[Transcription] voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(recordedPeakPower) dBFS)")
-            #endif
-            reportToSlack(
-                error: "Voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(String(format: "%.1f", recordedPeakPower)) dBFS)",
-                durationSeconds: duration
-            )
-            showCompletion("No audio")
-            return
-        }
 
         let recordedDuration = duration
 
