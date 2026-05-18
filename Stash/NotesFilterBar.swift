@@ -22,14 +22,14 @@ struct NotesFilterBar: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            // Left: active filter title + count — 17pt section-header typography
-            HStack(spacing: 8) {
+            // Left: active filter title + count — 15pt section header, count in parens
+            HStack(spacing: 4) {
                 Text(activeFilter.displayName)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(DesignTokens.Typography.sectionColor)
                     .lineLimit(1)
-                Text("\(counts[activeFilter, default: 0])")
-                    .font(.system(size: 17, weight: .regular))
+                Text("(\(counts[activeFilter, default: 0]))")
+                    .font(.system(size: 14, weight: .regular))
                     .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.55))
                     .lineLimit(1)
                     .layoutPriority(0) // count truncates first if width is tight
@@ -54,8 +54,8 @@ struct NotesFilterBar: View {
                 }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 10) // bar height ≈ 44pt with 24pt content
-        .frame(minHeight: 44)
+        .padding(.vertical, 9) // bar height ≈ 40pt with 22pt content
+        .frame(minHeight: 40)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(DesignTokens.Icon.tintMuted.opacity(0.15))
@@ -150,15 +150,11 @@ private struct FilterRow: View {
                 }
                 .frame(width: 14)
 
-                Text(filter.displayName)
+                Text("\(filter.displayName) (\(count))")
                     .font(.system(size: 13, weight: .regular))
                     .foregroundStyle(.primary)
 
                 Spacer(minLength: 8)
-
-                Text("\(count)")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.6))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -234,23 +230,18 @@ private struct FilterPill: View {
     }
 
     private var foregroundColor: Color {
-        isActive ? DesignTokens.Icon.tintMuted.opacity(1.0)
-                 : DesignTokens.Icon.tintMuted.opacity(0.85)
+        if isActive { return DesignTokens.FilterPill.activeForeground }
+        return DesignTokens.Icon.tintMuted.opacity(0.85)
     }
 
     private var backgroundFill: Color {
-        if isActive {
-            // System accent at low opacity — respects the user's macOS accent
-            // setting + light/dark mode automatically. No DesignTokens.AccentColor
-            // exists in this codebase, so we go through Color.accentColor here.
-            return Color.accentColor.opacity(0.18)
-        }
+        if isActive { return DesignTokens.FilterPill.activeBackground }
         if isHovering { return Color.white.opacity(0.10) }
         return Color.white.opacity(0.06)
     }
 
     private var borderColor: Color {
-        isActive ? Color.accentColor.opacity(0.35)
+        isActive ? DesignTokens.FilterPill.activeBorder
                  : Color.white.opacity(0.10)
     }
 }
