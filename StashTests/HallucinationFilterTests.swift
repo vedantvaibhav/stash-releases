@@ -150,4 +150,37 @@ struct HallucinationFilterTests {
         #expect(svc.testSanitiseWhisperOutput(longLegit, durationSeconds: 60) != nil,
                 "expected acceptance for legitimate long content with outro vocab")
     }
+
+    @Test func longRecordingsBypassFilterEntirely() {
+        let svc = service()
+        // A long recording's raw output should pass through verbatim, even if
+        // it contains substrings that the short-clip path would reject.
+        // 93-second "chat with Sai" regression case + several substring-matchy
+        // sentences that today's filter would clobber.
+        let raw = """
+        I had a chat with Sai today about the new transcription pipeline. He said
+        thanks for watching, but he meant our weekly demo recap. Subscribe to our
+        weekly digest is something I should set up. The action items are clear.
+        """
+        let cleaned = svc.testSanitiseWhisperOutput(raw, durationSeconds: 93)
+        #expect(cleaned == raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    @Test func eightSecondBoundaryIsLongPath() {
+        let svc = service()
+        // Exactly 8 seconds is treated as "long" — filter bypassed.
+        // Use a phrase that would otherwise hit the semantic-hallucination list.
+        let raw = "thanks for watching"
+        let cleaned = svc.testSanitiseWhisperOutput(raw, durationSeconds: 8)
+        #expect(cleaned == "thanks for watching")
+    }
+
+    @Test func sevenSecondBoundaryIsShortPath() {
+        let svc = service()
+        // 7 seconds (just below 8) gets the short-path filter — same phrase
+        // is rejected as a semantic hallucination.
+        let raw = "thanks for watching"
+        let cleaned = svc.testSanitiseWhisperOutput(raw, durationSeconds: 7)
+        #expect(cleaned == nil)
+    }
 }

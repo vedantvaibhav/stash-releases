@@ -886,6 +886,15 @@ final class TranscriptionService: NSObject, ObservableObject {
     // MARK: - Whisper API
 
     private func sanitiseWhisperOutput(_ raw: String, durationSeconds: Int) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Hallucinations are almost exclusive to short, near-silent clips.
+        // Long recordings get trusted verbatim — the filter's false-positive
+        // rate on real long-form speech is unacceptable (see chat-with-Sai
+        // 93s rejection on 2026-05-18).
+        guard durationSeconds < 8 else { return trimmed }
+
         // PASS 1 — token hallucinations (bracket artefacts Whisper emits on silence)
         let tokenHallucinations = [
             "[BLANK_AUDIO]", "[blank_audio]", "[inaudible]", "[Inaudible]",
