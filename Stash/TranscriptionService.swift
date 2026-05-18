@@ -626,23 +626,12 @@ final class TranscriptionService: NSObject, ObservableObject {
         // Skipped when `segments` is empty (provider returned plain text).
         // The substring filter below remains the backstop for that case
         // and for hallucinations that slip past the model-confidence gate.
-        let noSpeechRejectionThreshold = 0.6
-        let logprobRejectionThreshold = -1.0
+        #if DEBUG
         if let meanNSP = whisperResponse.meanNoSpeechProb,
-           let meanALP = whisperResponse.meanAvgLogprob,
-           meanNSP > noSpeechRejectionThreshold || meanALP < logprobRejectionThreshold {
-            isProcessing = false
-            let rawSnippet = String(rawWhisperOutput.prefix(120))
-            #if DEBUG
-            print("[Transcription] confidence-gate rejected — no_speech_prob=\(meanNSP), avg_logprob=\(meanALP) — \"\(rawSnippet)\"")
-            #endif
-            reportToSlack(
-                error: "Confidence gate rejected (no_speech_prob \(String(format: "%.2f", meanNSP)), avg_logprob \(String(format: "%.2f", meanALP)), duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
-                durationSeconds: durationSeconds
-            )
-            showCompletion("No audio")
-            return
+           let meanALP = whisperResponse.meanAvgLogprob {
+            print("[Transcription] whisper signals (no_gating): no_speech_prob=\(String(format: "%.3f", meanNSP)), avg_logprob=\(String(format: "%.3f", meanALP)), duration=\(durationSeconds)s")
         }
+        #endif
 
         // MARK: Hallucination filter (substring backstop)
         guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput, durationSeconds: durationSeconds) else {
