@@ -16,6 +16,18 @@ enum DesignTokens {
         static let backgroundActive = Color(red: 0.102, green: 0.102, blue: 0.102) // #1A1A1A
     }
 
+    /// Active-state colors for the notes filter bar pill (icon + "F" letter).
+    /// Bluish-white at bumped opacity reads "cool/glacial" without going full
+    /// cyan — chromaticity collapses below ~0.25 opacity for near-white colors,
+    /// so the opacities here are above that floor. If rendering still reads as
+    /// neutral gray on dark glass, swap `activeBackground` to a more saturated
+    /// cyan as a one-line follow-up.
+    enum FilterPill {
+        static let activeBackground = Color(red: 0.92, green: 0.95, blue: 1.0).opacity(0.28)
+        static let activeBorder     = Color(red: 0.85, green: 0.92, blue: 1.0).opacity(0.42)
+        static let activeForeground = Color(red: 0.88, green: 0.94, blue: 1.0)
+    }
+
     enum Spacing {
         static let panel: CGFloat = 20        // outer panel padding
         static let sectionGap: CGFloat = 20   // gap between sections
