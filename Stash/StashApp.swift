@@ -80,6 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
 
+        NetworkReachability.shared.start()
+
         panelController = PanelController()
 
         registerHotkeyFromSettings()
