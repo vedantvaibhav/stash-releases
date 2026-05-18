@@ -67,23 +67,17 @@ struct NotesFilterBar: View {
 
     private func installKeyMonitor() {
         // Idempotent — `.onAppear` can fire after a re-entry.
-        NSLog("[NotesFilterBar] installKeyMonitor called, keyMonitor=\(keyMonitor == nil ? "nil" : "set")")
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
-            NSLog("[NotesFilterBar] keyDown received: chars=\(event.charactersIgnoringModifiers ?? "nil") keyCode=\(event.keyCode) flags=\(event.modifierFlags.rawValue)")
-            guard self.shouldHandleFKey(event: event) else {
-                NSLog("[NotesFilterBar] shouldHandleFKey=false, passing event through")
-                return event
-            }
-            NSLog("[NotesFilterBar] shouldHandleFKey=true, toggling popover (was=\(self.isPopoverShown))")
-            self.isPopoverShown.toggle()
+            guard self.shouldHandleFKey(event: event) else { return event }
+            // F cycles the filter directly — does NOT open the popover.
+            // Click the pill (separate gesture handler) to open the popover.
+            self.activeFilter = self.activeFilter.next()
             return nil   // swallow the keystroke
         }
-        NSLog("[NotesFilterBar] monitor installed: \(keyMonitor != nil)")
     }
 
     private func removeKeyMonitor() {
-        NSLog("[NotesFilterBar] removeKeyMonitor called, had monitor=\(keyMonitor != nil)")
         if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
             keyMonitor = nil
@@ -92,32 +86,18 @@ struct NotesFilterBar: View {
 
     /// Returns true ONLY if this `keyDown` is a bare `F` press (no modifiers)
     /// AND no text field is first responder. Layout-independent — uses
-    /// `charactersIgnoringModifiers` rather than `keyCode`. Pressing F while
-    /// the popover is already open is intentional close behavior (no
-    /// `guard !isPopoverShown` clause here).
+    /// `charactersIgnoringModifiers` rather than `keyCode`.
     private func shouldHandleFKey(event: NSEvent) -> Bool {
         let disallowed: NSEvent.ModifierFlags = [.command, .option, .control]
-        let modifierIntersection = event.modifierFlags.intersection(disallowed)
-        if !modifierIntersection.isEmpty {
-            NSLog("[NotesFilterBar] reject: disallowed modifier present (rawValue=\(modifierIntersection.rawValue))")
+        if !event.modifierFlags.intersection(disallowed).isEmpty {
             return false
         }
-
-        let charsLowered = event.charactersIgnoringModifiers?.lowercased() ?? ""
-        guard charsLowered == "f" else {
-            NSLog("[NotesFilterBar] reject: chars not 'f' (got=\(charsLowered.isEmpty ? "<empty>" : charsLowered))")
+        guard event.charactersIgnoringModifiers?.lowercased() == "f" else {
             return false
         }
-
-        let keyWindowDesc = NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "nil"
-        let responderDesc = NSApp.keyWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        NSLog("[NotesFilterBar] keyWindow=\(keyWindowDesc) firstResponder=\(responderDesc)")
-
         if let responder = NSApp.keyWindow?.firstResponder, responder is NSText {
-            NSLog("[NotesFilterBar] reject: firstResponder is NSText subclass")
             return false
         }
-        NSLog("[NotesFilterBar] accept: bare F press, no text input focused")
         return true
     }
 }
