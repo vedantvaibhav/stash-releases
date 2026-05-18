@@ -508,6 +508,7 @@ struct SharedNotesColumn: View {
     @State private var deleteConfirmNote: NoteItem? = nil
     @State private var quickNoteHovered = false
     @State private var selectedNoteTab: NoteEditorTab = .overview
+    @State private var pendingCount: Int = 0
     @ObservedObject private var appSettings = AppSettings.shared
 
     private enum NoteEditorTab { case transcript, overview }
@@ -581,7 +582,13 @@ struct SharedNotesColumn: View {
                 // Sticky filter bar — pinned above the scrollable list.
                 NotesFilterBar(
                     activeFilter: $appSettings.notesActiveFilter,
-                    counts: filterCounts
+                    counts: filterCounts,
+                    pendingCount: pendingCount,
+                    onRetryAllTap: {
+                        Task {
+                            await TranscriptionRetryQueue.shared.drainNow()
+                        }
+                    }
                 )
 
                 // List, empty-state, or filter-empty-state
@@ -609,6 +616,13 @@ struct SharedNotesColumn: View {
                     }
                 }
                 .padding(.top, 14)
+            }
+            .task {
+                for await sessions in TranscriptionRetryQueue.shared.pendingStream() {
+                    await MainActor.run {
+                        self.pendingCount = sessions.count
+                    }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(!showNewNoteChoiceMenu)

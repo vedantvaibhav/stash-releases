@@ -16,6 +16,8 @@ struct NotesFilterBar: View {
     /// this from `notesStorage.notes` and passes it in so we don't
     /// re-iterate the array per filter row.
     let counts: [NotesFilter: Int]
+    let pendingCount: Int
+    let onRetryAllTap: () -> Void
 
     @State private var isPopoverShown = false
     @State private var keyMonitor: Any?
@@ -37,6 +39,21 @@ struct NotesFilterBar: View {
                 }
                 .layoutPriority(1)
                 .animation(.easeInOut(duration: 0.08), value: activeFilter)
+
+                if pendingCount > 0 {
+                    Button(action: onRetryAllTap) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 11, weight: .medium))
+                            Text("\(pendingCount) waiting")
+                                .font(.system(size: 12, weight: .regular))
+                        }
+                        .foregroundStyle(DesignTokens.Icon.tintMuted.opacity(0.75))
+                        .padding(.leading, 6)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Tap to retry pending uploads")
+                }
 
                 Spacer(minLength: 8)
 
