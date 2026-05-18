@@ -158,11 +158,21 @@ actor TranscriptionRetryQueue {
         do {
             let success = try await handler(meta)
             if success {
-                // Upload succeeded → archive + drop from queue.
-                try? AudioPersistence.archivePending(sessionUUID: sessionUUID)
-                pending.removeValue(forKey: sessionUUID)
-                retryTimers.removeValue(forKey: sessionUUID)
-                notifyObservers()
+                // Upload succeeded → archive + drop from queue. Order matters:
+                // if archive fails (disk full, permissions), keep the session
+                // in `pending` so bootstrap doesn't re-enqueue it on next
+                // launch (the upload already succeeded — re-running would
+                // produce a duplicate note).
+                do {
+                    try AudioPersistence.archivePending(sessionUUID: sessionUUID)
+                    pending.removeValue(forKey: sessionUUID)
+                    retryTimers.removeValue(forKey: sessionUUID)
+                    notifyObservers()
+                } catch {
+                    #if DEBUG
+                    print("[RetryQueue] archivePending failed after successful upload: \(error) — session \(sessionUUID) stays in pending to prevent duplicate on next launch")
+                    #endif
+                }
                 return
             } else {
                 // Transient failure — schedule next attempt.
@@ -189,9 +199,11 @@ actor TranscriptionRetryQueue {
             return
         }
         // Schedule next attempt using the backoff schedule. `attemptCount`
-        // is already incremented; index `attemptCount - 1` gives the delay
-        // before the NEXT attempt.
-        let index = min(meta.attemptCount, backoffSchedule.count - 1)
+        // was just incremented to count the failure we're handling, so we
+        // subtract 1 to index into the schedule for the delay BEFORE the
+        // next retry. After 1st failure (attemptCount=1), index=0 → 2s.
+        // After 2nd failure (attemptCount=2), index=1 → 8s. Etc.
+        let index = min(meta.attemptCount - 1, backoffSchedule.count - 1)
         let delay = backoffSchedule[index]
         scheduleAttempt(sessionUUID: sessionUUID, delay: delay)
     }

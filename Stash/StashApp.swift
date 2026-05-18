@@ -84,6 +84,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Task {
             await TranscriptionRetryQueue.shared.bootstrap()
+            // Drain after bootstrap regardless of online state. If offline, attempts
+            // fail and the queue's retry policy handles backoff + eventual recovery
+            // via the onSatisfied transition. If online (the common case after a
+            // crash-recover relaunch), this drains immediately — without it, sessions
+            // would sit forever because onSatisfied never fires on the initial
+            // satisfied state.
+            await TranscriptionRetryQueue.shared.drainNow()
         }
         NetworkReachability.shared.onSatisfied = {
             Task {
