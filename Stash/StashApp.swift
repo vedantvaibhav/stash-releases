@@ -404,7 +404,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func debugTestPillRejection()      { debugFirePill("No audio") }
-    @objc private func debugTestPillCleanupFailure() { debugFirePill("Saved (raw)") }
+    @objc private func debugTestPillCleanupFailure() { debugFirePill("Note saved") }
     @objc private func debugTestPillNetworkTimeout() { debugFirePill("Network timeout") }
     @objc private func debugTestPill5MinWarning()    { debugFirePill("5 min left", hold: DesignTokens.Pill.completionWarningHold) }
     @objc private func debugTestPill90MinHardStop()  { debugFirePill("90-min limit") }

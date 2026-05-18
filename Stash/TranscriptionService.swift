@@ -645,79 +645,12 @@ final class TranscriptionService: NSObject, ObservableObject {
             return
         }
 
-        // MARK: LLM cleaning — short path delivers through the triple-redundant
-        // pipeline (paste + clipboard + dictations history); long path saves
-        // a meeting note (below).
+        // MARK: LLM cleaning — raw-first delivery.
+        // Both helpers save the raw transcript immediately and run cleanup async.
         if isShort {
-            do {
-                let cleaned = try await callChat(
-                    systemPrompt: Self.promptShortClean,
-                    userMessage: rawTranscript,
-                    maxTokens: 400,
-                    model: APIConstants.chatModelForShortClean
-                )
-                let result = ShortTranscriptResult(
-                    text: cleaned,
-                    isRaw: false,
-                    durationSeconds: durationSeconds
-                )
-                deliverShortDictation(result)
-            } catch {
-                let result = ShortTranscriptResult(
-                    text: rawTranscript,
-                    isRaw: true,
-                    durationSeconds: durationSeconds
-                )
-                deliverShortDictation(result)
-                showCompletion("Saved (raw)")
-                reportToSlack(
-                    error: "Short-path cleanup failed; raw delivered. \(userFacingMessage(for: error))",
-                    durationSeconds: durationSeconds
-                )
-            }
+            deliverTranscriptShort(text: rawTranscript, durationSeconds: durationSeconds)
         } else {
-            do {
-                async let transcriptCall = callChat(
-                    systemPrompt: Self.promptLongTranscript,
-                    userMessage: rawTranscript,
-                    maxTokens: 3000,
-                    model: APIConstants.chatModel
-                )
-                async let overviewCall = callChat(
-                    systemPrompt: Self.promptLongOverview,
-                    userMessage: rawTranscript,
-                    maxTokens: 1500,
-                    model: APIConstants.chatModel
-                )
-                let (cleanedTranscript, overview) = try await (transcriptCall, overviewCall)
-                if let storage = notesStorage {
-                    let id = storage.saveMeetingNote(
-                        transcript: cleanedTranscript,
-                        overview: overview,
-                        durationSeconds: durationSeconds
-                    )
-                    storage.refreshNotes()
-                    onNoteCreated?(id)
-                }
-                isProcessing = false
-                showCompletion("Note saved")
-            } catch {
-                if let storage = notesStorage {
-                    let id = storage.saveMeetingNote(
-                        transcript: rawTranscript,
-                        overview: "Overview unavailable — raw transcript saved below.",
-                        durationSeconds: durationSeconds
-                    )
-                    storage.refreshNotes()
-                    onNoteCreated?(id)
-                }
-                isProcessing = false
-                showCompletion("Saved (raw)")
-                reportToSlack(
-                    error: "Long-path cleanup failed; raw saved. \(userFacingMessage(for: error))",
-                    durationSeconds: durationSeconds
-                )
-            }
+            deliverTranscriptLong(text: rawTranscript, durationSeconds: durationSeconds)
         }
     }
 
@@ -1323,6 +1256,123 @@ final class TranscriptionService: NSObject, ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Invalid JSON shape"])
         }
         return content
+    }
+
+    // MARK: - Raw-first delivery helpers
+
+    /// Phase 1: saves the raw Whisper transcript as a quick note immediately.
+    /// Phase 2: pastes (AutoPaste) + writes clipboard.
+    /// Phase 3: async cleanup — on success, updates the same note in place;
+    ///           on failure, the raw note stays and the error goes to Slack.
+    @MainActor
+    @discardableResult
+    private func deliverTranscriptShort(text: String, durationSeconds: Int) -> String? {
+        // Phase 1 — save raw immediately so the user has a note even if cleanup fails.
+        let rawNoteId = notesStorage?.saveQuickNote(text: text, durationSeconds: durationSeconds)
+
+        // Phase 2 — pasteboard + AutoPaste (short-clip primary delivery).
+        // Use the RAW text for the immediate paste; cleanup only refines the
+        // saved note, never the paste content.
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        let pasteResult = AutoPasteService.shared.attemptInsert(text: text)
+        if let pillCopy = pillCopyFor(pasteResult) {
+            showCompletion(pillCopy)
+        }
+
+        // Phase 3 — async cleanup, update note in place on success.
+        // Capture [weak self] only — notesStorage is a `weak var` on the service,
+        // so capturing it directly would be racy. Reach through self?.notesStorage
+        // inside the main-actor hop where the reference is checked under isolation.
+        Task.detached { [weak self] in
+            guard let self else { return }
+            do {
+                let cleaned = try await self.callChat(
+                    systemPrompt: Self.promptShortClean,
+                    userMessage: text,
+                    maxTokens: 1024,
+                    model: APIConstants.chatModelForShortClean
+                )
+                if let rawNoteId {
+                    await MainActor.run { [weak self] in
+                        self?.notesStorage?.replaceTranscriptContent(
+                            noteId: rawNoteId,
+                            transcript: cleaned,
+                            overview: nil,
+                            durationSeconds: durationSeconds,
+                            type: "quick"
+                        )
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.reportToSlack(
+                        error: "Short-path cleanup failed; raw note kept. \(self?.userFacingMessage(for: error) ?? "")",
+                        durationSeconds: durationSeconds
+                    )
+                }
+            }
+        }
+        return rawNoteId
+    }
+
+    /// Phase 1: saves the raw Whisper transcript as a meeting note immediately.
+    /// Phase 2: shows "Note saved" pill right away.
+    /// Phase 3: async cleanup + overview generation — on success, updates the
+    ///           same note in place; on failure, the raw transcript stays.
+    @MainActor
+    @discardableResult
+    private func deliverTranscriptLong(text: String, durationSeconds: Int) -> String? {
+        // Phase 1 — save raw transcript immediately as a meeting note with empty overview.
+        let rawNoteId = notesStorage?.saveMeetingNote(
+            transcript: text,
+            overview: "",
+            durationSeconds: durationSeconds
+        )
+        // User sees "Note saved" right away. Cleanup will refine the same note silently.
+        showCompletion("Note saved")
+
+        // Phase 2 — async cleanup + overview, update note in place on success.
+        // [weak self] only — see deliverTranscriptShort's note about `notesStorage`
+        // being a weak var; reach through `self?.notesStorage` inside the hop.
+        Task.detached { [weak self] in
+            guard let self else { return }
+            async let cleanedTask: String = self.callChat(
+                systemPrompt: Self.promptLongTranscript,
+                userMessage: text,
+                maxTokens: 4096,
+                model: APIConstants.chatModel
+            )
+            async let overviewTask: String = self.callChat(
+                systemPrompt: Self.promptLongOverview,
+                userMessage: text,
+                maxTokens: 1024,
+                model: APIConstants.chatModel
+            )
+            do {
+                let cleaned = try await cleanedTask
+                let overv = try await overviewTask
+                if let rawNoteId {
+                    await MainActor.run { [weak self] in
+                        self?.notesStorage?.replaceTranscriptContent(
+                            noteId: rawNoteId,
+                            transcript: cleaned,
+                            overview: overv,
+                            durationSeconds: durationSeconds,
+                            type: "meeting"
+                        )
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.reportToSlack(
+                        error: "Long-path cleanup failed; raw transcript kept. \(self?.userFacingMessage(for: error) ?? "")",
+                        durationSeconds: durationSeconds
+                    )
+                }
+            }
+        }
+        return rawNoteId
     }
 
     // MARK: - Test seam

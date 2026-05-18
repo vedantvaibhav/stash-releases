@@ -57,7 +57,7 @@ enum DesignTokens {
         // Pill width is now computed dynamically per displayed mode by the
         // controller's sizeForCurrentMode (using NSString.size on the label
         // text), so each state — recording timer, "Failed", "No audio",
-        // "Pasted ✓", "Note saved", "Saved (raw)" — gets exactly the width
+        // "Pasted ✓", "Note saved", "Network timeout" — gets exactly the width
         // it needs. This `width` constant is the FALLBACK used by
         // restorePosition during the panel's initial buildPanel call,
         // before any mode is set; kept at the typical recording size so
