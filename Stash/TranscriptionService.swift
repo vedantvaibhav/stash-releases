@@ -2,16 +2,6 @@ import AppKit
 import AVFoundation
 import Foundation
 
-/// Result of a short (<5 min) recording handed off to the floating pill for
-/// explicit Copy / Dismiss. `isRaw == true` when the LLM cleaning step failed
-/// and the pill should label the transcript as raw.
-struct ShortTranscriptResult: Identifiable, Equatable {
-    let id = UUID()
-    let text: String
-    let isRaw: Bool
-    let durationSeconds: Int
-}
-
 /// Transcription + meeting notes via OpenAI-compatible API (provider auto-detected from key prefix).
 @MainActor
 final class TranscriptionService: NSObject, ObservableObject {
@@ -58,7 +48,7 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Shown inside the RecordingBanner so the user can actually read the failure
     /// message (the pill's "Failed ✗" alone disappears too fast). Auto-clears after 4 s.
     @Published var lastErrorForBanner: String? = nil
-    /// Set by `processRecording` before branching so the onNoteCreated callback
+    /// Set by `uploadSession` before branching so the onNoteCreated callback
     /// (in PanelController) knows whether to auto-open the editor (long) or show
     /// the list with the new quick-transcript pinned at the top (short).
     @Published var lastRecordingWasShort: Bool = false
@@ -74,6 +64,8 @@ final class TranscriptionService: NSObject, ObservableObject {
     // — Private
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
+    private var sessionUUID: UUID?
+    private var recordingStartedAt: Date?
     private var durationTimer: Timer?
     private var transcriptTimer: Timer?
     private var levelTimer: Timer?
@@ -93,7 +85,7 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var didShowDurationWarning = false
     /// Same idea for the file-size warning.
     private var didShowSizeWarning = false
-    /// Set true when the size-monitor's hard-stop trips, so processRecording
+    /// Set true when the size-monitor's hard-stop trips, so uploadSession
     /// can surface the right toast message just like `autoStoppedAtLimit`
     /// does for the duration limit.
     private var autoStoppedAtSizeLimit = false
@@ -141,11 +133,26 @@ final class TranscriptionService: NSObject, ObservableObject {
     }
 
     private func beginRecording() {
-        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("qp_recording.m4a")
-        recordingURL = tempURL
-
-        try? FileManager.default.removeItem(at: tempURL)
+        let uuid = UUID()
+        self.sessionUUID = uuid
+        self.recordingStartedAt = Date()
+        do {
+            try AudioPersistence.ensureDirectories()
+        } catch {
+            // Disk-prep failure — bail before recording starts. Surface to the
+            // user via the standard pill failure path; this is rare (filesystem
+            // permission issue) and not retriable per-recording.
+            reportToSlack(error: "Failed to create Transcription directory: \(error)", durationSeconds: 0)
+            showCompletion("Failed")
+            isRecording = false
+            return
+        }
+        let activeURL = AudioPersistence.activeAudioURL(sessionUUID: uuid)
+        recordingURL = activeURL
+        // Delete any prior file with the same uuid (defensive — shouldn't exist).
+        if FileManager.default.fileExists(atPath: activeURL.path) {
+            try? FileManager.default.removeItem(at: activeURL)
+        }
 
         // Detect the hardware input sample rate at runtime.
         // AVAudioEngine.inputNode.outputFormat reflects the live hardware rate:
@@ -169,7 +176,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         ]
 
         do {
-            recorder = try AVAudioRecorder(url: tempURL, settings: settings)
+            recorder = try AVAudioRecorder(url: activeURL, settings: settings)
             recorder?.isMeteringEnabled = true
             // record() returns false if the device refuses to start
             // (e.g. permission revoked mid-session, device unplugged at init).
@@ -343,49 +350,44 @@ final class TranscriptionService: NSObject, ObservableObject {
         isProcessing = true
         audioLevel = 0
 
-        guard let url = recordingURL,
-              let audioData = try? Data(contentsOf: url),
-              audioData.count > 1000 else {
-            #if DEBUG
-            let fileSize = (try? Data(contentsOf: recordingURL ?? URL(fileURLWithPath: ""))).map { "\($0.count) bytes" } ?? "no file"
-            print("[Transcription] Audio guard failed — \(fileSize)")
-            #endif
-            errorMessage = "Recording failed — no audio captured"
-            isProcessing = false
-            reportToSlack(error: errorMessage ?? "Audio guard failed", durationSeconds: duration)
-            showCompletion("No audio")
-            return
-        }
-
-
-
         let recordedDuration = duration
 
-        // Watchdog: if the pipeline hasn't finished in 90 s (network hung,
-        // URLSession ignored timeoutInterval, etc.) force-reset the UI so
-        // the pill never gets stuck on "Processing".
-        processingWatchdog?.cancel()
-        let watchdog = DispatchWorkItem { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self, self.isProcessing else { return }
-                self.isProcessing = false
-                self.reportToSlack(error: "Processing watchdog timed out (90s)", durationSeconds: self.duration)
-                self.showCompletion("Failed")
-            }
+        guard let uuid = sessionUUID else {
+            // Defensive — shouldn't happen.
+            isProcessing = false
+            return
         }
-        processingWatchdog = watchdog
-        DispatchQueue.main.asyncAfter(deadline: .now() + 90, execute: watchdog)
-
-        Task { @MainActor in
-            defer {
-                self.processingWatchdog?.cancel()
-                self.processingWatchdog = nil
-                if let r = self.recordingURL {
-                    try? FileManager.default.removeItem(at: r)
-                }
-            }
-            await self.processRecording(audioData: audioData, durationSeconds: recordedDuration)
+        do {
+            try AudioPersistence.promoteActiveToPending(sessionUUID: uuid)
+        } catch {
+            #if DEBUG
+            print("[Transcription] failed to promote active → pending: \(error)")
+            #endif
+            reportToSlack(error: "Failed to promote audio file: \(error)", durationSeconds: recordedDuration)
+            showCompletion("Failed")
+            isProcessing = false
+            return
         }
+        let intent: PendingSessionMetadata.SessionIntent = (recordedDuration < 300) ? .shortPaste : .longNote
+        // Capture the frontmost app at stop time directly via NSWorkspace. AutoPasteService
+        // is stateless about this — it does a live lookup inside its own `attemptInsert`
+        // call path — so there's no existing captured value to read from.
+        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let meta = PendingSessionMetadata(
+            sessionUUID: uuid,
+            startedAt: recordingStartedAt ?? Date(),
+            finishedAt: Date(),
+            durationSeconds: recordedDuration,
+            intent: intent,
+            frontmostAppBundleID: frontmostBundleID,
+            attemptCount: 0,
+            lastError: nil,
+            createdNoteID: nil
+        )
+        Task {
+            await TranscriptionRetryQueue.shared.enqueue(meta)
+        }
+        isProcessing = false
     }
 
     // MARK: - LLM prompts
@@ -487,58 +489,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     - Do not start with any label like "Overview:", "Summary:", "Key Points:", etc.
     """
 
-    // MARK: - Short-recording delivery
-
-    /// Three-channel delivery for short transcripts:
-    ///
-    /// 1. **NotesStorage as a `.quick` note** — visible in the Notes tab
-    ///    next to written notes, distinguished by the waveform glyph. Tap
-    ///    opens the editor; user copies from there. This is the primary
-    ///    recovery surface when paste isn't verified — same UX as a
-    ///    written note, just produced by voice.
-    ///
-    /// 2. **Clipboard** — `⌘V` always reaches the dictation. Replaces the
-    ///    user's previous clipboard contents; matches what they expect
-    ///    after triggering a dictation.
-    ///
-    /// 3. **AutoPasteService** — best-effort direct paste into the focused
-    ///    field. Pill confirmation reads "Pasted ✓" only when channel 3's
-    ///    read-back verified the paste landed; any other outcome hides
-    ///    the pill silently and the user finds the transcript in Notes.
-    private func deliverShortDictation(_ result: ShortTranscriptResult) {
-        // Channel 1: persistent history as a quick note. Saved before paste
-        // attempt because it's pasteboard-independent — survives anything
-        // AutoPasteService does. We deliberately do NOT fire onNoteCreated
-        // (that would yank focus to Stash and open the editor); user is in
-        // another app expecting the paste to land or to grab via ⌘V.
-        notesStorage?.saveQuickNote(text: result.text, durationSeconds: result.durationSeconds)
-        notesStorage?.refreshNotes()
-
-        // Channel 3: best-effort paste. May write to and restore the
-        // pasteboard internally (Strategy 2's preserve-and-restore cycle).
-        // Only `.verifiedPasted` (Strategy 1 with read-back) earns a
-        // "Pasted ✓" pill. Other outcomes hide the pill silently — the
-        // user finds the transcript in the Notes tab.
-        let pasteResult = AutoPasteService.shared.attemptInsert(text: result.text)
-        if let pillCopy = pillCopyFor(pasteResult) {
-            showCompletion(pillCopy)
-        }
-
-        // Channel 2: clipboard. Deferred past AutoPasteService's
-        // pasteboard-restore window so our write is the LAST writer — the
-        // earlier ordering (clipboard → attemptInsert) was racing with
-        // Strategy 2's restore and intermittently leaving the clipboard
-        // empty. +50ms after the restore deadline gives the dispatched
-        // restore closure time to complete on a quiet runloop.
-        let textToWrite = result.text
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + AutoPasteService.pasteboardRestoreDelaySeconds + 0.05
-        ) {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(textToWrite, forType: .string)
-        }
-    }
-
     /// Maps the AX-paste outcome to a pill confirmation message, or nil
     /// when the pill should hide silently. Only the read-back-verified
     /// Strategy 1 path earns "Pasted ✓"; the other outcomes return nil so
@@ -553,104 +503,88 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Unified pipeline
+    // MARK: - Queue-driven upload pipeline
 
-    private func processRecording(audioData: Data, durationSeconds: Int) async {
-        // Safety net: isProcessing is ALWAYS cleared when this function exits,
-        // regardless of which code path runs (including Task cancellation).
-        defer { isProcessing = false }
-
-        let isShort = durationSeconds < 300
-        lastRecordingWasShort = isShort
-
-        if autoStoppedAtLimit {
-            autoStoppedAtLimit = false
-            // Pill briefly shows the hard-stop reason; the widget controller's
-            // expireCompletion sees isProcessing==true and returns to the
-            // processing pill (compact circle) after the hold. Eventually the
-            // natural "Note saved" / "No audio" completion takes over.
-            showCompletion("90-min limit")
-            reportToSlack(
-                error: "Duration hard-stop fired at 90 min",
-                durationSeconds: durationSeconds
-            )
+    /// Called by the retry queue. Reads `pending/<uuid>/audio.m4a` from disk,
+    /// uploads to Whisper, sanitises, dispatches into raw-first delivery.
+    /// Returns `true` on success → queue archives the session.
+    /// Returns `false` for transient (network) errors → queue retries.
+    /// Throws for persistent errors → queue gives up after `maxAttempts`.
+    ///
+    /// Explicitly `@MainActor` because TranscriptionService is `@MainActor`-isolated
+    /// and the call path (Whisper API → sanitiser → deliver helpers) all need that
+    /// isolation. The queue invokes this via `await` from its actor context, which
+    /// hops to MainActor automatically.
+    @MainActor
+    func uploadSession(metadata: PendingSessionMetadata) async throws -> Bool {
+        let audioURL = AudioPersistence.pendingAudioURL(sessionUUID: metadata.sessionUUID)
+        let audioData: Data
+        do {
+            audioData = try Data(contentsOf: audioURL)
+        } catch {
+            // File missing — non-retryable. Don't keep retrying nothing.
+            throw error
         }
 
-        if autoStoppedAtSizeLimit {
-            autoStoppedAtSizeLimit = false
-            showCompletion("Size limit")
-            reportToSlack(
-                error: "Size hard-stop fired at >=24 MB",
-                durationSeconds: durationSeconds
-            )
-        }
-
-        // MARK: Whisper — with one auto-retry on transient errors
         let whisperResponse: WhisperResponse
         do {
-            whisperResponse = try await Task(priority: .userInitiated) {
-                try await self.callWhisper(audioData: audioData)
-            }.value
-        } catch let firstError as NSError {
-            if isTransientWhisperError(status: firstError.code) {
-                showCompletion("Retrying…")
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                do {
-                    whisperResponse = try await Task(priority: .userInitiated) {
-                        try await self.callWhisper(audioData: audioData)
-                    }.value
-                } catch {
-                    reportFailure(error, durationSeconds: durationSeconds)
-                    return
-                }
-            } else {
-                reportFailure(firstError, durationSeconds: durationSeconds)
-                return
-            }
+            whisperResponse = try await callWhisper(audioData: audioData)
+        } catch let urlError as URLError {
+            // All URLError variants are treated as transient — network is the
+            // most common failure mode and the queue's retry policy is correct
+            // for all of them. If the user's auth key is bad, the URLSession
+            // request still succeeds at the transport layer; the API returns
+            // an HTTP error body which `callWhisper` translates to a
+            // non-URLError throw (handled below as persistent).
+            #if DEBUG
+            print("[Transcription] uploadSession transient URLError: \(urlError.code) — queueing retry")
+            #endif
+            return false
         } catch {
-            reportFailure(error, durationSeconds: durationSeconds)
-            return
+            // Anything that's not a URLError — auth failure, malformed response,
+            // server-side 4xx with explicit error body — is treated as persistent.
+            // The queue will retry up to `maxAttempts` times then surface to the
+            // user. If `callWhisper`'s error taxonomy ever distinguishes
+            // retryable vs persistent at the API-response level (e.g. by
+            // throwing a custom `WhisperError.rateLimited`), extend this
+            // catch chain to add a specific transient branch for those.
+            throw error
         }
 
-        let rawWhisperOutput = whisperResponse.text
+        let rawTranscript = whisperResponse.text
 
-        // MARK: Confidence-signal gate
-        // Whisper itself knows when it hallucinated. With response_format=
-        // verbose_json the server returns per-segment `no_speech_prob`
-        // (model's estimate that the audio window contained no speech) and
-        // `avg_logprob` (per-token log-probability average; lower = less
-        // confident). Reject when the model is signalling "this was
-        // silence I made up." Thresholds picked from OpenAI Whisper's own
-        // defaults: no_speech_threshold=0.6, logprob_threshold=-1.0.
-        //
-        // Skipped when `segments` is empty (provider returned plain text).
-        // The substring filter below remains the backstop for that case
-        // and for hallucinations that slip past the model-confidence gate.
-        #if DEBUG
-        if let meanNSP = whisperResponse.meanNoSpeechProb,
-           let meanALP = whisperResponse.meanAvgLogprob {
-            print("[Transcription] whisper signals (no_gating): no_speech_prob=\(String(format: "%.3f", meanNSP)), avg_logprob=\(String(format: "%.3f", meanALP)), duration=\(durationSeconds)s")
-        }
-        #endif
-
-        // MARK: Hallucination filter (substring backstop)
-        guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput, durationSeconds: durationSeconds) else {
-            isProcessing = false
-            let rawSnippet = String(rawWhisperOutput.prefix(120))
-            reportToSlack(
-                error: "Hallucination filter rejected (duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
-                durationSeconds: durationSeconds
-            )
+        // Sanitise (hallucination filter for <8s, passthrough for ≥8s).
+        let sanitised = sanitiseWhisperOutput(rawTranscript, durationSeconds: metadata.durationSeconds)
+        guard let text = sanitised else {
+            // Filter rejected. Report and treat as success (don't keep audio).
+            reportToSlack(error: "Hallucination filter rejected (duration \(metadata.durationSeconds)s)", durationSeconds: metadata.durationSeconds)
             showCompletion("No audio")
-            return
+            return true
         }
 
-        // MARK: LLM cleaning — raw-first delivery.
-        // Both helpers save the raw transcript immediately and run cleanup async.
-        if isShort {
-            deliverTranscriptShort(text: rawTranscript, durationSeconds: durationSeconds)
-        } else {
-            deliverTranscriptLong(text: rawTranscript, durationSeconds: durationSeconds)
+        // Raw-first delivery — same actor, just call through.
+        await deliverTranscript(text: text, metadata: metadata)
+        return true
+    }
+
+    /// Main-actor delivery from a queued session. Calls the existing
+    /// `deliverTranscriptShort` / `deliverTranscriptLong` helpers (introduced
+    /// in Task 6), then correlates the returned noteID back into the queue's
+    /// `meta.json` so the UI can surface "note X is from session Y".
+    private func deliverTranscript(text: String, metadata: PendingSessionMetadata) async {
+        lastRecordingWasShort = (metadata.intent == .shortPaste)
+        let noteId: String?
+        switch metadata.intent {
+        case .shortPaste:
+            noteId = deliverTranscriptShort(text: text, durationSeconds: metadata.durationSeconds)
+        case .longNote:
+            noteId = deliverTranscriptLong(text: text, durationSeconds: metadata.durationSeconds)
+        }
+        if let noteId {
+            await TranscriptionRetryQueue.shared.setCreatedNoteID(
+                for: metadata.sessionUUID,
+                noteID: noteId
+            )
         }
     }
 

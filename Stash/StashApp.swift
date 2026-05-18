@@ -82,8 +82,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NetworkReachability.shared.start()
 
-        Task {
+        // PanelController must exist before the queue's uploadHandler closure
+        // can resolve `transcriptionService`. The handler is invoked on
+        // queue.drainNow() further down — initialize the controller first.
+        panelController = PanelController()
+
+        Task { [weak self] in
             await TranscriptionRetryQueue.shared.bootstrap()
+            // Wire the upload handler before draining. The closure captures
+            // [weak self] so it doesn't retain the AppDelegate; it reaches
+            // through self?.panelController?.transcriptionService at call
+            // time (which is when the queue attempts an upload).
+            await TranscriptionRetryQueue.shared.setUploadHandler { meta in
+                guard let svc = self?.panelController?.transcriptionService else { return false }
+                return try await svc.uploadSession(metadata: meta)
+            }
             // Drain after bootstrap regardless of online state. If offline, attempts
             // fail and the queue's retry policy handles backoff + eventual recovery
             // via the onSatisfied transition. If online (the common case after a
@@ -97,8 +110,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await TranscriptionRetryQueue.shared.drainNow()
             }
         }
-
-        panelController = PanelController()
 
         registerHotkeyFromSettings()
 
