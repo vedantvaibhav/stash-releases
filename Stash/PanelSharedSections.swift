@@ -638,10 +638,10 @@ struct SharedNotesColumn: View {
     private var filterEmptyStateLine: some View {
         let copy: String = {
             switch appSettings.notesActiveFilter {
-            case .meetings:   return "No meetings yet — long recordings (5+ min) will appear here."
-            case .quickNotes: return "No quick notes yet — short dictations will appear here."
-            case .manual:     return "No manual notes yet — tap + to create one."
-            case .all:        return ""   // unreachable: .all + notes-not-empty never hits this branch
+            case .meetings:       return "No meetings yet — long recordings (5+ min) will appear here."
+            case .transcriptions: return "No transcriptions yet — short dictations will appear here."
+            case .manual:         return "No manual notes yet — tap + to create one."
+            case .all:            return ""   // unreachable: .all + notes-not-empty never hits this branch
             }
         }()
 

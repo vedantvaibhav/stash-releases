@@ -39,8 +39,8 @@ struct NotesFilterTests {
         #expect(!f.matches(note(origin: .quick)))
     }
 
-    @Test func quickNotesBucket() {
-        let f = NotesFilter.quickNotes
+    @Test func transcriptionsBucket() {
+        let f = NotesFilter.transcriptions
         #expect(f.matches(note(origin: .quick, duration: 30)))
         #expect(f.matches(note(origin: .voice, duration: 220)))
         #expect(!f.matches(note(origin: .meeting)))
@@ -58,10 +58,10 @@ struct NotesFilterTests {
     }
 
     @Test func displayNamesAreStable() {
-        #expect(NotesFilter.all.displayName        == "All notes")
-        #expect(NotesFilter.meetings.displayName   == "Meetings")
-        #expect(NotesFilter.quickNotes.displayName == "Quick notes")
-        #expect(NotesFilter.manual.displayName     == "Manual")
+        #expect(NotesFilter.all.displayName           == "All notes")
+        #expect(NotesFilter.meetings.displayName      == "Meetings")
+        #expect(NotesFilter.transcriptions.displayName == "Transcriptions")
+        #expect(NotesFilter.manual.displayName        == "Manual")
     }
 
     @Test func rawValuesAreStableForPersistence() {
@@ -69,17 +69,18 @@ struct NotesFilterTests {
         // resets every user's filter to `.all` on next launch.
         #expect(NotesFilter.all.rawValue        == "all")
         #expect(NotesFilter.meetings.rawValue   == "meetings")
-        #expect(NotesFilter.quickNotes.rawValue == "quickNotes")
+        // rawValue preserved across the 2026-05-19 rename — see `NotesFilter.swift`.
+        #expect(NotesFilter.transcriptions.rawValue == "quickNotes")
         #expect(NotesFilter.manual.rawValue     == "manual")
     }
 
     @Test func cycleAdvancesInFixedOrder() {
         // Cycle order is contractual — it determines what users see on each F press.
         // Changing this breaks muscle memory for anyone who learned the order.
-        #expect(NotesFilter.all.next()        == .meetings)
-        #expect(NotesFilter.meetings.next()   == .quickNotes)
-        #expect(NotesFilter.quickNotes.next() == .manual)
-        #expect(NotesFilter.manual.next()     == .all)
+        #expect(NotesFilter.all.next()           == .meetings)
+        #expect(NotesFilter.meetings.next()      == .transcriptions)
+        #expect(NotesFilter.transcriptions.next() == .manual)
+        #expect(NotesFilter.manual.next()        == .all)
 
         // Four-step round trip lands back where it started.
         var cursor = NotesFilter.all
