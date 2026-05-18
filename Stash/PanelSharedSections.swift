@@ -568,15 +568,13 @@ struct SharedNotesColumn: View {
     // MARK: Notes list
 
     private var notesListView: some View {
-        // Original values were 40 (cards) and 94 (panel), tuned to land the
-        // new-note choice card just below the TabBar's "+" button. Adding the
-        // ~38pt-tall filter bar pushes the available space down — the menu
-        // anchor (outer ZStack `.topTrailing`) does NOT shift with VStack
-        // content, so the card would overlap the bar's bottom edge in cards
-        // mode (40pt anchor vs ~38pt bar = 2pt clearance — visually broken).
-        // Bumped to bar_height + 8pt visual gap = ~46pt cards / 100pt panel
-        // so the card always opens a clear distance below the bar.
-        let menuTopPadding: CGFloat = forCardsMode ? 46 : 100
+        // Anchors the new-note choice card below the filter bar. Math:
+        //   bar_height (~44pt) + 8pt visual gap = ~52pt cards / ~106pt panel.
+        // The menu card uses the outer ZStack's `.topTrailing` anchor, which
+        // does NOT shift with VStack content, so this padding has to manually
+        // account for the bar height. If the bar's vertical padding changes
+        // again, recompute: padding(.vertical, X) → bar height ≈ 24 + 2X.
+        let menuTopPadding: CGFloat = forCardsMode ? 52 : 106
 
         return ZStack(alignment: .topTrailing) {
             VStack(alignment: .leading, spacing: 0) {
