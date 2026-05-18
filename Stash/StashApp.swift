@@ -82,6 +82,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NetworkReachability.shared.start()
 
+        Task {
+            await TranscriptionRetryQueue.shared.bootstrap()
+        }
+        NetworkReachability.shared.onSatisfied = {
+            Task {
+                await TranscriptionRetryQueue.shared.drainNow()
+            }
+        }
+
         panelController = PanelController()
 
         registerHotkeyFromSettings()
