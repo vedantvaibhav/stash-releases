@@ -21,44 +21,47 @@ struct NotesFilterBar: View {
     @State private var keyMonitor: Any?
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            // Left: active filter title + count — 15pt section header, count in parens
-            HStack(spacing: 4) {
-                Text(activeFilter.displayName)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(DesignTokens.Typography.sectionColor)
-                    .lineLimit(1)
-                Text("(\(counts[activeFilter, default: 0]))")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.55))
-                    .lineLimit(1)
-                    .layoutPriority(0) // count truncates first if width is tight
-            }
-            .layoutPriority(1)
-            .animation(.easeInOut(duration: 0.08), value: activeFilter)
-
-            Spacer(minLength: 8)
-
-            // Right: combined pill (icon + "F"). Click opens popover. F key cycles (Task 3).
-            FilterPill(isActive: activeFilter != .all)
-                .onTapGesture { isPopoverShown.toggle() }
-                .popover(isPresented: $isPopoverShown, arrowEdge: .top) {
-                    NotesFilterPopoverContent(
-                        activeFilter: $activeFilter,
-                        counts: counts,
-                        onPick: { picked in
-                            activeFilter = picked
-                            isPopoverShown = false
-                        }
-                    )
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 8) {
+                // Left: active filter title + count — 15pt section header, count in parens
+                HStack(spacing: 4) {
+                    Text(activeFilter.displayName)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(DesignTokens.Typography.sectionColor)
+                        .lineLimit(1)
+                    Text("(\(counts[activeFilter, default: 0]))")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.55))
+                        .lineLimit(1)
+                        .layoutPriority(0)
                 }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 9) // bar height ≈ 40pt with 22pt content
-        .frame(minHeight: 40)
-        .overlay(alignment: .bottom) {
+                .layoutPriority(1)
+                .animation(.easeInOut(duration: 0.08), value: activeFilter)
+
+                Spacer(minLength: 8)
+
+                FilterPill(isActive: activeFilter != .all)
+                    .onTapGesture { isPopoverShown.toggle() }
+                    .popover(isPresented: $isPopoverShown, arrowEdge: .top) {
+                        NotesFilterPopoverContent(
+                            activeFilter: $activeFilter,
+                            counts: counts,
+                            onPick: { picked in
+                                activeFilter = picked
+                                isPopoverShown = false
+                            }
+                        )
+                    }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 9) // bar content height ≈ 40pt with 22pt content
+            .frame(minHeight: 40)
+
+            // Edge-to-edge hairline divider. Lives outside the padded HStack so its
+            // width tracks the parent column, not the HStack's content inset.
             Rectangle()
-                .fill(DesignTokens.Icon.tintMuted.opacity(0.15))
+                .fill(DesignTokens.Icon.tintMuted.opacity(0.18))
+                .frame(maxWidth: .infinity)
                 .frame(height: 1)
         }
         .onAppear { installKeyMonitor() }

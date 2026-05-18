@@ -569,12 +569,12 @@ struct SharedNotesColumn: View {
 
     private var notesListView: some View {
         // Anchors the new-note choice card below the filter bar. Math:
-        //   bar_height (~44pt) + 8pt visual gap = ~52pt cards / ~106pt panel.
+        //   bar_height (~40pt) + 8pt visual gap = ~48pt cards / ~102pt panel.
         // The menu card uses the outer ZStack's `.topTrailing` anchor, which
         // does NOT shift with VStack content, so this padding has to manually
         // account for the bar height. If the bar's vertical padding changes
-        // again, recompute: padding(.vertical, X) → bar height ≈ 24 + 2X.
-        let menuTopPadding: CGFloat = forCardsMode ? 52 : 106
+        // again, recompute: padding(.vertical, X) → bar height ≈ 22 + 2X.
+        let menuTopPadding: CGFloat = forCardsMode ? 48 : 102
 
         return ZStack(alignment: .topTrailing) {
             VStack(alignment: .leading, spacing: 0) {
@@ -585,26 +585,30 @@ struct SharedNotesColumn: View {
                 )
 
                 // List, empty-state, or filter-empty-state
-                if notesStorage.notes.isEmpty {
-                    PanelEmptyState(
-                        title: "No notes yet",
-                        subtitle: "Write a note or transcribe your next meeting"
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if filteredNotes.isEmpty {
-                    filterEmptyStateLine
-                } else {
-                    let listed: [NoteItem] = {
-                        guard let cap = maxListNotes else { return filteredNotes }
-                        return Array(filteredNotes.prefix(cap))
-                    }()
-                    NotesListView(
-                        notes: listed,
-                        onTap: { note in editingNoteId = note.id },
-                        onDelete: { note in deleteConfirmNote = note }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // 14pt gap between filter-bar divider and first date-group header.
+                Group {
+                    if notesStorage.notes.isEmpty {
+                        PanelEmptyState(
+                            title: "No notes yet",
+                            subtitle: "Write a note or transcribe your next meeting"
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if filteredNotes.isEmpty {
+                        filterEmptyStateLine
+                    } else {
+                        let listed: [NoteItem] = {
+                            guard let cap = maxListNotes else { return filteredNotes }
+                            return Array(filteredNotes.prefix(cap))
+                        }()
+                        NotesListView(
+                            notes: listed,
+                            onTap: { note in editingNoteId = note.id },
+                            onDelete: { note in deleteConfirmNote = note }
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
+                .padding(.top, 14)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(!showNewNoteChoiceMenu)
