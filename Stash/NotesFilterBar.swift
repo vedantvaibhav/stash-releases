@@ -22,66 +22,68 @@ struct NotesFilterBar: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            // Left: active filter title + count
+            // Left: active filter title + count — 17pt section-header typography
             HStack(spacing: 8) {
                 Text(activeFilter.displayName)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(DesignTokens.Typography.sectionColor)
+                    .lineLimit(1)
                 Text("\(counts[activeFilter, default: 0])")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(DesignTokens.Typography.itemColor)
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.55))
+                    .lineLimit(1)
+                    .layoutPriority(0) // count truncates first if width is tight
             }
+            .layoutPriority(1)
+            .animation(.easeInOut(duration: 0.08), value: activeFilter)
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 8)
 
-            // Right: filter icon + F badge
-            HStack(spacing: 6) {
-                filterIconButton
-                    .popover(isPresented: $isPopoverShown, arrowEdge: .top) {
-                        NotesFilterPopoverContent(
-                            activeFilter: $activeFilter,
-                            counts: counts,
-                            onPick: { picked in
-                                activeFilter = picked
-                                isPopoverShown = false
-                            }
-                        )
-                    }
-
-                FKeyBadge()
-                    .onTapGesture { isPopoverShown.toggle() }
-            }
+            // Right: combined pill (icon + "F"). Click opens popover. F key cycles (Task 3).
+            FilterPill(isActive: activeFilter != .all)
+                .onTapGesture { isPopoverShown.toggle() }
+                .popover(isPresented: $isPopoverShown, arrowEdge: .top) {
+                    NotesFilterPopoverContent(
+                        activeFilter: $activeFilter,
+                        counts: counts,
+                        onPick: { picked in
+                            activeFilter = picked
+                            isPopoverShown = false
+                        }
+                    )
+                }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        // No background — the bar reads as part of the column, not a separate UI element.
+        .padding(.vertical, 10) // bar height ≈ 44pt with 24pt content
+        .frame(minHeight: 44)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(DesignTokens.Icon.tintMuted.opacity(0.15))
+                .frame(height: 1)
+        }
         .onAppear { installKeyMonitor() }
         .onDisappear { removeKeyMonitor() }
     }
 
-    private var filterIconButton: some View {
-        HeaderIconButton(
-            icon: .system(activeFilter == .all
-                ? "line.3.horizontal.decrease.circle"
-                : "line.3.horizontal.decrease.circle.fill"),
-            iconColor: DesignTokens.Icon.tintMuted,
-            size: 26
-        ) {
-            isPopoverShown.toggle()
-        }
-    }
-
     private func installKeyMonitor() {
         // Idempotent — `.onAppear` can fire after a re-entry.
+        NSLog("[NotesFilterBar] installKeyMonitor called, keyMonitor=\(keyMonitor == nil ? "nil" : "set")")
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
-            guard self.shouldHandleFKey(event: event) else { return event }
+            NSLog("[NotesFilterBar] keyDown received: chars=\(event.charactersIgnoringModifiers ?? "nil") keyCode=\(event.keyCode) flags=\(event.modifierFlags.rawValue)")
+            guard self.shouldHandleFKey(event: event) else {
+                NSLog("[NotesFilterBar] shouldHandleFKey=false, passing event through")
+                return event
+            }
+            NSLog("[NotesFilterBar] shouldHandleFKey=true, toggling popover (was=\(self.isPopoverShown))")
             self.isPopoverShown.toggle()
             return nil   // swallow the keystroke
         }
+        NSLog("[NotesFilterBar] monitor installed: \(keyMonitor != nil)")
     }
 
     private func removeKeyMonitor() {
+        NSLog("[NotesFilterBar] removeKeyMonitor called, had monitor=\(keyMonitor != nil)")
         if let monitor = keyMonitor {
             NSEvent.removeMonitor(monitor)
             keyMonitor = nil
@@ -95,32 +97,28 @@ struct NotesFilterBar: View {
     /// `guard !isPopoverShown` clause here).
     private func shouldHandleFKey(event: NSEvent) -> Bool {
         let disallowed: NSEvent.ModifierFlags = [.command, .option, .control]
-        if !event.modifierFlags.intersection(disallowed).isEmpty { return false }
-
-        guard event.charactersIgnoringModifiers?.lowercased() == "f" else { return false }
-
-        if let responder = NSApp.keyWindow?.firstResponder, responder is NSText {
-            // `NSTextView` inherits from `NSText`, so this catches both SwiftUI
-            // TextField field editors and the new-note `NSTextView`.
+        let modifierIntersection = event.modifierFlags.intersection(disallowed)
+        if !modifierIntersection.isEmpty {
+            NSLog("[NotesFilterBar] reject: disallowed modifier present (rawValue=\(modifierIntersection.rawValue))")
             return false
         }
+
+        let charsLowered = event.charactersIgnoringModifiers?.lowercased() ?? ""
+        guard charsLowered == "f" else {
+            NSLog("[NotesFilterBar] reject: chars not 'f' (got=\(charsLowered.isEmpty ? "<empty>" : charsLowered))")
+            return false
+        }
+
+        let keyWindowDesc = NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "nil"
+        let responderDesc = NSApp.keyWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+        NSLog("[NotesFilterBar] keyWindow=\(keyWindowDesc) firstResponder=\(responderDesc)")
+
+        if let responder = NSApp.keyWindow?.firstResponder, responder is NSText {
+            NSLog("[NotesFilterBar] reject: firstResponder is NSText subclass")
+            return false
+        }
+        NSLog("[NotesFilterBar] accept: bare F press, no text input focused")
         return true
-    }
-}
-
-// MARK: - F key badge
-
-private struct FKeyBadge: View {
-    var body: some View {
-        Text("F")
-            .font(.system(size: 10, weight: .medium, design: .rounded))
-            .foregroundStyle(DesignTokens.Icon.tintMuted)
-            .frame(width: 16, height: 14)
-            .overlay(
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .stroke(DesignTokens.Icon.tintMuted.opacity(0.55), lineWidth: 1)
-            )
-            .contentShape(Rectangle())
     }
 }
 
@@ -195,5 +193,84 @@ private struct FilterRow: View {
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }
         .animation(PanelListRowHoverStyle.animation, value: isHovering)
+    }
+}
+
+// MARK: - Combined filter pill (icon + "F" letter)
+
+/// Rounded-rect chip containing the filter icon and the "F" key letter, side
+/// by side. Click opens the popover (wired by the parent); pressing F cycles
+/// the filter (wired by the parent's NSEvent monitor). Background tints when
+/// `isActive` is true so the bar reads as "filter applied" at a glance.
+///
+/// The parent uses `.onTapGesture` to open the popover. We attach a separate
+/// `simultaneousGesture(TapGesture())` here purely to drive the scale press
+/// feedback — without a `simultaneousGesture` the parent's tap would steal the
+/// event before this view can observe it. The pill never owns the popover
+/// state; it only renders.
+private struct FilterPill: View {
+    let isActive: Bool
+
+    @State private var isHovering = false
+    @State private var isPressed = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(foregroundColor)
+
+            Text("F")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundStyle(foregroundColor)
+                .padding(.horizontal, 2)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .frame(height: 22)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(backgroundFill)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(borderColor, lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .scaleEffect(isPressed ? 0.96 : 1.0)
+        .onHover { isHovering = $0 }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                // Tap feedback: scale down briefly then restore. Independent of
+                // the parent's tap handler that opens the popover.
+                withAnimation(.easeInOut(duration: 0.05)) { isPressed = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    withAnimation(.easeInOut(duration: 0.05)) { isPressed = false }
+                }
+            }
+        )
+        .animation(.easeInOut(duration: 0.12), value: isHovering)
+        .animation(.easeInOut(duration: 0.12), value: isActive)
+    }
+
+    private var foregroundColor: Color {
+        isActive ? DesignTokens.Icon.tintMuted.opacity(1.0)
+                 : DesignTokens.Icon.tintMuted.opacity(0.85)
+    }
+
+    private var backgroundFill: Color {
+        if isActive {
+            // System accent at low opacity — respects the user's macOS accent
+            // setting + light/dark mode automatically. No DesignTokens.AccentColor
+            // exists in this codebase, so we go through Color.accentColor here.
+            return Color.accentColor.opacity(0.18)
+        }
+        if isHovering { return Color.white.opacity(0.10) }
+        return Color.white.opacity(0.06)
+    }
+
+    private var borderColor: Color {
+        isActive ? Color.accentColor.opacity(0.35)
+                 : Color.white.opacity(0.10)
     }
 }
