@@ -39,4 +39,15 @@ enum NotesFilter: String, CaseIterable, Identifiable {
             return note.origin == .written
         }
     }
+
+    /// Next filter in the F-key cycle order: `.all → .meetings → .quickNotes → .manual → .all`.
+    /// Order is contractual — see `cycleAdvancesInFixedOrder()`.
+    func next() -> NotesFilter {
+        switch self {
+        case .all:        return .meetings
+        case .meetings:   return .quickNotes
+        case .quickNotes: return .manual
+        case .manual:     return .all
+        }
+    }
 }

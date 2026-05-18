@@ -72,6 +72,20 @@ struct NotesFilterTests {
         #expect(NotesFilter.quickNotes.rawValue == "quickNotes")
         #expect(NotesFilter.manual.rawValue     == "manual")
     }
+
+    @Test func cycleAdvancesInFixedOrder() {
+        // Cycle order is contractual — it determines what users see on each F press.
+        // Changing this breaks muscle memory for anyone who learned the order.
+        #expect(NotesFilter.all.next()        == .meetings)
+        #expect(NotesFilter.meetings.next()   == .quickNotes)
+        #expect(NotesFilter.quickNotes.next() == .manual)
+        #expect(NotesFilter.manual.next()     == .all)
+
+        // Four-step round trip lands back where it started.
+        var cursor = NotesFilter.all
+        for _ in 0..<4 { cursor = cursor.next() }
+        #expect(cursor == .all)
+    }
 }
 
 /// Round-trip tests for `NotesFilter` persistence shape — guards against
