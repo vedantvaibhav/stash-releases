@@ -90,6 +90,18 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// does for the duration limit.
     private var autoStoppedAtSizeLimit = false
 
+    /// Timestamp when isProcessing flipped true. Used by
+    /// `clearProcessingHonoringFloor` to enforce a minimum visible duration
+    /// for the spinner pill so it doesn't flash through invisibly when
+    /// Whisper resolves faster than the human eye can register the phase.
+    private var processingStartedAt: Date?
+
+    /// Minimum time the processing pill stays visible after entering the
+    /// processing phase. Whisper round-trips can be <100ms for trivial clips;
+    /// without a floor, the user perceives "record → completion" with no
+    /// processing phase, which feels jarring and hides system work.
+    private static let minProcessingVisibility: TimeInterval = 0.4
+
     // MARK: - Start
 
     func startRecording() {
@@ -347,6 +359,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         recorder?.stop()
         recorder = nil
         isRecording = false
+        processingStartedAt = Date()
         isProcessing = true
         audioLevel = 0
 
@@ -355,6 +368,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         guard let uuid = sessionUUID else {
             // Defensive — shouldn't happen.
             isProcessing = false
+            processingStartedAt = nil
             return
         }
         do {
@@ -366,6 +380,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             reportToSlack(error: "Failed to promote audio file: \(error)", durationSeconds: recordedDuration)
             showCompletion("Failed")
             isProcessing = false
+            processingStartedAt = nil
             return
         }
         let intent: PendingSessionMetadata.SessionIntent = (recordedDuration < 300) ? .shortPaste : .longNote
@@ -387,7 +402,12 @@ final class TranscriptionService: NSObject, ObservableObject {
         Task {
             await TranscriptionRetryQueue.shared.enqueue(meta)
         }
-        isProcessing = false
+        // isProcessing intentionally stays true here. The retry queue's first
+        // attempt (uploadSession with attemptCount == 0) clears it via
+        // clearProcessingHonoringFloor right before delivery / on failure,
+        // so the processing pill stays visible across the Whisper round-trip
+        // instead of flashing off the moment we enqueue. Floor enforces a
+        // minimum visible duration so fast Whisper responses still register.
     }
 
     // MARK: - LLM prompts
@@ -609,11 +629,18 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     @MainActor
     func uploadSession(metadata: PendingSessionMetadata) async throws -> Bool {
+        // Only the FIRST attempt drives the processing-pill phase. Background
+        // retries (attemptCount > 0) leave the pill alone — the retry-queue
+        // indicator in the notes filter bar is the failure UX once we've
+        // moved past the foreground attempt.
+        let isFirstAttempt = (metadata.attemptCount == 0)
+
         let audioURL = AudioPersistence.pendingAudioURL(sessionUUID: metadata.sessionUUID)
         let audioData: Data
         do {
             audioData = try Data(contentsOf: audioURL)
         } catch {
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
             // File missing — non-retryable. Don't keep retrying nothing.
             throw error
         }
@@ -624,6 +651,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         // below → queue retries on backoff. Single-shot: consumed on first use.
         if simulateNextUploadFailure {
             simulateNextUploadFailure = false
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
             throw URLError(.networkConnectionLost)
         }
         #endif
@@ -641,6 +669,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             #if DEBUG
             print("[Transcription] uploadSession transient URLError: \(urlError.code) — queueing retry")
             #endif
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
             return false
         } catch {
             // Anything that's not a URLError — auth failure, malformed response,
@@ -650,6 +679,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             // retryable vs persistent at the API-response level (e.g. by
             // throwing a custom `WhisperError.rateLimited`), extend this
             // catch chain to add a specific transient branch for those.
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
             throw error
         }
 
@@ -660,13 +690,42 @@ final class TranscriptionService: NSObject, ObservableObject {
         guard let text = sanitised else {
             // Filter rejected. Report and treat as success (don't keep audio).
             reportToSlack(error: "Hallucination filter rejected (duration \(metadata.durationSeconds)s)", durationSeconds: metadata.durationSeconds)
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
             showCompletion("No audio")
             return true
         }
 
+        // Clear processing BEFORE delivery so the pill transitions
+        // processing → completion in the user-visible order. The floor
+        // helper enforces a minimum visible spinner duration even if
+        // Whisper returned in <400ms; without it the spinner phase can
+        // be perceptually invisible on fast paths.
+        if isFirstAttempt { await clearProcessingHonoringFloor() }
         // Raw-first delivery — same actor, just call through.
         await deliverTranscript(text: text, metadata: metadata)
         return true
+    }
+
+    /// Flips `isProcessing` to false, but not before the pill has been visible
+    /// in the processing phase for at least `minProcessingVisibility` seconds
+    /// from `processingStartedAt`. Idempotent and safe to call when
+    /// `isProcessing` is already false (returns immediately).
+    @MainActor
+    private func clearProcessingHonoringFloor() async {
+        guard isProcessing else {
+            processingStartedAt = nil
+            return
+        }
+        if let started = processingStartedAt {
+            let elapsed = Date().timeIntervalSince(started)
+            let remaining = Self.minProcessingVisibility - elapsed
+            if remaining > 0 {
+                let nanos = UInt64(remaining * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanos)
+            }
+        }
+        isProcessing = false
+        processingStartedAt = nil
     }
 
     /// Main-actor delivery from a queued session. Calls the existing
