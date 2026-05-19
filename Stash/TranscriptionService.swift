@@ -515,6 +515,17 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// and the call path (Whisper API → sanitiser → deliver helpers) all need that
     /// isolation. The queue invokes this via `await` from its actor context, which
     /// hops to MainActor automatically.
+    #if DEBUG
+    /// Single-shot flag set by the DEBUG menu's "simulate network failure on
+    /// next upload" item. Consumed on first `uploadSession` invocation, which
+    /// throws a `URLError` to exercise the retry-queue's transient-failure path.
+    private var simulateNextUploadFailure = false
+
+    func debugSimulateNextUploadFailure() {
+        simulateNextUploadFailure = true
+    }
+    #endif
+
     @MainActor
     func uploadSession(metadata: PendingSessionMetadata) async throws -> Bool {
         let audioURL = AudioPersistence.pendingAudioURL(sessionUUID: metadata.sessionUUID)
@@ -525,6 +536,16 @@ final class TranscriptionService: NSObject, ObservableObject {
             // File missing — non-retryable. Don't keep retrying nothing.
             throw error
         }
+
+        #if DEBUG
+        // DEBUG hook: when the "simulate network failure" menu item is fired,
+        // the next upload throws a URLError → routes through the URLError catch
+        // below → queue retries on backoff. Single-shot: consumed on first use.
+        if simulateNextUploadFailure {
+            simulateNextUploadFailure = false
+            throw URLError(.networkConnectionLost)
+        }
+        #endif
 
         let whisperResponse: WhisperResponse
         do {

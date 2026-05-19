@@ -421,7 +421,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Test pill: 90-min hard stop",  #selector(debugTestPill90MinHardStop)),
             ("Test pill: 20-MB warning",     #selector(debugTestPill20MBWarning)),
             ("Test pill: 24-MB hard stop",   #selector(debugTestPill24MBHardStop)),
-            ("Test pill: state stacking",    #selector(debugTestPillStacking))
+            ("Test pill: state stacking",    #selector(debugTestPillStacking)),
+            ("Test: simulate network failure on next upload", #selector(debugSimulateNextUploadFailure)),
+            ("Test: drain retry queue now",  #selector(debugDrainRetryQueue)),
+            ("Test: list pending sessions",  #selector(debugListPendingSessions)),
         ]
     }
 
@@ -445,6 +448,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         debugFirePill("First")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.debugFirePill("Second") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.debugFirePill("Third") }
+    }
+
+    @objc private func debugSimulateNextUploadFailure() {
+        panelController?.transcriptionService.debugSimulateNextUploadFailure()
+        debugFirePill("Next upload will fail", hold: DesignTokens.Pill.completionWarningHold)
+    }
+
+    @objc private func debugDrainRetryQueue() {
+        Task {
+            await TranscriptionRetryQueue.shared.drainNow()
+        }
+    }
+
+    @objc private func debugListPendingSessions() {
+        Task {
+            let sessions = await TranscriptionRetryQueue.shared.debugListPending()
+            print("[Debug] Pending sessions: \(sessions.count)")
+            for s in sessions {
+                print("  - \(s.sessionUUID) | duration \(s.durationSeconds)s | attempts \(s.attemptCount) | error: \(s.lastError ?? "none") | note: \(s.createdNoteID ?? "nil")")
+            }
+        }
     }
     #endif
 }
