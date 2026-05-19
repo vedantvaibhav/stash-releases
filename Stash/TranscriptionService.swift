@@ -1286,6 +1286,15 @@ final class TranscriptionService: NSObject, ObservableObject {
         )
         // User sees "Note saved" right away. Cleanup will refine the same note silently.
         showCompletion("Note saved")
+        // Notify PanelController so it can auto-open the editor for the new
+        // meeting note (matches the pre-rewrite UX). Short path intentionally
+        // does NOT fire this — short-clip primary delivery is pasteboard +
+        // AutoPaste; yanking focus back to Stash to open a note would be
+        // disruptive. Long path is the meeting-notes mode where auto-open
+        // is the expected behavior.
+        if let rawNoteId {
+            onNoteCreated?(rawNoteId)
+        }
 
         // Phase 2 — async cleanup + overview, update note in place on success.
         // [weak self] only — see deliverTranscriptShort's note about `notesStorage`
