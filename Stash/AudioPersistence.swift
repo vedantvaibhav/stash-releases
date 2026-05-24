@@ -9,11 +9,13 @@ import Foundation
 ///     ├── pending/<sessionUUID>/
 ///     │   ├── audio.m4a                          # finalized, awaiting upload
 ///     │   └── meta.json                          # session metadata
-///     └── processed/<sessionUUID>/               # archived after success
-///         └── audio.m4a
+///     ├── processed/<sessionUUID>/               # archived after success
+///     │   └── audio.m4a
+///     └── quarantine/<sessionUUID>/              # corrupt meta.json moved aside
+///         └── audio.m4a                          # audio preserved for forensic recovery
 ///
-/// All transitions between `active/`, `pending/`, `processed/` use
-/// `FileManager.moveItem(at:to:)` which is atomic on the same volume.
+/// All transitions between `active/`, `pending/`, `processed/`, `quarantine/`
+/// use `FileManager.moveItem(at:to:)` which is atomic on the same volume.
 /// Never copy+delete — partial writes during a crash would orphan audio.
 enum AudioPersistence {
 
@@ -27,11 +29,15 @@ enum AudioPersistence {
     static var activeDirectory: URL  { baseDirectory.appendingPathComponent("active",    isDirectory: true) }
     static var pendingDirectory: URL { baseDirectory.appendingPathComponent("pending",   isDirectory: true) }
     static var processedDirectory: URL { baseDirectory.appendingPathComponent("processed", isDirectory: true) }
+    /// Quarantine holds sessions whose `meta.json` failed to decode. The
+    /// audio file is preserved so a human can recover it; the queue stops
+    /// trying to load these on bootstrap.
+    static var quarantineDirectory: URL { baseDirectory.appendingPathComponent("quarantine", isDirectory: true) }
 
-    /// Create all three subdirectories if missing. Safe to call multiple times.
+    /// Create all four subdirectories if missing. Safe to call multiple times.
     static func ensureDirectories() throws {
         let fm = FileManager.default
-        for dir in [activeDirectory, pendingDirectory, processedDirectory] {
+        for dir in [activeDirectory, pendingDirectory, processedDirectory, quarantineDirectory] {
             if !fm.fileExists(atPath: dir.path) {
                 try fm.createDirectory(at: dir, withIntermediateDirectories: true)
             }
@@ -88,6 +94,11 @@ enum AudioPersistence {
 
     /// List all pending session UUIDs by scanning the disk. Sorted by `startedAt`
     /// (ascending) so the queue drains oldest-first.
+    ///
+    /// Sessions whose `meta.json` cannot be read or decoded are moved to
+    /// `quarantine/` (audio preserved) instead of silently skipped — the prior
+    /// `try?`-swallow path lost audio with no record. Quarantine events fire a
+    /// Slack notification via the same webhook the transcription pipeline uses.
     static func listPendingSessions() throws -> [PendingSessionMetadata] {
         let fm = FileManager.default
         guard fm.fileExists(atPath: pendingDirectory.path) else { return [] }
@@ -96,12 +107,102 @@ enum AudioPersistence {
         for entry in entries {
             let metaURL = entry.appendingPathComponent("meta.json")
             guard fm.fileExists(atPath: metaURL.path) else { continue }
-            guard let data = try? Data(contentsOf: metaURL) else { continue }
-            guard let meta = try? JSONDecoder.iso8601.decode(PendingSessionMetadata.self, from: data) else { continue }
-            sessions.append(meta)
+            guard let data = try? Data(contentsOf: metaURL) else {
+                quarantineSession(at: entry, reason: "meta.json unreadable")
+                continue
+            }
+            do {
+                let meta = try JSONDecoder.iso8601.decode(PendingSessionMetadata.self, from: data)
+                sessions.append(meta)
+            } catch {
+                quarantineSession(at: entry, reason: "meta.json decode failed: \(error)")
+            }
         }
         sessions.sort { $0.startedAt < $1.startedAt }
         return sessions
+    }
+
+    /// List quarantined session folders. Hook for a future "recover audio"
+    /// admin UI — the queue itself never touches these.
+    static func listQuarantinedSessions() -> [URL] {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: quarantineDirectory.path) else { return [] }
+        let entries = (try? fm.contentsOfDirectory(at: quarantineDirectory, includingPropertiesForKeys: nil)) ?? []
+        return entries.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Read-modify-write of `meta.json` for a pending session. Throws if the
+    /// session's meta is missing or undecodable — callers should treat a
+    /// throw as "in-memory state is still authoritative, disk drifted".
+    static func updateMeta(sessionUUID: UUID, mutate: (inout PendingSessionMetadata) -> Void) throws {
+        let url = pendingMetaURL(sessionUUID: sessionUUID)
+        let data = try Data(contentsOf: url)
+        var meta = try JSONDecoder.iso8601.decode(PendingSessionMetadata.self, from: data)
+        mutate(&meta)
+        try meta.write()
+    }
+
+    /// Move a broken pending session into `quarantine/`. Audio is preserved
+    /// so a human can recover it; the queue stops trying to bootstrap it.
+    /// If a same-named entry already exists in quarantine (rare), the new
+    /// one gets a timestamp suffix so neither is overwritten.
+    private static func quarantineSession(at folderURL: URL, reason: String) {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: quarantineDirectory.path) {
+            try? fm.createDirectory(at: quarantineDirectory, withIntermediateDirectories: true)
+        }
+        let primaryTarget = quarantineDirectory.appendingPathComponent(folderURL.lastPathComponent, isDirectory: true)
+        let target: URL
+        if fm.fileExists(atPath: primaryTarget.path) {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            target = quarantineDirectory.appendingPathComponent("\(folderURL.lastPathComponent)-\(stamp)", isDirectory: true)
+        } else {
+            target = primaryTarget
+        }
+        do {
+            try fm.moveItem(at: folderURL, to: target)
+            #if DEBUG
+            print("[AudioPersistence] quarantined \(folderURL.lastPathComponent): \(reason)")
+            #endif
+            reportQuarantineToSlack(sessionFolder: folderURL.lastPathComponent, reason: reason)
+        } catch {
+            #if DEBUG
+            print("[AudioPersistence] FAILED to quarantine \(folderURL.lastPathComponent): \(error)")
+            #endif
+        }
+    }
+
+    /// Best-effort Slack notification for a quarantine event. Mirrors the
+    /// payload shape `TranscriptionService.reportToSlack` uses so the same
+    /// channel receives all transcription-pipeline anomalies. Errors and
+    /// missing webhook URLs are swallowed — disk-write failure of meta.json
+    /// is rare and the quarantine itself is the primary signal.
+    private static func reportQuarantineToSlack(sessionFolder: String, reason: String) {
+        guard !APIKeys.slackErrorWebhookURL.isEmpty,
+              let url = URL(string: APIKeys.slackErrorWebhookURL) else { return }
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let osString = "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+        let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        let timestamp = formatter.string(from: Date())
+        let text = """
+        🟠 *Audio session quarantined*
+        *Session folder:* \(sessionFolder)
+        *Reason:* \(reason)
+        *App version:* \(appVersion) (\(buildNumber))
+        *macOS:* \(osString)
+        *Time:* \(timestamp)
+        """
+        let body: [String: Any] = ["text": text]
+        guard let data = try? JSONSerialization.data(withJSONObject: body) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        URLSession.shared.dataTask(with: request).resume()
     }
 }
 

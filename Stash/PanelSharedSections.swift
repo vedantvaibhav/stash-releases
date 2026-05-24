@@ -585,8 +585,11 @@ struct SharedNotesColumn: View {
                     counts: filterCounts,
                     pendingCount: pendingCount,
                     onRetryAllTap: {
+                        // userRequestedDrain (vs drainNow) so exhausted sessions
+                        // — attemptCount past the auto-retry budget — get their
+                        // counter reset and become eligible again.
                         Task {
-                            await TranscriptionRetryQueue.shared.drainNow()
+                            await TranscriptionRetryQueue.shared.userRequestedDrain()
                         }
                     }
                 )

@@ -118,7 +118,7 @@ actor TranscriptionRetryQueue {
     }
 
     /// Drain all pending sessions immediately (no backoff). Called on
-    /// reachability satisfied events and on manual user retry.
+    /// reachability satisfied events.
     func drainNow() {
         for uuid in pending.keys {
             // Cancel any pending retry timer; we're going now.
@@ -126,6 +126,33 @@ actor TranscriptionRetryQueue {
             retryTimers.removeValue(forKey: uuid)
             scheduleAttempt(sessionUUID: uuid, delay: 0)
         }
+    }
+
+    /// User-driven retry (tapped the "N waiting" pill). Resets every pending
+    /// session's `attemptCount` to 0 — including sessions that have exhausted
+    /// the auto-retry budget (`attemptCount >= maxAttempts`), which `drainNow`
+    /// alone wouldn't re-attempt because their retry timer was removed at
+    /// exhaustion. After resetting in-memory + persisting via
+    /// `AudioPersistence.updateMeta`, falls through to `drainNow`.
+    func userRequestedDrain() {
+        for uuid in pending.keys {
+            guard var meta = pending[uuid] else { continue }
+            meta.attemptCount = 0
+            meta.lastError = nil
+            pending[uuid] = meta
+            do {
+                try AudioPersistence.updateMeta(sessionUUID: uuid) { stored in
+                    stored.attemptCount = 0
+                    stored.lastError = nil
+                }
+            } catch {
+                #if DEBUG
+                print("[RetryQueue] userRequestedDrain: failed to persist reset for \(uuid): \(error)")
+                #endif
+            }
+        }
+        notifyObservers()
+        drainNow()
     }
 
     /// Set the upload handler. Called once at app launch from StashApp.
