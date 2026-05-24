@@ -136,13 +136,10 @@ struct TranscriptionRetryQueueTests {
         #expect(afterDrain > initialCalls, "drainNow should fire fresh attempts for all pending sessions")
     }
 
-    @Test func setUploadHandlerFiresDrainOnNilToNonNilTransition() async throws {
+    @Test func setUploadHandlerDoesNotAutoDrain() async throws {
         let (queue, persistence, root) = try makeQueue()
         defer { cleanup(root) }
         let meta = try seed(persistence)
-        // Bypass enqueue's scheduleAttempt by writing directly to disk; then
-        // bootstrap to populate the queue's in-memory state without firing
-        // the initial upload (handler is still nil here).
         try meta.write(in: persistence)
         await queue.bootstrap()
 
@@ -153,15 +150,21 @@ struct TranscriptionRetryQueueTests {
         }
         await drain()
 
-        #expect(await counter.value >= 1,
-                "setUploadHandler on nil→non-nil should auto-drain so the orphan loaded by bootstrap gets attempted")
+        // New contract: setUploadHandler MUST NOT trigger an upload attempt
+        // by itself. The launch path is responsible for calling drainNow
+        // explicitly. An earlier auto-drain caused a double-drain race
+        // with the launch sequence's explicit drainNow — see the commit
+        // that removed it for the URLError.cancelled-bumps-attemptCount
+        // analysis.
+        #expect(await counter.value == 0,
+                "setUploadHandler must not auto-drain; only explicit drainNow / userRequestedDrain do")
     }
 
-    @Test func userRequestedDrainResetsAttemptCountForExhaustedSessions() async throws {
+    @Test func drainNowSkipsExhaustedSessions() async throws {
         let (queue, persistence, root) = try makeQueue()
         defer { cleanup(root) }
-        // Seed an exhausted session directly on disk
-        let meta = try seed(persistence, attemptCount: 5)
+        // Seed an exhausted session — attemptCount == maxAttempts (5).
+        _ = try seed(persistence, attemptCount: 5)
         await queue.bootstrap()
 
         let counter = AttemptCounter()
@@ -169,17 +172,39 @@ struct TranscriptionRetryQueueTests {
             await counter.bump()
             return false
         }
+        await queue.drainNow()
         await drain()
-        // setUploadHandler's auto-drain might attempt — but at attemptCount=5
-        // (>= maxAttempts), the queue's scheduling logic still attempts once
-        // and then exhausts. To isolate: snapshot, reset counter, then user-retry.
+
+        // drainNow must NOT attempt exhausted sessions — otherwise every
+        // launch (and every reachability satisfied event) bumps their
+        // attemptCount further past the cap. Only userRequestedDrain
+        // (which resets attemptCount first) is allowed to re-attempt them.
+        #expect(await counter.value == 0,
+                "drainNow should skip sessions where attemptCount >= maxAttempts")
+    }
+
+    @Test func userRequestedDrainResetsAttemptCountForExhaustedSessions() async throws {
+        let (queue, persistence, root) = try makeQueue()
+        defer { cleanup(root) }
+        _ = try seed(persistence, attemptCount: 5)
+        await queue.bootstrap()
+
+        let counter = AttemptCounter()
+        await queue.setUploadHandler { _ in
+            await counter.bump()
+            return false
+        }
+        // setUploadHandler does NOT auto-drain (new contract). drainNow
+        // alone would skip this exhausted session. Only userRequestedDrain
+        // (which resets attemptCount to 0 first) can re-attempt.
         await queue.userRequestedDrain()
         await drain()
 
         let snapshot = await queue.pendingSnapshot()
-        #expect(snapshot.first?.attemptCount == 1 || snapshot.first?.attemptCount == 0,
-                "userRequestedDrain should reset attemptCount, then the immediate retry bumps it to 1 (or 0 if the handler hasn't fired yet)")
-        _ = meta
+        #expect(snapshot.first?.attemptCount == 1,
+                "userRequestedDrain resets attemptCount to 0, then the immediate retry's transient failure bumps it to 1")
+        #expect(await counter.value >= 1,
+                "userRequestedDrain must trigger at least one upload attempt against the now-reset session")
     }
 
     @Test func bootstrapRepopulatesFromDisk() async throws {

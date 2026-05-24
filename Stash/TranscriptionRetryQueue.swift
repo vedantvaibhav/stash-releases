@@ -128,9 +128,17 @@ actor TranscriptionRetryQueue {
     }
 
     /// Drain all pending sessions immediately (no backoff). Called on
-    /// reachability satisfied events.
+    /// launch and on reachability satisfied events.
+    ///
+    /// Skips sessions where `attemptCount >= maxAttempts` — those have
+    /// exhausted the auto-retry budget and should only be re-attempted via
+    /// `userRequestedDrain`, which resets `attemptCount` first. Without this
+    /// guard, every launch / reachability event pings dead sessions, wastes
+    /// Whisper API calls, and (worse) bumps their `attemptCount` further
+    /// past the cap via the `bumpAttempt` write that happens before the
+    /// exhaustion check.
     func drainNow() {
-        for uuid in pending.keys {
+        for (uuid, meta) in pending where meta.attemptCount < maxAttempts {
             // Cancel any pending retry timer; we're going now.
             retryTimers[uuid]?.cancel()
             retryTimers.removeValue(forKey: uuid)
@@ -165,20 +173,17 @@ actor TranscriptionRetryQueue {
         drainNow()
     }
 
-    /// Set the upload handler. Called once at app launch from StashApp.
-    /// On the nil → non-nil transition, automatically fires `drainNow()` so
-    /// any sessions enqueued before the handler was wired (e.g., a hotkey
-    /// press in the first ms of launch, or an orphan loaded by `bootstrap`)
-    /// get picked up immediately instead of waiting for the next reachability
-    /// event. Subsequent calls (handler replaced with another non-nil value)
-    /// don't re-drain — the queue isn't expecting handler swaps in steady
-    /// state.
+    /// Set the upload handler. Called once at app launch from StashApp,
+    /// which is also responsible for invoking `drainNow()` explicitly
+    /// after wiring the handler. The queue does NOT auto-drain here — an
+    /// earlier auto-drain caused a double-drain race with the launch path's
+    /// explicit `drainNow`: `scheduleAttempt`'s `retryTimers[uuid]?.cancel()`
+    /// fires `URLError.cancelled` on the in-flight `URLSession.data(for:)`,
+    /// which `uploadSession` catches as transient and `bumpAttempt`s. Result:
+    /// every orphan session's `attemptCount` bumped on every launch even
+    /// when no real upload was attempted.
     func setUploadHandler(_ handler: @escaping (PendingSessionMetadata) async throws -> Bool) {
-        let wasNil = (uploadHandler == nil)
         uploadHandler = handler
-        if wasNil {
-            drainNow()
-        }
     }
 
     private func scheduleAttempt(sessionUUID: UUID, delay: TimeInterval) {
