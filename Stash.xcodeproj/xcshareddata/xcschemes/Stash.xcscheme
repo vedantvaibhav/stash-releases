@@ -36,8 +36,8 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "FCEA9D432FC3A39B00CDD41C"
-               BuildableName = "StashUITestsb.xctest"
-               BlueprintName = "StashUITestsb"
+               BuildableName = "StashTests.xctest"
+               BlueprintName = "StashTests"
                ReferencedContainer = "container:Stash.xcodeproj">
             </BuildableReference>
          </TestableReference>

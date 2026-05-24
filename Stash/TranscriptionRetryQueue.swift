@@ -16,6 +16,16 @@ import Foundation
 actor TranscriptionRetryQueue {
     static let shared = TranscriptionRetryQueue()
 
+    /// `persistence == .shared` (the default) is the production-wired
+    /// Application Support location. Tests construct their own queue with
+    /// an `AudioPersistence(baseURL:)` rooted in a temp directory so disk
+    /// writes don't escape into the user's real Stash data.
+    private let persistence: AudioPersistence
+
+    init(persistence: AudioPersistence = .shared) {
+        self.persistence = persistence
+    }
+
     /// Set at app launch. Returns `true` if the upload succeeded, `false`
     /// for transient errors (queue schedules retry). Throws for persistent
     /// errors (queue gives up after `maxAttempts`).
@@ -75,8 +85,8 @@ actor TranscriptionRetryQueue {
     /// Schedules retries for everything found.
     func bootstrap() async {
         do {
-            try AudioPersistence.ensureDirectories()
-            let onDisk = try AudioPersistence.listPendingSessions()
+            try persistence.ensureDirectories()
+            let onDisk = try persistence.listPendingSessions()
             for meta in onDisk {
                 pending[meta.sessionUUID] = meta
             }
@@ -96,7 +106,7 @@ actor TranscriptionRetryQueue {
     func enqueue(_ metadata: PendingSessionMetadata) {
         pending[metadata.sessionUUID] = metadata
         do {
-            try metadata.write()
+            try metadata.write(in: persistence)
         } catch {
             #if DEBUG
             print("[RetryQueue] failed to write meta.json: \(error)")
@@ -113,7 +123,7 @@ actor TranscriptionRetryQueue {
         guard var meta = pending[sessionUUID] else { return }
         meta.createdNoteID = noteID
         pending[sessionUUID] = meta
-        try? meta.write()
+        try? meta.write(in: persistence)
         notifyObservers()
     }
 
@@ -141,7 +151,7 @@ actor TranscriptionRetryQueue {
             meta.lastError = nil
             pending[uuid] = meta
             do {
-                try AudioPersistence.updateMeta(sessionUUID: uuid) { stored in
+                try persistence.updateMeta(sessionUUID: uuid) { stored in
                     stored.attemptCount = 0
                     stored.lastError = nil
                 }
@@ -156,8 +166,19 @@ actor TranscriptionRetryQueue {
     }
 
     /// Set the upload handler. Called once at app launch from StashApp.
+    /// On the nil → non-nil transition, automatically fires `drainNow()` so
+    /// any sessions enqueued before the handler was wired (e.g., a hotkey
+    /// press in the first ms of launch, or an orphan loaded by `bootstrap`)
+    /// get picked up immediately instead of waiting for the next reachability
+    /// event. Subsequent calls (handler replaced with another non-nil value)
+    /// don't re-drain — the queue isn't expecting handler swaps in steady
+    /// state.
     func setUploadHandler(_ handler: @escaping (PendingSessionMetadata) async throws -> Bool) {
-        self.uploadHandler = handler
+        let wasNil = (uploadHandler == nil)
+        uploadHandler = handler
+        if wasNil {
+            drainNow()
+        }
     }
 
     private func scheduleAttempt(sessionUUID: UUID, delay: TimeInterval) {
@@ -191,7 +212,7 @@ actor TranscriptionRetryQueue {
                 // launch (the upload already succeeded — re-running would
                 // produce a duplicate note).
                 do {
-                    try AudioPersistence.archivePending(sessionUUID: sessionUUID)
+                    try persistence.archivePending(sessionUUID: sessionUUID)
                     pending.removeValue(forKey: sessionUUID)
                     retryTimers.removeValue(forKey: sessionUUID)
                     notifyObservers()
@@ -215,7 +236,7 @@ actor TranscriptionRetryQueue {
         meta.attemptCount += 1
         meta.lastError = error.map { String(describing: $0) } ?? "transient"
         pending[sessionUUID] = meta
-        try? meta.write()
+        try? meta.write(in: persistence)
         notifyObservers()
         guard meta.attemptCount < maxAttempts else {
             // Exhausted auto-retries. Stays in pending for manual retry.

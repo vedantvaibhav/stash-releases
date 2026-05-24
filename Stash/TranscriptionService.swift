@@ -57,6 +57,12 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Set after auth so Slack error reports include the user.
     var userEmail: String?
 
+    /// Test seam: when non-nil, all LLM cleanup calls route through this
+    /// closure instead of `callChat(...)`. Production code leaves this nil.
+    /// Signature matches the four arguments every cleanup callsite passes:
+    /// system prompt, user message, max tokens, model identifier.
+    var chatFunction: ((String, String, Int, String) async throws -> String)?
+
     // — Private
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
@@ -138,7 +144,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         self.sessionUUID = uuid
         self.recordingStartedAt = Date()
         do {
-            try AudioPersistence.ensureDirectories()
+            try AudioPersistence.shared.ensureDirectories()
         } catch {
             // Disk-prep failure — bail before recording starts. Surface to the
             // user via the standard pill failure path; this is rare (filesystem
@@ -148,7 +154,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             isRecording = false
             return
         }
-        let activeURL = AudioPersistence.activeAudioURL(sessionUUID: uuid)
+        let activeURL = AudioPersistence.shared.activeAudioURL(sessionUUID: uuid)
         recordingURL = activeURL
         // Delete any prior file with the same uuid (defensive — shouldn't exist).
         if FileManager.default.fileExists(atPath: activeURL.path) {
@@ -358,7 +364,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             return
         }
         do {
-            try AudioPersistence.promoteActiveToPending(sessionUUID: uuid)
+            try AudioPersistence.shared.promoteActiveToPending(sessionUUID: uuid)
         } catch {
             #if DEBUG
             print("[Transcription] failed to promote active → pending: \(error)")
@@ -621,7 +627,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         // moved past the foreground attempt.
         let isFirstAttempt = (metadata.attemptCount == 0)
 
-        let audioURL = AudioPersistence.pendingAudioURL(sessionUUID: metadata.sessionUUID)
+        let audioURL = AudioPersistence.shared.pendingAudioURL(sessionUUID: metadata.sessionUUID)
         let audioData: Data
         do {
             audioData = try Data(contentsOf: audioURL)
@@ -1259,6 +1265,19 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - Generic chat call
 
+    /// Cleanup-path chat call. Routes through `chatFunction` if a test
+    /// injected one; otherwise hits the real `callChat`. Every cleanup
+    /// callsite passes non-nil system prompt and model, so this wrapper
+    /// uses non-optional types to match the test seam closure signature.
+    /// Internal (not private) so `@testable import` can verify the
+    /// injection seam without going through the full delivery pipeline.
+    func runChat(systemPrompt: String, userMessage: String, maxTokens: Int, model: String) async throws -> String {
+        if let chatFunction {
+            return try await chatFunction(systemPrompt, userMessage, maxTokens, model)
+        }
+        return try await callChat(systemPrompt: systemPrompt, userMessage: userMessage, maxTokens: maxTokens, model: model)
+    }
+
     private func callChat(systemPrompt: String?, userMessage: String, maxTokens: Int, model: String? = nil) async throws -> String {
         guard let url = URL(string: chatURL) else {
             throw NSError(domain: "Chat", code: -1,
@@ -1330,7 +1349,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         Task.detached { [weak self] in
             guard let self else { return }
             do {
-                let cleaned = try await self.callChat(
+                let cleaned = try await self.runChat(
                     systemPrompt: Self.promptShortClean,
                     userMessage: text,
                     maxTokens: 1024,
@@ -1389,13 +1408,13 @@ final class TranscriptionService: NSObject, ObservableObject {
         // being a weak var; reach through `self?.notesStorage` inside the hop.
         Task.detached { [weak self] in
             guard let self else { return }
-            async let cleanedTask: String = self.callChat(
+            async let cleanedTask: String = self.runChat(
                 systemPrompt: Self.promptLongTranscript,
                 userMessage: text,
                 maxTokens: 4096,
                 model: APIConstants.chatModel
             )
-            async let overviewTask: String = self.callChat(
+            async let overviewTask: String = self.runChat(
                 systemPrompt: Self.promptLongOverview,
                 userMessage: text,
                 maxTokens: 1024,

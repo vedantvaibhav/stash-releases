@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import Stash
 
 /// Unit tests for `TranscriptionService.sanitiseWhisperOutput(_:)`.
@@ -182,5 +183,15 @@ struct HallucinationFilterTests {
         let raw = "thanks for watching"
         let cleaned = svc.testSanitiseWhisperOutput(raw, durationSeconds: 7)
         #expect(cleaned == nil)
+    }
+
+    @Test func zeroDurationRoutesThroughShortPath() {
+        let svc = service()
+        // durationSeconds == 0 (the legacy default value) must route through
+        // the < 8 short-path filter so callers that haven't populated
+        // duration yet still get hallucination protection.
+        let raw = "thanks for watching"
+        let cleaned = svc.testSanitiseWhisperOutput(raw, durationSeconds: 0)
+        #expect(cleaned == nil, "duration 0 must route through < 8 branch and reject the same hallucinations")
     }
 }

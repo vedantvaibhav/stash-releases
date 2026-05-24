@@ -17,25 +17,44 @@ import Foundation
 /// All transitions between `active/`, `pending/`, `processed/`, `quarantine/`
 /// use `FileManager.moveItem(at:to:)` which is atomic on the same volume.
 /// Never copy+delete — partial writes during a crash would orphan audio.
-enum AudioPersistence {
+///
+/// `AudioPersistence` is a `struct` (not an `enum`) so tests can construct
+/// their own instance with `init(baseURL:)` rooted in a temp directory and
+/// exercise the disk pipeline in isolation. Production callers use
+/// `AudioPersistence.shared`, which resolves to `Application Support/Stash/Transcription`.
+struct AudioPersistence {
 
-    static let baseDirectory: URL = {
-        let fm = FileManager.default
-        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        return support.appendingPathComponent("Stash/Transcription", isDirectory: true)
-    }()
+    /// Process-wide singleton used by all production code paths. Tests
+    /// construct their own instance via `init(baseURL:)` instead.
+    static let shared = AudioPersistence()
 
-    static var activeDirectory: URL  { baseDirectory.appendingPathComponent("active",    isDirectory: true) }
-    static var pendingDirectory: URL { baseDirectory.appendingPathComponent("pending",   isDirectory: true) }
-    static var processedDirectory: URL { baseDirectory.appendingPathComponent("processed", isDirectory: true) }
+    let baseDirectory: URL
+
+    /// `baseURL == nil` (the default) resolves the same Application Support
+    /// path that ships in production. Tests pass an `URL` rooted in a temp
+    /// directory so they don't stomp on the user's real `Stash/Transcription`
+    /// tree.
+    init(baseURL: URL? = nil) {
+        if let baseURL {
+            self.baseDirectory = baseURL
+        } else {
+            let fm = FileManager.default
+            let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+            self.baseDirectory = support.appendingPathComponent("Stash/Transcription", isDirectory: true)
+        }
+    }
+
+    var activeDirectory: URL  { baseDirectory.appendingPathComponent("active",    isDirectory: true) }
+    var pendingDirectory: URL { baseDirectory.appendingPathComponent("pending",   isDirectory: true) }
+    var processedDirectory: URL { baseDirectory.appendingPathComponent("processed", isDirectory: true) }
     /// Quarantine holds sessions whose `meta.json` failed to decode. The
     /// audio file is preserved so a human can recover it; the queue stops
     /// trying to load these on bootstrap.
-    static var quarantineDirectory: URL { baseDirectory.appendingPathComponent("quarantine", isDirectory: true) }
+    var quarantineDirectory: URL { baseDirectory.appendingPathComponent("quarantine", isDirectory: true) }
 
     /// Create all four subdirectories if missing. Safe to call multiple times.
-    static func ensureDirectories() throws {
+    func ensureDirectories() throws {
         let fm = FileManager.default
         for dir in [activeDirectory, pendingDirectory, processedDirectory, quarantineDirectory] {
             if !fm.fileExists(atPath: dir.path) {
@@ -44,29 +63,29 @@ enum AudioPersistence {
         }
     }
 
-    static func activeAudioURL(sessionUUID: UUID) -> URL {
+    func activeAudioURL(sessionUUID: UUID) -> URL {
         activeDirectory.appendingPathComponent("\(sessionUUID.uuidString).m4a")
     }
 
-    static func pendingSessionDirectory(sessionUUID: UUID) -> URL {
+    func pendingSessionDirectory(sessionUUID: UUID) -> URL {
         pendingDirectory.appendingPathComponent(sessionUUID.uuidString, isDirectory: true)
     }
 
-    static func pendingAudioURL(sessionUUID: UUID) -> URL {
+    func pendingAudioURL(sessionUUID: UUID) -> URL {
         pendingSessionDirectory(sessionUUID: sessionUUID).appendingPathComponent("audio.m4a")
     }
 
-    static func pendingMetaURL(sessionUUID: UUID) -> URL {
+    func pendingMetaURL(sessionUUID: UUID) -> URL {
         pendingSessionDirectory(sessionUUID: sessionUUID).appendingPathComponent("meta.json")
     }
 
-    static func processedSessionDirectory(sessionUUID: UUID) -> URL {
+    func processedSessionDirectory(sessionUUID: UUID) -> URL {
         processedDirectory.appendingPathComponent(sessionUUID.uuidString, isDirectory: true)
     }
 
     /// Move `active/<uuid>.m4a` → `pending/<uuid>/audio.m4a`. Creates the
     /// pending session directory. Atomic on same volume.
-    static func promoteActiveToPending(sessionUUID: UUID) throws {
+    func promoteActiveToPending(sessionUUID: UUID) throws {
         let fm = FileManager.default
         let activeURL = activeAudioURL(sessionUUID: sessionUUID)
         let pendingDir = pendingSessionDirectory(sessionUUID: sessionUUID)
@@ -80,7 +99,7 @@ enum AudioPersistence {
     /// Move `pending/<uuid>/` → `processed/<uuid>/`. Atomic on same volume.
     /// Caller is responsible for deciding when to archive (typically after
     /// the transcript has been saved to a note successfully).
-    static func archivePending(sessionUUID: UUID) throws {
+    func archivePending(sessionUUID: UUID) throws {
         let fm = FileManager.default
         let pendingDir = pendingSessionDirectory(sessionUUID: sessionUUID)
         let processedDir = processedSessionDirectory(sessionUUID: sessionUUID)
@@ -99,7 +118,7 @@ enum AudioPersistence {
     /// `quarantine/` (audio preserved) instead of silently skipped — the prior
     /// `try?`-swallow path lost audio with no record. Quarantine events fire a
     /// Slack notification via the same webhook the transcription pipeline uses.
-    static func listPendingSessions() throws -> [PendingSessionMetadata] {
+    func listPendingSessions() throws -> [PendingSessionMetadata] {
         let fm = FileManager.default
         guard fm.fileExists(atPath: pendingDirectory.path) else { return [] }
         let entries = try fm.contentsOfDirectory(at: pendingDirectory, includingPropertiesForKeys: nil)
@@ -107,6 +126,14 @@ enum AudioPersistence {
         for entry in entries {
             let metaURL = entry.appendingPathComponent("meta.json")
             guard fm.fileExists(atPath: metaURL.path) else { continue }
+            let audioURL = entry.appendingPathComponent("audio.m4a")
+            guard fm.fileExists(atPath: audioURL.path) else {
+                // Missing audio.m4a — session is unusable for upload. Skip
+                // silently (no quarantine; the meta file alone isn't worth
+                // preserving). Likely cause: interrupted promote or manual
+                // file deletion.
+                continue
+            }
             guard let data = try? Data(contentsOf: metaURL) else {
                 quarantineSession(at: entry, reason: "meta.json unreadable")
                 continue
@@ -124,7 +151,7 @@ enum AudioPersistence {
 
     /// List quarantined session folders. Hook for a future "recover audio"
     /// admin UI — the queue itself never touches these.
-    static func listQuarantinedSessions() -> [URL] {
+    func listQuarantinedSessions() -> [URL] {
         let fm = FileManager.default
         guard fm.fileExists(atPath: quarantineDirectory.path) else { return [] }
         let entries = (try? fm.contentsOfDirectory(at: quarantineDirectory, includingPropertiesForKeys: nil)) ?? []
@@ -134,19 +161,19 @@ enum AudioPersistence {
     /// Read-modify-write of `meta.json` for a pending session. Throws if the
     /// session's meta is missing or undecodable — callers should treat a
     /// throw as "in-memory state is still authoritative, disk drifted".
-    static func updateMeta(sessionUUID: UUID, mutate: (inout PendingSessionMetadata) -> Void) throws {
+    func updateMeta(sessionUUID: UUID, mutate: (inout PendingSessionMetadata) -> Void) throws {
         let url = pendingMetaURL(sessionUUID: sessionUUID)
         let data = try Data(contentsOf: url)
         var meta = try JSONDecoder.iso8601.decode(PendingSessionMetadata.self, from: data)
         mutate(&meta)
-        try meta.write()
+        try meta.write(in: self)
     }
 
     /// Move a broken pending session into `quarantine/`. Audio is preserved
     /// so a human can recover it; the queue stops trying to bootstrap it.
     /// If a same-named entry already exists in quarantine (rare), the new
     /// one gets a timestamp suffix so neither is overwritten.
-    private static func quarantineSession(at folderURL: URL, reason: String) {
+    private func quarantineSession(at folderURL: URL, reason: String) {
         let fm = FileManager.default
         if !fm.fileExists(atPath: quarantineDirectory.path) {
             try? fm.createDirectory(at: quarantineDirectory, withIntermediateDirectories: true)
@@ -164,7 +191,7 @@ enum AudioPersistence {
             #if DEBUG
             print("[AudioPersistence] quarantined \(folderURL.lastPathComponent): \(reason)")
             #endif
-            reportQuarantineToSlack(sessionFolder: folderURL.lastPathComponent, reason: reason)
+            Self.reportQuarantineToSlack(sessionFolder: folderURL.lastPathComponent, reason: reason)
         } catch {
             #if DEBUG
             print("[AudioPersistence] FAILED to quarantine \(folderURL.lastPathComponent): \(error)")
@@ -176,7 +203,9 @@ enum AudioPersistence {
     /// payload shape `TranscriptionService.reportToSlack` uses so the same
     /// channel receives all transcription-pipeline anomalies. Errors and
     /// missing webhook URLs are swallowed — disk-write failure of meta.json
-    /// is rare and the quarantine itself is the primary signal.
+    /// is rare and the quarantine itself is the primary signal. Static so it
+    /// works even when called from a test-injected instance whose `APIKeys`
+    /// resolution is the production one.
     private static func reportQuarantineToSlack(sessionFolder: String, reason: String) {
         guard !APIKeys.slackErrorWebhookURL.isEmpty,
               let url = URL(string: APIKeys.slackErrorWebhookURL) else { return }
@@ -224,8 +253,11 @@ struct PendingSessionMetadata: Codable, Equatable {
         case longNote
     }
 
-    func write() throws {
-        let url = AudioPersistence.pendingMetaURL(sessionUUID: sessionUUID)
+    /// `persistence` defaults to `.shared` so production callers don't have
+    /// to thread an instance through. Tests pass their own injected
+    /// `AudioPersistence` so the write lands in a temp directory.
+    func write(in persistence: AudioPersistence = .shared) throws {
+        let url = persistence.pendingMetaURL(sessionUUID: sessionUUID)
         let data = try JSONEncoder.iso8601.encode(self)
         try data.write(to: url, options: .atomic)
     }

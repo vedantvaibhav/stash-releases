@@ -43,13 +43,17 @@ final class NetworkReachability: ObservableObject {
         monitor.pathUpdateHandler = { [weak self] path in
             let nowOnline = (path.status == .satisfied)
             Task { @MainActor in
-                self?.applyState(nowOnline: nowOnline)
+                self?.updateState(nowOnline: nowOnline)
             }
         }
         monitor.start(queue: queue)
     }
 
-    private func applyState(nowOnline: Bool) {
+    /// Test seam: lets tests drive transitions without hitting the network.
+    /// Production code flows here via the `NWPathMonitor` callback in `start`.
+    /// Internal (not private) so `@testable import` from `StashTests` reaches
+    /// it; the only non-test caller is the path handler above.
+    func updateState(nowOnline: Bool) {
         isOnline = nowOnline
         // Transition: unsatisfied → satisfied fires onSatisfied.
         if nowOnline, !wasOnline {
