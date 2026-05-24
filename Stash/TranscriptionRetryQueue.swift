@@ -10,7 +10,7 @@ import Foundation
 /// serialized through the actor. Upload work runs on detached tasks and
 /// reports results back via `reportUploadResult`.
 ///
-/// Retry policy: 5 attempts with exponential backoff (2s, 8s, 30s, 2m
+/// Retry policy: 5 attempts with exponential backoff (2s, 8s, 30s, 2m, 10m
 /// between attempts). After 5 failures, the session remains in `pending/`
 /// indefinitely but does not auto-retry — user must manually retry.
 actor TranscriptionRetryQueue {

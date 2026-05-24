@@ -45,9 +45,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     @Published var audioLevel: Float = 0
     /// Set by the pipeline to drive pill status display. Cleared after 1.5 s by the service.
     @Published var completionMessage: String? = nil
-    /// Shown inside the RecordingBanner so the user can actually read the failure
-    /// message (the pill's "Failed ✗" alone disappears too fast). Auto-clears after 4 s.
-    @Published var lastErrorForBanner: String? = nil
     /// Set by `uploadSession` before branching so the onNoteCreated callback
     /// (in PanelController) knows whether to auto-open the editor (long) or show
     /// the list with the new quick-transcript pinned at the top (short).
@@ -56,7 +53,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Set from the notes column so saves use the same storage as the rest of the app.
     weak var notesStorage: NotesStorage?
     var onNoteCreated: ((String) -> Void)?
-    var makePanelKey: (() -> Void)?
 
     /// Set after auth so Slack error reports include the user.
     var userEmail: String?
@@ -70,8 +66,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var transcriptTimer: Timer?
     private var levelTimer: Timer?
     private var maxDurationTimer: Timer?
-    private var autoStoppedAtLimit = false
-    private var processingWatchdog: DispatchWorkItem?
 
     /// Fires once at 85 min (5 min before the hard-stop at 5400s) to warn
     /// the user that the recording is about to be auto-stopped.
@@ -85,10 +79,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var didShowDurationWarning = false
     /// Same idea for the file-size warning.
     private var didShowSizeWarning = false
-    /// Set true when the size-monitor's hard-stop trips, so uploadSession
-    /// can surface the right toast message just like `autoStoppedAtLimit`
-    /// does for the duration limit.
-    private var autoStoppedAtSizeLimit = false
 
     /// Timestamp when isProcessing flipped true. Used by
     /// `clearProcessingHonoringFloor` to enforce a minimum visible duration
@@ -115,7 +105,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         completionMessage = nil
         didShowDurationWarning = false
         didShowSizeWarning = false
-        autoStoppedAtSizeLimit = false
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -232,11 +221,9 @@ final class TranscriptionService: NSObject, ObservableObject {
             if let t = transcriptTimer { RunLoop.main.add(t, forMode: .common) }
 
             maxDurationTimer?.invalidate()
-            autoStoppedAtLimit = false
             maxDurationTimer = Timer(timeInterval: 5400, repeats: false) { [weak self] _ in
                 Task { @MainActor in
                     guard let self, self.isRecording else { return }
-                    self.autoStoppedAtLimit = true
                     self.stopRecording()
                 }
             }
@@ -300,7 +287,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
 
         if mb >= stopAtMB {
-            autoStoppedAtSizeLimit = true
             stopRecording()
         }
     }
@@ -839,15 +825,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         return "Something went wrong — try again"
     }
 
-    private func reportFailure(_ error: Error, durationSeconds: Int) {
-        isProcessing = false
-        let friendly = userFacingMessage(for: error)
-        reportToSlack(error: friendly, durationSeconds: durationSeconds)
-        // Pill copy is short and category-driven; the full message goes to
-        // Slack and (eventually) the in-app error surface.
-        showCompletion(pillCopyFor(error: error))
-    }
-
     /// Short pill copy for a failure. The pill is narrow — favour 1–2 word
     /// labels over full sentences. Categories the user can act on:
     /// network → "Network timeout", everything else → "Failed".
@@ -885,7 +862,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         let secs = durationSeconds % 60
         let durationString = mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
         let header: String
-        if error.lowercased().contains("hallucination filter") || error.lowercased().contains("amplitude pre-check") {
+        if error.lowercased().contains("hallucination filter") {
             header = "🔵 *Filter rejection*"
         } else if error.lowercased().contains("warning") || error.lowercased().contains("hard-stop") {
             header = "🟡 *Transcription event*"
@@ -1204,27 +1181,11 @@ final class TranscriptionService: NSObject, ObservableObject {
         return cleaned
     }
 
-    /// Parsed Whisper response. `segments` is empty when the provider
-    /// returned plain text rather than verbose_json — callers that depend
-    /// on confidence signals must handle the empty case.
+    /// Parsed Whisper response. Only `text` is consumed downstream — the
+    /// per-segment confidence signals from `verbose_json` were dropped along
+    /// with the unused gate decisions that depended on them.
     struct WhisperResponse {
         let text: String
-        let segments: [Segment]
-
-        struct Segment {
-            let noSpeechProb: Double
-            let avgLogprob: Double
-        }
-
-        /// Mean across segments, or nil when no segments are present.
-        var meanNoSpeechProb: Double? {
-            guard !segments.isEmpty else { return nil }
-            return segments.map(\.noSpeechProb).reduce(0, +) / Double(segments.count)
-        }
-        var meanAvgLogprob: Double? {
-            guard !segments.isEmpty else { return nil }
-            return segments.map(\.avgLogprob).reduce(0, +) / Double(segments.count)
-        }
     }
 
     private func callWhisper(audioData: Data) async throws -> WhisperResponse {
@@ -1263,7 +1224,7 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
         body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8) ?? Data())
-        body.append("verbose_json\r\n".data(using: .utf8) ?? Data())
+        body.append("json\r\n".data(using: .utf8) ?? Data())
 
         body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8) ?? Data())
@@ -1284,29 +1245,16 @@ final class TranscriptionService: NSObject, ObservableObject {
         return parseWhisperResponse(data: data, fallbackText: responseText)
     }
 
-    /// Parse a Whisper response body. With `response_format=verbose_json`
-    /// the body is a JSON object containing `text` and a `segments` array
-    /// (each with `no_speech_prob` and `avg_logprob`). If the provider
-    /// instead returned plain text (legacy / non-conforming endpoint), we
-    /// fall back to using the raw body as the transcript with no segments.
+    /// Parse a Whisper response body. With `response_format=json` the body
+    /// is a JSON object containing `text`. If the provider instead returned
+    /// plain text (legacy / non-conforming endpoint), fall back to the raw
+    /// body as the transcript.
     private func parseWhisperResponse(data: Data, fallbackText: String) -> WhisperResponse {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let text = json["text"] as? String {
-            let rawSegments = json["segments"] as? [[String: Any]] ?? []
-            let segments = rawSegments.compactMap { dict -> WhisperResponse.Segment? in
-                guard let nsp = dict["no_speech_prob"] as? Double,
-                      let alp = dict["avg_logprob"] as? Double else { return nil }
-                return WhisperResponse.Segment(noSpeechProb: nsp, avgLogprob: alp)
-            }
-            return WhisperResponse(
-                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                segments: segments
-            )
+            return WhisperResponse(text: text.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return WhisperResponse(
-            text: fallbackText.trimmingCharacters(in: .whitespacesAndNewlines),
-            segments: []
-        )
+        return WhisperResponse(text: fallbackText.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     // MARK: - Generic chat call

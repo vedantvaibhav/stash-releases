@@ -618,10 +618,10 @@ struct SharedNotesColumn: View {
                 .padding(.top, 14)
             }
             .task {
+                // .task is already MainActor-isolated; the inner MainActor.run
+                // was a redundant hop introduced when the stream was first wired.
                 for await sessions in TranscriptionRetryQueue.shared.pendingStream() {
-                    await MainActor.run {
-                        self.pendingCount = sessions.count
-                    }
+                    self.pendingCount = sessions.count
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

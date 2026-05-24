@@ -87,13 +87,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // queue.drainNow() further down — initialize the controller first.
         panelController = PanelController()
 
-        Task { [weak self] in
+        // Single launch Task orchestrates queue wiring → hotkey/observer
+        // registration in a fixed order so a global-hotkey press in the
+        // first ms of launch can't enqueue against a nil uploadHandler:
+        //   1. bootstrap()     — load pending sessions from disk
+        //   2. setUploadHandler — wire the queue's call back into the service
+        //   3. drainNow()      — pick up orphans from a prior crash
+        //   4. registerHotkeyFromSettings + observers + installDoubleTapMonitor
+        // Any user-facing input surface is registered ONLY after step 2.
+        Task { @MainActor [weak self] in
             await TranscriptionRetryQueue.shared.bootstrap()
             // Wire the upload handler before draining. The closure captures
             // [weak self] so it doesn't retain the AppDelegate; it reaches
             // through self?.panelController?.transcriptionService at call
             // time (which is when the queue attempts an upload).
-            await TranscriptionRetryQueue.shared.setUploadHandler { meta in
+            await TranscriptionRetryQueue.shared.setUploadHandler { [weak self] meta in
                 guard let svc = self?.panelController?.transcriptionService else { return false }
                 return try await svc.uploadSession(metadata: meta)
             }
@@ -104,6 +112,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // would sit forever because onSatisfied never fires on the initial
             // satisfied state.
             await TranscriptionRetryQueue.shared.drainNow()
+
+            // Hotkey + recording observers go up AFTER the queue is fully wired.
+            // Before this point, a user pressing the global hotkey could trigger
+            // recording → enqueue → drain attempt → no handler → silent failure.
+            self?.registerHotkeyFromSettings()
+
+            self?.hotkeyObserver = NotificationCenter.default.addObserver(
+                forName: .quickPanelHotkeyChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.registerHotkeyFromSettings()
+            }
+
+            self?.quickRecordHotkeyObserver = NotificationCenter.default.addObserver(
+                forName: .quickRecordHotkeyChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.registerHotkeyFromSettings()
+            }
+
+            self?.doubleTapObserver = NotificationCenter.default.addObserver(
+                forName: .doubleTapQuickRecordChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in self?.installDoubleTapMonitor() }
+
+            self?.installDoubleTapMonitor()
         }
         NetworkReachability.shared.onSatisfied = {
             Task {
@@ -111,30 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        registerHotkeyFromSettings()
-
-        hotkeyObserver = NotificationCenter.default.addObserver(
-            forName: .quickPanelHotkeyChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.registerHotkeyFromSettings()
-        }
-
-        quickRecordHotkeyObserver = NotificationCenter.default.addObserver(
-            forName: .quickRecordHotkeyChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.registerHotkeyFromSettings()
-        }
-
-        doubleTapObserver = NotificationCenter.default.addObserver(
-            forName: .doubleTapQuickRecordChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in self?.installDoubleTapMonitor() }
-
+        // Auth is independent of the recording pipeline — observer + check
+        // can wire up immediately. Signed-in state doesn't gate queue work.
         authObserver = NotificationCenter.default.addObserver(
             forName: .authCompleted,
             object: nil,
@@ -144,8 +159,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         panelController?.setup()
-
-        installDoubleTapMonitor()
 
         Task {
             await AuthService.shared.checkSession()
