@@ -16,6 +16,7 @@ import Network
 /// dispatch queue. We hop to `@MainActor` to update `isOnline` (a
 /// `@Published` consumed by SwiftUI). The `onSatisfied` callback also
 /// runs on `@MainActor`.
+// TODO(@Observable): flip when min target bumps to macOS 14
 @MainActor
 final class NetworkReachability: ObservableObject {
     static let shared = NetworkReachability()

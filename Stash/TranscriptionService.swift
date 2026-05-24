@@ -3,6 +3,7 @@ import AVFoundation
 import Foundation
 
 /// Transcription + meeting notes via OpenAI-compatible API (provider auto-detected from key prefix).
+// TODO(@Observable): flip when min target bumps to macOS 14
 @MainActor
 final class TranscriptionService: NSObject, ObservableObject {
 
