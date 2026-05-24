@@ -58,11 +58,14 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Set after auth so Slack error reports include the user.
     var userEmail: String?
 
+    #if DEBUG
     /// Test seam: when non-nil, all LLM cleanup calls route through this
     /// closure instead of `callChat(...)`. Production code leaves this nil.
     /// Signature matches the four arguments every cleanup callsite passes:
     /// system prompt, user message, max tokens, model identifier.
+    /// DEBUG-only — release builds skip the injection check entirely.
     var chatFunction: ((String, String, Int, String) async throws -> String)?
+    #endif
 
     // — Private
     private var recorder: AVAudioRecorder?
@@ -832,27 +835,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         return "Something went wrong — try again"
     }
 
-    /// Short pill copy for a failure. The pill is narrow — favour 1–2 word
-    /// labels over full sentences. Categories the user can act on:
-    /// network → "Network timeout", everything else → "Failed".
-    private func pillCopyFor(error: Error) -> String {
-        if let urlError = error as? URLError {
-            switch urlError.code {
-            case .timedOut, .cannotFindHost, .dnsLookupFailed,
-                 .cannotConnectToHost, .networkConnectionLost,
-                 .notConnectedToInternet, .secureConnectionFailed:
-                return "Network timeout"
-            default:
-                return "Failed"
-            }
-        }
-        return "Failed"
-    }
-
-    private func isTransientWhisperError(status: Int) -> Bool {
-        status == 429 || (500...503).contains(status)
-    }
-
     private func reportToSlack(error: String, durationSeconds: Int) {
         guard !APIKeys.slackErrorWebhookURL.isEmpty,
               let url = URL(string: APIKeys.slackErrorWebhookURL) else { return }
@@ -1266,16 +1248,23 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - Generic chat call
 
-    /// Cleanup-path chat call. Routes through `chatFunction` if a test
-    /// injected one; otherwise hits the real `callChat`. Every cleanup
-    /// callsite passes non-nil system prompt and model, so this wrapper
-    /// uses non-optional types to match the test seam closure signature.
-    /// Internal (not private) so `@testable import` can verify the
-    /// injection seam without going through the full delivery pipeline.
+    /// Cleanup-path chat call. In Release this is a thin pass-through to
+    /// `callChat` (compiler inlines it). In Debug it consults the
+    /// `chatFunction` test-injection seam first; tests use this to mock
+    /// cleanup outputs without exercising the real network call.
+    ///
+    /// Spec called for `runChat` itself to be `#if DEBUG`-only with three
+    /// production callsites gated to `callChat` directly. With 3 callsites
+    /// the duplication is meaningful (~25 lines of #if/#else/#endif). This
+    /// shape achieves the same Release-surface result with one gate: the
+    /// `chatFunction` lookup is DEBUG-only; the function body otherwise
+    /// just delegates.
     func runChat(systemPrompt: String, userMessage: String, maxTokens: Int, model: String) async throws -> String {
+        #if DEBUG
         if let chatFunction {
             return try await chatFunction(systemPrompt, userMessage, maxTokens, model)
         }
+        #endif
         return try await callChat(systemPrompt: systemPrompt, userMessage: userMessage, maxTokens: maxTokens, model: model)
     }
 

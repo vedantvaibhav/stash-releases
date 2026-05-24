@@ -392,10 +392,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = nil
     }
 
-    @objc private func togglePanelFromMenu() {
-        panelController?.togglePanel()
-    }
-
     @objc private func checkForUpdates() {
         updaterManager.checkForUpdates()
     }
@@ -476,7 +472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func debugListPendingSessions() {
         Task {
-            let sessions = await TranscriptionRetryQueue.shared.debugListPending()
+            let sessions = await TranscriptionRetryQueue.shared.pendingSnapshot()
             print("[Debug] Pending sessions: \(sessions.count)")
             for s in sessions {
                 print("  - \(s.sessionUUID) | duration \(s.durationSeconds)s | attempts \(s.attemptCount) | error: \(s.lastError ?? "none") | note: \(s.createdNoteID ?? "nil")")

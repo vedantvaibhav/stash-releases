@@ -52,25 +52,30 @@ actor TranscriptionRetryQueue {
         AsyncStream { continuation in
             let token = UUID()
             Task {
-                // Register the observer on the actor.
-                await self.addObserver(token: token) { snapshot in
+                // Register the observer on the actor, then yield the initial
+                // snapshot to the subscriber.
+                await self.registerObserver(token: token) { snapshot in
                     continuation.yield(snapshot)
                 }
-                // Yield the initial snapshot to the subscriber.
                 let initial = await self.pendingSnapshot()
                 continuation.yield(initial)
             }
             continuation.onTermination = { @Sendable _ in
-                Task { await self.removeObserver(token: token) }
+                Task { await self.unregisterObserver(token: token) }
             }
         }
     }
 
-    private func addObserver(token: UUID, callback: @escaping ([PendingSessionMetadata]) -> Void) {
+    /// Actor-isolated observer mutators called from the nonisolated
+    /// `pendingStream`. Kept as one-line helpers (vs. inlining `observers[...] = ...`
+    /// at the call site) because the call site lives inside an `AsyncStream`
+    /// closure that has no direct access to actor-isolated state without an
+    /// `await`-able function.
+    private func registerObserver(token: UUID, callback: @escaping ([PendingSessionMetadata]) -> Void) {
         observers[token] = callback
     }
 
-    private func removeObserver(token: UUID) {
+    private func unregisterObserver(token: UUID) {
         observers.removeValue(forKey: token)
     }
 
@@ -261,9 +266,4 @@ actor TranscriptionRetryQueue {
         scheduleAttempt(sessionUUID: sessionUUID, delay: delay)
     }
 
-    #if DEBUG
-    func debugListPending() -> [PendingSessionMetadata] {
-        return pendingSnapshot()
-    }
-    #endif
 }
