@@ -275,6 +275,30 @@ final class NotesStorage: ObservableObject {
         return id
     }
 
+    /// Replaces a transcribed note's content in-place. Used by the two-phase
+    /// raw-first pipeline: TranscriptionService saves a raw note immediately
+    /// after Whisper, then calls this once cleanup completes. The note's id
+    /// is preserved — the SAME note updates rather than creating a duplicate.
+    ///
+    /// `type` must be one of "quick", "voice", "meeting" — matches the
+    /// existing `---META---` taxonomy used by `parseNote`.
+    func replaceTranscriptContent(
+        noteId: String,
+        transcript: String,
+        overview: String?,
+        durationSeconds: Int,
+        type: String
+    ) {
+        let isoDate = ISO8601DateFormatter().string(from: Date())
+        let content: String
+        if let overview, !overview.isEmpty {
+            content = "---TRANSCRIPT---\n\(transcript)\n---OVERVIEW---\n\(overview)\n---META---\nduration: \(durationSeconds)\ndate: \(isoDate)\ntype: \(type)"
+        } else {
+            content = "---TRANSCRIPT---\n\(transcript)\n---META---\nduration: \(durationSeconds)\ndate: \(isoDate)\ntype: \(type)"
+        }
+        saveNote(id: noteId, text: content, debounceListRefresh: false)
+    }
+
     /// Extracts all lines from an RTF file as plain text.
     private func linesFromRTF(url: URL) -> [String]? {
         if let prefix = try? readUpToBytes(from: url, maxBytes: 24_000),

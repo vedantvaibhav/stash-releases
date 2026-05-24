@@ -492,7 +492,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
     /// Pill width is dynamic — measured per displayed mode using NSString
     /// font sizing so the AppKit panel auto-fits whatever message is being
-    /// shown. "Failed" gets a small pill, "Saved (raw)" gets a larger pill,
+    /// shown. "Failed" gets a small pill, "Note saved" gets a larger pill,
     /// no slack on either side regardless of message length.
     ///
     /// Reads `displayState.mode` (which `sync()` sets via `updateHosted`

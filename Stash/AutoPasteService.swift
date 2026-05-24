@@ -7,12 +7,12 @@ import ApplicationServices
 ///   2. CGEvent ⌘V with pasteboard preservation (universal fallback).
 ///
 /// One of three delivery channels for short transcripts. The caller
-/// (`TranscriptionService.deliverShortDictation`) ALSO writes the transcript
-/// to the system pasteboard and saves a `DictationEntry` to disk regardless
+/// (`TranscriptionService.deliverTranscriptShort`) ALSO writes the transcript
+/// to the system pasteboard and saves a quick note to disk regardless
 /// of this service's return value. So any non-`.verifiedPasted` outcome is
-/// not user-data loss — it's a "Saved" pill instead of a "Pasted ✓" pill,
-/// with two recovery channels still active. Only `.verifiedPasted` (Strategy 1
-/// with read-back confirmation) is honest enough to surface as "Pasted ✓".
+/// not user-data loss — the note is already saved before this is called.
+/// Only `.verifiedPasted` (Strategy 1 with read-back confirmation) earns
+/// the "Pasted ✓" pill.
 ///
 /// The service is intentionally synchronous — both strategies complete in a
 /// few ms or fail fast.

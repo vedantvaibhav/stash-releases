@@ -434,9 +434,6 @@ final class PanelController: NSObject {
     func setup() {
         PanelController.shared = self
         transcriptionService.notesStorage = notesStorage
-        transcriptionService.makePanelKey = { [weak self] in
-            self?.contentPanel?.makeKeyAndOrderFront(nil)
-        }
         transcriptionFloatingWidget.attach(transcription: transcriptionService)
         transcriptionFloatingWidget.onOpenTranscription = { [weak self] in
             guard let self else { return }
@@ -1112,10 +1109,9 @@ struct PanelContentView: View {
                 )
                 .padding(.bottom, DesignTokens.Spacing.cardGap)
 
-                if transcription.isRecording || transcription.isProcessing || transcription.lastErrorForBanner != nil {
+                if transcription.isRecording || transcription.isProcessing {
                     RecordingBanner(
                         isProcessing: transcription.isProcessing,
-                        errorMessage: transcription.lastErrorForBanner,
                         onStop: { transcription.stopRecording() }
                     )
                     .transition(.asymmetric(

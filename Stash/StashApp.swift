@@ -80,32 +80,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
 
+        NetworkReachability.shared.start()
+
+        // PanelController must exist before the queue's uploadHandler closure
+        // can resolve `transcriptionService`. The handler is invoked on
+        // queue.drainNow() further down — initialize the controller first.
         panelController = PanelController()
 
-        registerHotkeyFromSettings()
+        // Single launch Task orchestrates queue wiring → hotkey/observer
+        // registration in a fixed order so a global-hotkey press in the
+        // first ms of launch can't enqueue against a nil uploadHandler:
+        //   1. bootstrap()     — load pending sessions from disk
+        //   2. setUploadHandler — wire the queue's call back into the service
+        //   3. drainNow()      — pick up orphans from a prior crash
+        //   4. registerHotkeyFromSettings + observers + installDoubleTapMonitor
+        // Any user-facing input surface is registered ONLY after step 2.
+        Task { @MainActor [weak self] in
+            await TranscriptionRetryQueue.shared.bootstrap()
+            // Wire the upload handler before draining. The closure captures
+            // [weak self] so it doesn't retain the AppDelegate; it reaches
+            // through self?.panelController?.transcriptionService at call
+            // time (which is when the queue attempts an upload).
+            await TranscriptionRetryQueue.shared.setUploadHandler { [weak self] meta in
+                guard let svc = self?.panelController?.transcriptionService else { return false }
+                return try await svc.uploadSession(metadata: meta)
+            }
+            // Drain after bootstrap regardless of online state. If offline, attempts
+            // fail and the queue's retry policy handles backoff + eventual recovery
+            // via the onSatisfied transition. If online (the common case after a
+            // crash-recover relaunch), this drains immediately — without it, sessions
+            // would sit forever because onSatisfied never fires on the initial
+            // satisfied state.
+            await TranscriptionRetryQueue.shared.drainNow()
 
-        hotkeyObserver = NotificationCenter.default.addObserver(
-            forName: .quickPanelHotkeyChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
+            // Hotkey + recording observers go up AFTER the queue is fully wired.
+            // Before this point, a user pressing the global hotkey could trigger
+            // recording → enqueue → drain attempt → no handler → silent failure.
             self?.registerHotkeyFromSettings()
+
+            self?.hotkeyObserver = NotificationCenter.default.addObserver(
+                forName: .quickPanelHotkeyChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.registerHotkeyFromSettings()
+            }
+
+            self?.quickRecordHotkeyObserver = NotificationCenter.default.addObserver(
+                forName: .quickRecordHotkeyChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.registerHotkeyFromSettings()
+            }
+
+            self?.doubleTapObserver = NotificationCenter.default.addObserver(
+                forName: .doubleTapQuickRecordChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in self?.installDoubleTapMonitor() }
+
+            self?.installDoubleTapMonitor()
+        }
+        NetworkReachability.shared.onSatisfied = {
+            Task {
+                await TranscriptionRetryQueue.shared.drainNow()
+            }
         }
 
-        quickRecordHotkeyObserver = NotificationCenter.default.addObserver(
-            forName: .quickRecordHotkeyChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.registerHotkeyFromSettings()
-        }
-
-        doubleTapObserver = NotificationCenter.default.addObserver(
-            forName: .doubleTapQuickRecordChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in self?.installDoubleTapMonitor() }
-
+        // Auth is independent of the recording pipeline — observer + check
+        // can wire up immediately. Signed-in state doesn't gate queue work.
         authObserver = NotificationCenter.default.addObserver(
             forName: .authCompleted,
             object: nil,
@@ -115,8 +159,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         panelController?.setup()
-
-        installDoubleTapMonitor()
 
         Task {
             await AuthService.shared.checkSession()
@@ -350,10 +392,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem?.menu = nil
     }
 
-    @objc private func togglePanelFromMenu() {
-        panelController?.togglePanel()
-    }
-
     @objc private func checkForUpdates() {
         updaterManager.checkForUpdates()
     }
@@ -392,7 +430,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Test pill: 90-min hard stop",  #selector(debugTestPill90MinHardStop)),
             ("Test pill: 20-MB warning",     #selector(debugTestPill20MBWarning)),
             ("Test pill: 24-MB hard stop",   #selector(debugTestPill24MBHardStop)),
-            ("Test pill: state stacking",    #selector(debugTestPillStacking))
+            ("Test pill: state stacking",    #selector(debugTestPillStacking)),
+            ("Test: simulate network failure on next upload", #selector(debugSimulateNextUploadFailure)),
+            ("Test: drain retry queue now",  #selector(debugDrainRetryQueue)),
+            ("Test: list pending sessions",  #selector(debugListPendingSessions)),
         ]
     }
 
@@ -402,7 +443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func debugTestPillRejection()      { debugFirePill("No audio") }
-    @objc private func debugTestPillCleanupFailure() { debugFirePill("Saved (raw)") }
+    @objc private func debugTestPillCleanupFailure() { debugFirePill("Note saved") }
     @objc private func debugTestPillNetworkTimeout() { debugFirePill("Network timeout") }
     @objc private func debugTestPill5MinWarning()    { debugFirePill("5 min left", hold: DesignTokens.Pill.completionWarningHold) }
     @objc private func debugTestPill90MinHardStop()  { debugFirePill("90-min limit") }
@@ -416,6 +457,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         debugFirePill("First")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.debugFirePill("Second") }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.debugFirePill("Third") }
+    }
+
+    @objc private func debugSimulateNextUploadFailure() {
+        panelController?.transcriptionService.debugSimulateNextUploadFailure()
+        debugFirePill("Next upload will fail", hold: DesignTokens.Pill.completionWarningHold)
+    }
+
+    @objc private func debugDrainRetryQueue() {
+        Task {
+            await TranscriptionRetryQueue.shared.drainNow()
+        }
+    }
+
+    @objc private func debugListPendingSessions() {
+        Task {
+            let sessions = await TranscriptionRetryQueue.shared.pendingSnapshot()
+            print("[Debug] Pending sessions: \(sessions.count)")
+            for s in sessions {
+                print("  - \(s.sessionUUID) | duration \(s.durationSeconds)s | attempts \(s.attemptCount) | error: \(s.lastError ?? "none") | note: \(s.createdNoteID ?? "nil")")
+            }
+        }
     }
     #endif
 }

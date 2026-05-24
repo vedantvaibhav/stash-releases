@@ -508,6 +508,7 @@ struct SharedNotesColumn: View {
     @State private var deleteConfirmNote: NoteItem? = nil
     @State private var quickNoteHovered = false
     @State private var selectedNoteTab: NoteEditorTab = .overview
+    @State private var pendingCount: Int = 0
     @ObservedObject private var appSettings = AppSettings.shared
 
     private enum NoteEditorTab { case transcript, overview }
@@ -581,7 +582,16 @@ struct SharedNotesColumn: View {
                 // Sticky filter bar — pinned above the scrollable list.
                 NotesFilterBar(
                     activeFilter: $appSettings.notesActiveFilter,
-                    counts: filterCounts
+                    counts: filterCounts,
+                    pendingCount: pendingCount,
+                    onRetryAllTap: {
+                        // userRequestedDrain (vs drainNow) so exhausted sessions
+                        // — attemptCount past the auto-retry budget — get their
+                        // counter reset and become eligible again.
+                        Task {
+                            await TranscriptionRetryQueue.shared.userRequestedDrain()
+                        }
+                    }
                 )
 
                 // List, empty-state, or filter-empty-state
@@ -609,6 +619,13 @@ struct SharedNotesColumn: View {
                     }
                 }
                 .padding(.top, 14)
+            }
+            .task {
+                // .task is already MainActor-isolated; the inner MainActor.run
+                // was a redundant hop introduced when the stream was first wired.
+                for await sessions in TranscriptionRetryQueue.shared.pendingStream() {
+                    self.pendingCount = sessions.count
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .allowsHitTesting(!showNewNoteChoiceMenu)

@@ -2,17 +2,8 @@ import AppKit
 import AVFoundation
 import Foundation
 
-/// Result of a short (<5 min) recording handed off to the floating pill for
-/// explicit Copy / Dismiss. `isRaw == true` when the LLM cleaning step failed
-/// and the pill should label the transcript as raw.
-struct ShortTranscriptResult: Identifiable, Equatable {
-    let id = UUID()
-    let text: String
-    let isRaw: Bool
-    let durationSeconds: Int
-}
-
 /// Transcription + meeting notes via OpenAI-compatible API (provider auto-detected from key prefix).
+// TODO(@Observable): flip when min target bumps to macOS 14
 @MainActor
 final class TranscriptionService: NSObject, ObservableObject {
 
@@ -55,10 +46,7 @@ final class TranscriptionService: NSObject, ObservableObject {
     @Published var audioLevel: Float = 0
     /// Set by the pipeline to drive pill status display. Cleared after 1.5 s by the service.
     @Published var completionMessage: String? = nil
-    /// Shown inside the RecordingBanner so the user can actually read the failure
-    /// message (the pill's "Failed ✗" alone disappears too fast). Auto-clears after 4 s.
-    @Published var lastErrorForBanner: String? = nil
-    /// Set by `processRecording` before branching so the onNoteCreated callback
+    /// Set by `uploadSession` before branching so the onNoteCreated callback
     /// (in PanelController) knows whether to auto-open the editor (long) or show
     /// the list with the new quick-transcript pinned at the top (short).
     @Published var lastRecordingWasShort: Bool = false
@@ -66,20 +54,28 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Set from the notes column so saves use the same storage as the rest of the app.
     weak var notesStorage: NotesStorage?
     var onNoteCreated: ((String) -> Void)?
-    var makePanelKey: (() -> Void)?
 
     /// Set after auth so Slack error reports include the user.
     var userEmail: String?
 
+    #if DEBUG
+    /// Test seam: when non-nil, all LLM cleanup calls route through this
+    /// closure instead of `callChat(...)`. Production code leaves this nil.
+    /// Signature matches the four arguments every cleanup callsite passes:
+    /// system prompt, user message, max tokens, model identifier.
+    /// DEBUG-only — release builds skip the injection check entirely.
+    var chatFunction: ((String, String, Int, String) async throws -> String)?
+    #endif
+
     // — Private
     private var recorder: AVAudioRecorder?
     private var recordingURL: URL?
+    private var sessionUUID: UUID?
+    private var recordingStartedAt: Date?
     private var durationTimer: Timer?
     private var transcriptTimer: Timer?
     private var levelTimer: Timer?
     private var maxDurationTimer: Timer?
-    private var autoStoppedAtLimit = false
-    private var processingWatchdog: DispatchWorkItem?
 
     /// Fires once at 85 min (5 min before the hard-stop at 5400s) to warn
     /// the user that the recording is about to be auto-stopped.
@@ -93,23 +89,18 @@ final class TranscriptionService: NSObject, ObservableObject {
     private var didShowDurationWarning = false
     /// Same idea for the file-size warning.
     private var didShowSizeWarning = false
-    /// Set true when the size-monitor's hard-stop trips, so processRecording
-    /// can surface the right toast message just like `autoStoppedAtLimit`
-    /// does for the duration limit.
-    private var autoStoppedAtSizeLimit = false
-    /// Peak `averagePower(forChannel: 0)` observed during the current
-    /// recording (in dBFS). Updated on every levelTimer tick; consulted
-    /// in stopRecording to skip Whisper entirely on near-silent input.
-    /// Reset to -60 (silence floor) in startRecording.
-    private var recordedPeakPower: Float = -60
-    /// Total seconds where averagePower crossed the voice-presence
-    /// threshold (-30 dBFS, around conversational speech at arm's length).
-    /// Accumulated in the levelTimer tick; used as a stricter pre-Whisper
-    /// silence gate than the peak-power check. A quiet room can sustain
-    /// -40 dBFS noise floor without ever crossing -30 dBFS, so this
-    /// catches silence-with-ambient-noise that the peak gate misses.
-    /// Reset to 0 in startRecording.
-    private var voiceActiveSeconds: Double = 0
+
+    /// Timestamp when isProcessing flipped true. Used by
+    /// `clearProcessingHonoringFloor` to enforce a minimum visible duration
+    /// for the spinner pill so it doesn't flash through invisibly when
+    /// Whisper resolves faster than the human eye can register the phase.
+    private var processingStartedAt: Date?
+
+    /// Minimum time the processing pill stays visible after entering the
+    /// processing phase. Whisper round-trips can be <100ms for trivial clips;
+    /// without a floor, the user perceives "record → completion" with no
+    /// processing phase, which feels jarring and hides system work.
+    private static let minProcessingVisibility: TimeInterval = 0.4
 
     // MARK: - Start
 
@@ -124,9 +115,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         completionMessage = nil
         didShowDurationWarning = false
         didShowSizeWarning = false
-        autoStoppedAtSizeLimit = false
-        recordedPeakPower = -60
-        voiceActiveSeconds = 0
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -156,11 +144,26 @@ final class TranscriptionService: NSObject, ObservableObject {
     }
 
     private func beginRecording() {
-        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("qp_recording.m4a")
-        recordingURL = tempURL
-
-        try? FileManager.default.removeItem(at: tempURL)
+        let uuid = UUID()
+        self.sessionUUID = uuid
+        self.recordingStartedAt = Date()
+        do {
+            try AudioPersistence.shared.ensureDirectories()
+        } catch {
+            // Disk-prep failure — bail before recording starts. Surface to the
+            // user via the standard pill failure path; this is rare (filesystem
+            // permission issue) and not retriable per-recording.
+            reportToSlack(error: "Failed to create Transcription directory: \(error)", durationSeconds: 0)
+            showCompletion("Failed")
+            isRecording = false
+            return
+        }
+        let activeURL = AudioPersistence.shared.activeAudioURL(sessionUUID: uuid)
+        recordingURL = activeURL
+        // Delete any prior file with the same uuid (defensive — shouldn't exist).
+        if FileManager.default.fileExists(atPath: activeURL.path) {
+            try? FileManager.default.removeItem(at: activeURL)
+        }
 
         // Detect the hardware input sample rate at runtime.
         // AVAudioEngine.inputNode.outputFormat reflects the live hardware rate:
@@ -184,7 +187,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         ]
 
         do {
-            recorder = try AVAudioRecorder(url: tempURL, settings: settings)
+            recorder = try AVAudioRecorder(url: activeURL, settings: settings)
             recorder?.isMeteringEnabled = true
             // record() returns false if the device refuses to start
             // (e.g. permission revoked mid-session, device unplugged at init).
@@ -208,21 +211,14 @@ final class TranscriptionService: NSObject, ObservableObject {
 
             levelTimer?.invalidate()
             let levelTickInterval: TimeInterval = 0.1
-            // Voice-presence threshold. -30 dBFS sits around conversational
-            // speech from arm's length; quiet rooms / mic self-noise rarely
-            // cross it. If field data shows legitimate quiet dictations
-            // being false-rejected, raise to -33 (do not go below -35 —
-            // ambient noise floor leaks above that).
-            let voicePresenceThresholdDBFS: Float = -30
             levelTimer = Timer(timeInterval: levelTickInterval, repeats: true) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
                     self.recorder?.updateMeters()
                     let level = self.recorder?.averagePower(forChannel: 0) ?? -60
-                    self.recordedPeakPower = max(self.recordedPeakPower, level)
-                    if level > voicePresenceThresholdDBFS {
-                        self.voiceActiveSeconds += levelTickInterval
-                    }
+                    // audioLevel drives the pill's level meter. Computed from the
+                    // current sample, not from a peak; we don't need to track peak
+                    // anymore now that gate decisions are gone.
                     self.audioLevel = max(0, (level + 60) / 60)
                 }
             }
@@ -235,11 +231,9 @@ final class TranscriptionService: NSObject, ObservableObject {
             if let t = transcriptTimer { RunLoop.main.add(t, forMode: .common) }
 
             maxDurationTimer?.invalidate()
-            autoStoppedAtLimit = false
             maxDurationTimer = Timer(timeInterval: 5400, repeats: false) { [weak self] _ in
                 Task { @MainActor in
                     guard let self, self.isRecording else { return }
-                    self.autoStoppedAtLimit = true
                     self.stopRecording()
                 }
             }
@@ -303,7 +297,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
 
         if mb >= stopAtMB {
-            autoStoppedAtSizeLimit = true
             stopRecording()
         }
     }
@@ -362,99 +355,55 @@ final class TranscriptionService: NSObject, ObservableObject {
         recorder?.stop()
         recorder = nil
         isRecording = false
+        processingStartedAt = Date()
         isProcessing = true
         audioLevel = 0
 
-        guard let url = recordingURL,
-              let audioData = try? Data(contentsOf: url),
-              audioData.count > 1000 else {
-            #if DEBUG
-            let fileSize = (try? Data(contentsOf: recordingURL ?? URL(fileURLWithPath: ""))).map { "\($0.count) bytes" } ?? "no file"
-            print("[Transcription] Audio guard failed — \(fileSize)")
-            #endif
-            errorMessage = "Recording failed — no audio captured"
-            isProcessing = false
-            reportToSlack(error: errorMessage ?? "Audio guard failed", durationSeconds: duration)
-            showCompletion("No audio")
-            return
-        }
-
-        // Amplitude pre-check — skip Whisper entirely if the loudest moment
-        // of the entire recording is below the silence threshold.
-        //
-        // -45 dBFS is well below conversational speech (-20 to -30 dBFS at
-        // arm's length) but above typical ambient hum / mic self-noise.
-        // If field data shows legitimate quiet dictations getting rejected,
-        // raise to -50 or -52. Do not go above -40 (real voices dip there).
-        //
-        // This rejection routes through the same "no audio" toast + Slack
-        // path as the hallucination filter, but tagged distinctly in the
-        // Slack message so triage can tell amplitude-rejection from
-        // filter-rejection.
-        let amplitudeThresholdDBFS: Float = -45
-        if recordedPeakPower < amplitudeThresholdDBFS {
-            isProcessing = false
-            #if DEBUG
-            print("[Transcription] amplitude pre-check rejected — peak \(recordedPeakPower) dBFS < threshold \(amplitudeThresholdDBFS) dBFS")
-            #endif
-            reportToSlack(
-                error: "Amplitude pre-check rejected — peak \(String(format: "%.1f", recordedPeakPower)) dBFS < \(amplitudeThresholdDBFS) dBFS (duration \(duration)s)",
-                durationSeconds: duration
-            )
-            showCompletion("No audio")
-            return
-        }
-
-        // Voice-active duration gate — peak-power can hit -42 dBFS from
-        // ambient noise alone. This second-layer check requires that some
-        // minimum amount of audio actually crossed the voice-presence
-        // threshold (counted in the level timer). Only engages for
-        // recordings long enough that a real dictation would have
-        // accumulated voice-active time; a brief 2s "okay" might only have
-        // 0.4s of voice-active audio and shouldn't be rejected.
-        let voiceActiveThresholdSeconds: Double = 1.5
-        let voiceGateMinDurationSeconds = 5
-        if duration >= voiceGateMinDurationSeconds,
-           voiceActiveSeconds < voiceActiveThresholdSeconds {
-            isProcessing = false
-            #if DEBUG
-            print("[Transcription] voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(recordedPeakPower) dBFS)")
-            #endif
-            reportToSlack(
-                error: "Voice-active gate rejected — \(String(format: "%.2f", voiceActiveSeconds))s active in \(duration)s recording (peak \(String(format: "%.1f", recordedPeakPower)) dBFS)",
-                durationSeconds: duration
-            )
-            showCompletion("No audio")
-            return
-        }
-
         let recordedDuration = duration
 
-        // Watchdog: if the pipeline hasn't finished in 90 s (network hung,
-        // URLSession ignored timeoutInterval, etc.) force-reset the UI so
-        // the pill never gets stuck on "Processing".
-        processingWatchdog?.cancel()
-        let watchdog = DispatchWorkItem { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self, self.isProcessing else { return }
-                self.isProcessing = false
-                self.reportToSlack(error: "Processing watchdog timed out (90s)", durationSeconds: self.duration)
-                self.showCompletion("Failed")
-            }
+        guard let uuid = sessionUUID else {
+            // Defensive — shouldn't happen.
+            isProcessing = false
+            processingStartedAt = nil
+            return
         }
-        processingWatchdog = watchdog
-        DispatchQueue.main.asyncAfter(deadline: .now() + 90, execute: watchdog)
-
-        Task { @MainActor in
-            defer {
-                self.processingWatchdog?.cancel()
-                self.processingWatchdog = nil
-                if let r = self.recordingURL {
-                    try? FileManager.default.removeItem(at: r)
-                }
-            }
-            await self.processRecording(audioData: audioData, durationSeconds: recordedDuration)
+        do {
+            try AudioPersistence.shared.promoteActiveToPending(sessionUUID: uuid)
+        } catch {
+            #if DEBUG
+            print("[Transcription] failed to promote active → pending: \(error)")
+            #endif
+            reportToSlack(error: "Failed to promote audio file: \(error)", durationSeconds: recordedDuration)
+            showCompletion("Failed")
+            isProcessing = false
+            processingStartedAt = nil
+            return
         }
+        let intent: PendingSessionMetadata.SessionIntent = (recordedDuration < 300) ? .shortPaste : .longNote
+        // Capture the frontmost app at stop time directly via NSWorkspace. AutoPasteService
+        // is stateless about this — it does a live lookup inside its own `attemptInsert`
+        // call path — so there's no existing captured value to read from.
+        let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let meta = PendingSessionMetadata(
+            sessionUUID: uuid,
+            startedAt: recordingStartedAt ?? Date(),
+            finishedAt: Date(),
+            durationSeconds: recordedDuration,
+            intent: intent,
+            frontmostAppBundleID: frontmostBundleID,
+            attemptCount: 0,
+            lastError: nil,
+            createdNoteID: nil
+        )
+        Task {
+            await TranscriptionRetryQueue.shared.enqueue(meta)
+        }
+        // isProcessing intentionally stays true here. The retry queue's first
+        // attempt (uploadSession with attemptCount == 0) clears it via
+        // clearProcessingHonoringFloor right before delivery / on failure,
+        // so the processing pill stays visible across the Whisper round-trip
+        // instead of flashing off the moment we enqueue. Floor enforces a
+        // minimum visible duration so fast Whisper responses still register.
     }
 
     // MARK: - LLM prompts
@@ -637,58 +586,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     - Do not start with any label like "Overview:", "Summary:", "Key Points:", etc.
     """
 
-    // MARK: - Short-recording delivery
-
-    /// Three-channel delivery for short transcripts:
-    ///
-    /// 1. **NotesStorage as a `.quick` note** — visible in the Notes tab
-    ///    next to written notes, distinguished by the waveform glyph. Tap
-    ///    opens the editor; user copies from there. This is the primary
-    ///    recovery surface when paste isn't verified — same UX as a
-    ///    written note, just produced by voice.
-    ///
-    /// 2. **Clipboard** — `⌘V` always reaches the dictation. Replaces the
-    ///    user's previous clipboard contents; matches what they expect
-    ///    after triggering a dictation.
-    ///
-    /// 3. **AutoPasteService** — best-effort direct paste into the focused
-    ///    field. Pill confirmation reads "Pasted ✓" only when channel 3's
-    ///    read-back verified the paste landed; any other outcome hides
-    ///    the pill silently and the user finds the transcript in Notes.
-    private func deliverShortDictation(_ result: ShortTranscriptResult) {
-        // Channel 1: persistent history as a quick note. Saved before paste
-        // attempt because it's pasteboard-independent — survives anything
-        // AutoPasteService does. We deliberately do NOT fire onNoteCreated
-        // (that would yank focus to Stash and open the editor); user is in
-        // another app expecting the paste to land or to grab via ⌘V.
-        notesStorage?.saveQuickNote(text: result.text, durationSeconds: result.durationSeconds)
-        notesStorage?.refreshNotes()
-
-        // Channel 3: best-effort paste. May write to and restore the
-        // pasteboard internally (Strategy 2's preserve-and-restore cycle).
-        // Only `.verifiedPasted` (Strategy 1 with read-back) earns a
-        // "Pasted ✓" pill. Other outcomes hide the pill silently — the
-        // user finds the transcript in the Notes tab.
-        let pasteResult = AutoPasteService.shared.attemptInsert(text: result.text)
-        if let pillCopy = pillCopyFor(pasteResult) {
-            showCompletion(pillCopy)
-        }
-
-        // Channel 2: clipboard. Deferred past AutoPasteService's
-        // pasteboard-restore window so our write is the LAST writer — the
-        // earlier ordering (clipboard → attemptInsert) was racing with
-        // Strategy 2's restore and intermittently leaving the clipboard
-        // empty. +50ms after the restore deadline gives the dispatched
-        // restore closure time to complete on a quiet runloop.
-        let textToWrite = result.text
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + AutoPasteService.pasteboardRestoreDelaySeconds + 0.05
-        ) {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(textToWrite, forType: .string)
-        }
-    }
-
     /// Maps the AX-paste outcome to a pill confirmation message, or nil
     /// when the pill should hide silently. Only the read-back-verified
     /// Strategy 1 path earns "Pasted ✓"; the other outcomes return nil so
@@ -703,182 +600,148 @@ final class TranscriptionService: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Unified pipeline
+    // MARK: - Queue-driven upload pipeline
 
-    private func processRecording(audioData: Data, durationSeconds: Int) async {
-        // Safety net: isProcessing is ALWAYS cleared when this function exits,
-        // regardless of which code path runs (including Task cancellation).
-        defer { isProcessing = false }
+    /// Called by the retry queue. Reads `pending/<uuid>/audio.m4a` from disk,
+    /// uploads to Whisper, sanitises, dispatches into raw-first delivery.
+    /// Returns `true` on success → queue archives the session.
+    /// Returns `false` for transient (network) errors → queue retries.
+    /// Throws for persistent errors → queue gives up after `maxAttempts`.
+    ///
+    /// Explicitly `@MainActor` because TranscriptionService is `@MainActor`-isolated
+    /// and the call path (Whisper API → sanitiser → deliver helpers) all need that
+    /// isolation. The queue invokes this via `await` from its actor context, which
+    /// hops to MainActor automatically.
+    #if DEBUG
+    /// Single-shot flag set by the DEBUG menu's "simulate network failure on
+    /// next upload" item. Consumed on first `uploadSession` invocation, which
+    /// throws a `URLError` to exercise the retry-queue's transient-failure path.
+    private var simulateNextUploadFailure = false
 
-        let isShort = durationSeconds < 300
-        lastRecordingWasShort = isShort
+    func debugSimulateNextUploadFailure() {
+        simulateNextUploadFailure = true
+    }
+    #endif
 
-        if autoStoppedAtLimit {
-            autoStoppedAtLimit = false
-            // Pill briefly shows the hard-stop reason; the widget controller's
-            // expireCompletion sees isProcessing==true and returns to the
-            // processing pill (compact circle) after the hold. Eventually the
-            // natural "Note saved" / "No audio" completion takes over.
-            showCompletion("90-min limit")
-            reportToSlack(
-                error: "Duration hard-stop fired at 90 min",
-                durationSeconds: durationSeconds
-            )
+    @MainActor
+    func uploadSession(metadata: PendingSessionMetadata) async throws -> Bool {
+        // Only the FIRST attempt drives the processing-pill phase. Background
+        // retries (attemptCount > 0) leave the pill alone — the retry-queue
+        // indicator in the notes filter bar is the failure UX once we've
+        // moved past the foreground attempt.
+        let isFirstAttempt = (metadata.attemptCount == 0)
+
+        let audioURL = AudioPersistence.shared.pendingAudioURL(sessionUUID: metadata.sessionUUID)
+        let audioData: Data
+        do {
+            audioData = try Data(contentsOf: audioURL)
+        } catch {
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
+            // File missing — non-retryable. Don't keep retrying nothing.
+            throw error
         }
 
-        if autoStoppedAtSizeLimit {
-            autoStoppedAtSizeLimit = false
-            showCompletion("Size limit")
-            reportToSlack(
-                error: "Size hard-stop fired at >=24 MB",
-                durationSeconds: durationSeconds
-            )
+        #if DEBUG
+        // DEBUG hook: when the "simulate network failure" menu item is fired,
+        // the next upload throws a URLError → routes through the URLError catch
+        // below → queue retries on backoff. Single-shot: consumed on first use.
+        if simulateNextUploadFailure {
+            simulateNextUploadFailure = false
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
+            throw URLError(.networkConnectionLost)
         }
+        #endif
 
-        // MARK: Whisper — with one auto-retry on transient errors
         let whisperResponse: WhisperResponse
         do {
-            whisperResponse = try await Task(priority: .userInitiated) {
-                try await self.callWhisper(audioData: audioData)
-            }.value
-        } catch let firstError as NSError {
-            if isTransientWhisperError(status: firstError.code) {
-                showCompletion("Retrying…")
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                do {
-                    whisperResponse = try await Task(priority: .userInitiated) {
-                        try await self.callWhisper(audioData: audioData)
-                    }.value
-                } catch {
-                    reportFailure(error, durationSeconds: durationSeconds)
-                    return
-                }
-            } else {
-                reportFailure(firstError, durationSeconds: durationSeconds)
-                return
-            }
-        } catch {
-            reportFailure(error, durationSeconds: durationSeconds)
-            return
-        }
-
-        let rawWhisperOutput = whisperResponse.text
-
-        // MARK: Confidence-signal gate
-        // Whisper itself knows when it hallucinated. With response_format=
-        // verbose_json the server returns per-segment `no_speech_prob`
-        // (model's estimate that the audio window contained no speech) and
-        // `avg_logprob` (per-token log-probability average; lower = less
-        // confident). Reject when the model is signalling "this was
-        // silence I made up." Thresholds picked from OpenAI Whisper's own
-        // defaults: no_speech_threshold=0.6, logprob_threshold=-1.0.
-        //
-        // Skipped when `segments` is empty (provider returned plain text).
-        // The substring filter below remains the backstop for that case
-        // and for hallucinations that slip past the model-confidence gate.
-        let noSpeechRejectionThreshold = 0.6
-        let logprobRejectionThreshold = -1.0
-        if let meanNSP = whisperResponse.meanNoSpeechProb,
-           let meanALP = whisperResponse.meanAvgLogprob,
-           meanNSP > noSpeechRejectionThreshold || meanALP < logprobRejectionThreshold {
-            isProcessing = false
-            let rawSnippet = String(rawWhisperOutput.prefix(120))
+            whisperResponse = try await callWhisper(audioData: audioData)
+        } catch let urlError as URLError {
+            // All URLError variants are treated as transient — network is the
+            // most common failure mode and the queue's retry policy is correct
+            // for all of them. If the user's auth key is bad, the URLSession
+            // request still succeeds at the transport layer; the API returns
+            // an HTTP error body which `callWhisper` translates to a
+            // non-URLError throw (handled below as persistent).
             #if DEBUG
-            print("[Transcription] confidence-gate rejected — no_speech_prob=\(meanNSP), avg_logprob=\(meanALP) — \"\(rawSnippet)\"")
+            print("[Transcription] uploadSession transient URLError: \(urlError.code) — queueing retry")
             #endif
-            reportToSlack(
-                error: "Confidence gate rejected (no_speech_prob \(String(format: "%.2f", meanNSP)), avg_logprob \(String(format: "%.2f", meanALP)), duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
-                durationSeconds: durationSeconds
-            )
-            showCompletion("No audio")
-            return
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
+            return false
+        } catch {
+            // Anything that's not a URLError — auth failure, malformed response,
+            // server-side 4xx with explicit error body — is treated as persistent.
+            // The queue will retry up to `maxAttempts` times then surface to the
+            // user. If `callWhisper`'s error taxonomy ever distinguishes
+            // retryable vs persistent at the API-response level (e.g. by
+            // throwing a custom `WhisperError.rateLimited`), extend this
+            // catch chain to add a specific transient branch for those.
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
+            throw error
         }
 
-        // MARK: Hallucination filter (substring backstop)
-        guard let rawTranscript = sanitiseWhisperOutput(rawWhisperOutput, durationSeconds: durationSeconds) else {
-            isProcessing = false
-            let rawSnippet = String(rawWhisperOutput.prefix(120))
-            reportToSlack(
-                error: "Hallucination filter rejected (duration \(durationSeconds)s) — raw: \"\(rawSnippet)\"",
-                durationSeconds: durationSeconds
-            )
+        let rawTranscript = whisperResponse.text
+
+        // Sanitise (hallucination filter for <8s, passthrough for ≥8s).
+        let sanitised = sanitiseWhisperOutput(rawTranscript, durationSeconds: metadata.durationSeconds)
+        guard let text = sanitised else {
+            // Filter rejected. Report and treat as success (don't keep audio).
+            reportToSlack(error: "Hallucination filter rejected (duration \(metadata.durationSeconds)s)", durationSeconds: metadata.durationSeconds)
+            if isFirstAttempt { await clearProcessingHonoringFloor() }
             showCompletion("No audio")
-            return
+            return true
         }
 
-        // MARK: LLM cleaning — short path delivers through the triple-redundant
-        // pipeline (paste + clipboard + dictations history); long path saves
-        // a meeting note (below).
-        if isShort {
-            do {
-                let cleaned = try await callChat(
-                    systemPrompt: Self.promptShortClean,
-                    userMessage: rawTranscript,
-                    maxTokens: 400,
-                    model: APIConstants.chatModelForShortClean
-                )
-                let result = ShortTranscriptResult(
-                    text: cleaned,
-                    isRaw: false,
-                    durationSeconds: durationSeconds
-                )
-                deliverShortDictation(result)
-            } catch {
-                let result = ShortTranscriptResult(
-                    text: rawTranscript,
-                    isRaw: true,
-                    durationSeconds: durationSeconds
-                )
-                deliverShortDictation(result)
-                showCompletion("Saved (raw)")
-                reportToSlack(
-                    error: "Short-path cleanup failed; raw delivered. \(userFacingMessage(for: error))",
-                    durationSeconds: durationSeconds
-                )
+        // Clear processing BEFORE delivery so the pill transitions
+        // processing → completion in the user-visible order. The floor
+        // helper enforces a minimum visible spinner duration even if
+        // Whisper returned in <400ms; without it the spinner phase can
+        // be perceptually invisible on fast paths.
+        if isFirstAttempt { await clearProcessingHonoringFloor() }
+        // Raw-first delivery — same actor, just call through.
+        await deliverTranscript(text: text, metadata: metadata)
+        return true
+    }
+
+    /// Flips `isProcessing` to false, but not before the pill has been visible
+    /// in the processing phase for at least `minProcessingVisibility` seconds
+    /// from `processingStartedAt`. Idempotent and safe to call when
+    /// `isProcessing` is already false (returns immediately).
+    @MainActor
+    private func clearProcessingHonoringFloor() async {
+        guard isProcessing else {
+            processingStartedAt = nil
+            return
+        }
+        if let started = processingStartedAt {
+            let elapsed = Date().timeIntervalSince(started)
+            let remaining = Self.minProcessingVisibility - elapsed
+            if remaining > 0 {
+                let nanos = UInt64(remaining * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanos)
             }
-        } else {
-            do {
-                async let transcriptCall = callChat(
-                    systemPrompt: Self.promptLongTranscript,
-                    userMessage: rawTranscript,
-                    maxTokens: 3000,
-                    model: APIConstants.chatModel
-                )
-                async let overviewCall = callChat(
-                    systemPrompt: Self.promptLongOverview,
-                    userMessage: rawTranscript,
-                    maxTokens: 1500,
-                    model: APIConstants.chatModel
-                )
-                let (cleanedTranscript, overview) = try await (transcriptCall, overviewCall)
-                if let storage = notesStorage {
-                    let id = storage.saveMeetingNote(
-                        transcript: cleanedTranscript,
-                        overview: overview,
-                        durationSeconds: durationSeconds
-                    )
-                    storage.refreshNotes()
-                    onNoteCreated?(id)
-                }
-                isProcessing = false
-                showCompletion("Note saved")
-            } catch {
-                if let storage = notesStorage {
-                    let id = storage.saveMeetingNote(
-                        transcript: rawTranscript,
-                        overview: "Overview unavailable — raw transcript saved below.",
-                        durationSeconds: durationSeconds
-                    )
-                    storage.refreshNotes()
-                    onNoteCreated?(id)
-                }
-                isProcessing = false
-                showCompletion("Saved (raw)")
-                reportToSlack(
-                    error: "Long-path cleanup failed; raw saved. \(userFacingMessage(for: error))",
-                    durationSeconds: durationSeconds
-                )
-            }
+        }
+        isProcessing = false
+        processingStartedAt = nil
+    }
+
+    /// Main-actor delivery from a queued session. Calls the existing
+    /// `deliverTranscriptShort` / `deliverTranscriptLong` helpers (introduced
+    /// in Task 6), then correlates the returned noteID back into the queue's
+    /// `meta.json` so the UI can surface "note X is from session Y".
+    private func deliverTranscript(text: String, metadata: PendingSessionMetadata) async {
+        lastRecordingWasShort = (metadata.intent == .shortPaste)
+        let noteId: String?
+        switch metadata.intent {
+        case .shortPaste:
+            noteId = deliverTranscriptShort(text: text, durationSeconds: metadata.durationSeconds)
+        case .longNote:
+            noteId = deliverTranscriptLong(text: text, durationSeconds: metadata.durationSeconds)
+        }
+        if let noteId {
+            await TranscriptionRetryQueue.shared.setCreatedNoteID(
+                for: metadata.sessionUUID,
+                noteID: noteId
+            )
         }
     }
 
@@ -972,36 +835,6 @@ final class TranscriptionService: NSObject, ObservableObject {
         return "Something went wrong — try again"
     }
 
-    private func reportFailure(_ error: Error, durationSeconds: Int) {
-        isProcessing = false
-        let friendly = userFacingMessage(for: error)
-        reportToSlack(error: friendly, durationSeconds: durationSeconds)
-        // Pill copy is short and category-driven; the full message goes to
-        // Slack and (eventually) the in-app error surface.
-        showCompletion(pillCopyFor(error: error))
-    }
-
-    /// Short pill copy for a failure. The pill is narrow — favour 1–2 word
-    /// labels over full sentences. Categories the user can act on:
-    /// network → "Network timeout", everything else → "Failed".
-    private func pillCopyFor(error: Error) -> String {
-        if let urlError = error as? URLError {
-            switch urlError.code {
-            case .timedOut, .cannotFindHost, .dnsLookupFailed,
-                 .cannotConnectToHost, .networkConnectionLost,
-                 .notConnectedToInternet, .secureConnectionFailed:
-                return "Network timeout"
-            default:
-                return "Failed"
-            }
-        }
-        return "Failed"
-    }
-
-    private func isTransientWhisperError(status: Int) -> Bool {
-        status == 429 || (500...503).contains(status)
-    }
-
     private func reportToSlack(error: String, durationSeconds: Int) {
         guard !APIKeys.slackErrorWebhookURL.isEmpty,
               let url = URL(string: APIKeys.slackErrorWebhookURL) else { return }
@@ -1018,7 +851,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         let secs = durationSeconds % 60
         let durationString = mins > 0 ? "\(mins)m \(secs)s" : "\(secs)s"
         let header: String
-        if error.lowercased().contains("hallucination filter") || error.lowercased().contains("amplitude pre-check") {
+        if error.lowercased().contains("hallucination filter") {
             header = "🔵 *Filter rejection*"
         } else if error.lowercased().contains("warning") || error.lowercased().contains("hard-stop") {
             header = "🟡 *Transcription event*"
@@ -1047,6 +880,15 @@ final class TranscriptionService: NSObject, ObservableObject {
     // MARK: - Whisper API
 
     private func sanitiseWhisperOutput(_ raw: String, durationSeconds: Int) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Hallucinations are almost exclusive to short, near-silent clips.
+        // Long recordings get trusted verbatim — the filter's false-positive
+        // rate on real long-form speech is unacceptable (see chat-with-Sai
+        // 93s rejection on 2026-05-18).
+        guard durationSeconds < 8 else { return trimmed }
+
         // PASS 1 — token hallucinations (bracket artefacts Whisper emits on silence)
         let tokenHallucinations = [
             "[BLANK_AUDIO]", "[blank_audio]", "[inaudible]", "[Inaudible]",
@@ -1328,27 +1170,11 @@ final class TranscriptionService: NSObject, ObservableObject {
         return cleaned
     }
 
-    /// Parsed Whisper response. `segments` is empty when the provider
-    /// returned plain text rather than verbose_json — callers that depend
-    /// on confidence signals must handle the empty case.
+    /// Parsed Whisper response. Only `text` is consumed downstream — the
+    /// per-segment confidence signals from `verbose_json` were dropped along
+    /// with the unused gate decisions that depended on them.
     struct WhisperResponse {
         let text: String
-        let segments: [Segment]
-
-        struct Segment {
-            let noSpeechProb: Double
-            let avgLogprob: Double
-        }
-
-        /// Mean across segments, or nil when no segments are present.
-        var meanNoSpeechProb: Double? {
-            guard !segments.isEmpty else { return nil }
-            return segments.map(\.noSpeechProb).reduce(0, +) / Double(segments.count)
-        }
-        var meanAvgLogprob: Double? {
-            guard !segments.isEmpty else { return nil }
-            return segments.map(\.avgLogprob).reduce(0, +) / Double(segments.count)
-        }
     }
 
     private func callWhisper(audioData: Data) async throws -> WhisperResponse {
@@ -1387,7 +1213,7 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
         body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8) ?? Data())
-        body.append("verbose_json\r\n".data(using: .utf8) ?? Data())
+        body.append("json\r\n".data(using: .utf8) ?? Data())
 
         body.append("--\(boundary)\r\n".data(using: .utf8) ?? Data())
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8) ?? Data())
@@ -1408,32 +1234,39 @@ final class TranscriptionService: NSObject, ObservableObject {
         return parseWhisperResponse(data: data, fallbackText: responseText)
     }
 
-    /// Parse a Whisper response body. With `response_format=verbose_json`
-    /// the body is a JSON object containing `text` and a `segments` array
-    /// (each with `no_speech_prob` and `avg_logprob`). If the provider
-    /// instead returned plain text (legacy / non-conforming endpoint), we
-    /// fall back to using the raw body as the transcript with no segments.
+    /// Parse a Whisper response body. With `response_format=json` the body
+    /// is a JSON object containing `text`. If the provider instead returned
+    /// plain text (legacy / non-conforming endpoint), fall back to the raw
+    /// body as the transcript.
     private func parseWhisperResponse(data: Data, fallbackText: String) -> WhisperResponse {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let text = json["text"] as? String {
-            let rawSegments = json["segments"] as? [[String: Any]] ?? []
-            let segments = rawSegments.compactMap { dict -> WhisperResponse.Segment? in
-                guard let nsp = dict["no_speech_prob"] as? Double,
-                      let alp = dict["avg_logprob"] as? Double else { return nil }
-                return WhisperResponse.Segment(noSpeechProb: nsp, avgLogprob: alp)
-            }
-            return WhisperResponse(
-                text: text.trimmingCharacters(in: .whitespacesAndNewlines),
-                segments: segments
-            )
+            return WhisperResponse(text: text.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return WhisperResponse(
-            text: fallbackText.trimmingCharacters(in: .whitespacesAndNewlines),
-            segments: []
-        )
+        return WhisperResponse(text: fallbackText.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     // MARK: - Generic chat call
+
+    /// Cleanup-path chat call. In Release this is a thin pass-through to
+    /// `callChat` (compiler inlines it). In Debug it consults the
+    /// `chatFunction` test-injection seam first; tests use this to mock
+    /// cleanup outputs without exercising the real network call.
+    ///
+    /// Spec called for `runChat` itself to be `#if DEBUG`-only with three
+    /// production callsites gated to `callChat` directly. With 3 callsites
+    /// the duplication is meaningful (~25 lines of #if/#else/#endif). This
+    /// shape achieves the same Release-surface result with one gate: the
+    /// `chatFunction` lookup is DEBUG-only; the function body otherwise
+    /// just delegates.
+    func runChat(systemPrompt: String, userMessage: String, maxTokens: Int, model: String) async throws -> String {
+        #if DEBUG
+        if let chatFunction {
+            return try await chatFunction(systemPrompt, userMessage, maxTokens, model)
+        }
+        #endif
+        return try await callChat(systemPrompt: systemPrompt, userMessage: userMessage, maxTokens: maxTokens, model: model)
+    }
 
     private func callChat(systemPrompt: String?, userMessage: String, maxTokens: Int, model: String? = nil) async throws -> String {
         guard let url = URL(string: chatURL) else {
@@ -1475,6 +1308,132 @@ final class TranscriptionService: NSObject, ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "Invalid JSON shape"])
         }
         return content
+    }
+
+    // MARK: - Raw-first delivery helpers
+
+    /// Phase 1: saves the raw Whisper transcript as a quick note immediately.
+    /// Phase 2: pastes (AutoPaste) + writes clipboard.
+    /// Phase 3: async cleanup — on success, updates the same note in place;
+    ///           on failure, the raw note stays and the error goes to Slack.
+    @MainActor
+    @discardableResult
+    private func deliverTranscriptShort(text: String, durationSeconds: Int) -> String? {
+        // Phase 1 — save raw immediately so the user has a note even if cleanup fails.
+        let rawNoteId = notesStorage?.saveQuickNote(text: text, durationSeconds: durationSeconds)
+
+        // Phase 2 — pasteboard + AutoPaste (short-clip primary delivery).
+        // Use the RAW text for the immediate paste; cleanup only refines the
+        // saved note, never the paste content.
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        let pasteResult = AutoPasteService.shared.attemptInsert(text: text)
+        if let pillCopy = pillCopyFor(pasteResult) {
+            showCompletion(pillCopy)
+        }
+
+        // Phase 3 — async cleanup, update note in place on success.
+        // Capture [weak self] only — notesStorage is a `weak var` on the service,
+        // so capturing it directly would be racy. Reach through self?.notesStorage
+        // inside the main-actor hop where the reference is checked under isolation.
+        Task.detached { [weak self] in
+            guard let self else { return }
+            do {
+                let cleaned = try await self.runChat(
+                    systemPrompt: Self.promptShortClean,
+                    userMessage: text,
+                    maxTokens: 1024,
+                    model: APIConstants.chatModelForShortClean
+                )
+                if let rawNoteId {
+                    await MainActor.run { [weak self] in
+                        self?.notesStorage?.replaceTranscriptContent(
+                            noteId: rawNoteId,
+                            transcript: cleaned,
+                            overview: nil,
+                            durationSeconds: durationSeconds,
+                            type: "quick"
+                        )
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.reportToSlack(
+                        error: "Short-path cleanup failed; raw note kept. \(self?.userFacingMessage(for: error) ?? "")",
+                        durationSeconds: durationSeconds
+                    )
+                }
+            }
+        }
+        return rawNoteId
+    }
+
+    /// Phase 1: saves the raw Whisper transcript as a meeting note immediately.
+    /// Phase 2: shows "Note saved" pill right away.
+    /// Phase 3: async cleanup + overview generation — on success, updates the
+    ///           same note in place; on failure, the raw transcript stays.
+    @MainActor
+    @discardableResult
+    private func deliverTranscriptLong(text: String, durationSeconds: Int) -> String? {
+        // Phase 1 — save raw transcript immediately as a meeting note with empty overview.
+        let rawNoteId = notesStorage?.saveMeetingNote(
+            transcript: text,
+            overview: "",
+            durationSeconds: durationSeconds
+        )
+        // User sees "Note saved" right away. Cleanup will refine the same note silently.
+        showCompletion("Note saved")
+        // Notify PanelController so it can auto-open the editor for the new
+        // meeting note (matches the pre-rewrite UX). Short path intentionally
+        // does NOT fire this — short-clip primary delivery is pasteboard +
+        // AutoPaste; yanking focus back to Stash to open a note would be
+        // disruptive. Long path is the meeting-notes mode where auto-open
+        // is the expected behavior.
+        if let rawNoteId {
+            onNoteCreated?(rawNoteId)
+        }
+
+        // Phase 2 — async cleanup + overview, update note in place on success.
+        // [weak self] only — see deliverTranscriptShort's note about `notesStorage`
+        // being a weak var; reach through `self?.notesStorage` inside the hop.
+        Task.detached { [weak self] in
+            guard let self else { return }
+            async let cleanedTask: String = self.runChat(
+                systemPrompt: Self.promptLongTranscript,
+                userMessage: text,
+                maxTokens: 4096,
+                model: APIConstants.chatModel
+            )
+            async let overviewTask: String = self.runChat(
+                systemPrompt: Self.promptLongOverview,
+                userMessage: text,
+                maxTokens: 1024,
+                model: APIConstants.chatModel
+            )
+            do {
+                let cleaned = try await cleanedTask
+                let overv = try await overviewTask
+                if let rawNoteId {
+                    await MainActor.run { [weak self] in
+                        self?.notesStorage?.replaceTranscriptContent(
+                            noteId: rawNoteId,
+                            transcript: cleaned,
+                            overview: overv,
+                            durationSeconds: durationSeconds,
+                            type: "meeting"
+                        )
+                    }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    self?.reportToSlack(
+                        error: "Long-path cleanup failed; raw transcript kept. \(self?.userFacingMessage(for: error) ?? "")",
+                        durationSeconds: durationSeconds
+                    )
+                }
+            }
+        }
+        return rawNoteId
     }
 
     // MARK: - Test seam
