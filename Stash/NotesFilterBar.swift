@@ -25,14 +25,15 @@ struct NotesFilterBar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 8) {
-                // Left: active filter title + count — 15pt section header, count in parens
+                // Left: active filter title + count — both in the shared 14pt
+                // tab-label font so the filter bar matches the tab row typography.
                 HStack(spacing: 4) {
                     Text(activeFilter.displayName)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(DesignTokens.Typography.tabLabelFont)
                         .foregroundStyle(DesignTokens.Typography.sectionColor)
                         .lineLimit(1)
                     Text("(\(counts[activeFilter, default: 0]))")
-                        .font(.system(size: 14, weight: .regular))
+                        .font(DesignTokens.Typography.tabLabelFont)
                         .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.55))
                         .lineLimit(1)
                         .layoutPriority(0)
@@ -80,6 +81,9 @@ struct NotesFilterBar: View {
                 .fill(DesignTokens.Icon.tintMuted.opacity(0.18))
                 .frame(maxWidth: .infinity)
                 .frame(height: 1)
+                // Bleed past the panel's 20pt outer padding so the divider
+                // spans the full panel width edge-to-edge.
+                .padding(.horizontal, -20)
         }
         .onAppear { installKeyMonitor() }
         .onDisappear { removeKeyMonitor() }
@@ -228,10 +232,6 @@ private struct FilterPill: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(backgroundFill)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(borderColor, lineWidth: 1)
-        )
         .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .scaleEffect(isPressed ? 0.96 : 1.0)
         .onHover { isHovering = $0 }
@@ -256,12 +256,7 @@ private struct FilterPill: View {
 
     private var backgroundFill: Color {
         if isActive { return DesignTokens.FilterPill.activeBackground }
-        if isHovering { return Color.white.opacity(0.10) }
-        return Color.white.opacity(0.06)
-    }
-
-    private var borderColor: Color {
-        isActive ? DesignTokens.FilterPill.activeBorder
-                 : Color.white.opacity(0.10)
+        if isHovering { return DesignTokens.Icon.backgroundHover }
+        return DesignTokens.Icon.backgroundRest
     }
 }
