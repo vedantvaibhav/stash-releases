@@ -129,6 +129,10 @@ enum DesignTokens {
         static let sectionFont = Font.system(size: 11, weight: .semibold)
         static let sectionColor = Color(hex: "#525252")
 
+        // Tab bar labels (All / Clipboard / Notes / Files) and the notes
+        // filter bar title/count — SF Pro 14 / regular (design spec).
+        static let tabLabelFont = Font.system(size: 14, weight: .regular)
+
         // Note editor — body text and heading levels.
         // Body: 15 pt regular, 20 pt line height (≈ 1.33 multiple).
         static let bodyFont = Font.system(size: 15, weight: .regular)

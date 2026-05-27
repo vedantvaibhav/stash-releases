@@ -4,14 +4,10 @@ import SwiftUI
 // Tabs: All, Clipboard, Notes, Files (+ mic). Active tab: filled capsule; no bar/track behind the row.
 
 /// Tab labels — SF Pro 14 / 400 / 16px line-height / center (design spec).
+/// Font moved to `DesignTokens.Typography.tabLabelFont`; only the
+/// line-height metric remains local since no shared token covers it.
 private enum TabBarTypography {
-    static let fontSize: CGFloat = 14
     static let lineHeight: CGFloat = 16
-
-    /// `Font.system` uses SF Pro on macOS; weight 400 = regular.
-    static var labelFont: Font {
-        .system(size: fontSize, weight: .regular)
-    }
 }
 
 enum PanelMainTab: Int, CaseIterable, Identifiable, Hashable {
@@ -77,7 +73,7 @@ struct TabBarView: View {
             selectedTab = tab
         } label: {
             Text(tab.title)
-                .font(TabBarTypography.labelFont)
+                .font(DesignTokens.Typography.tabLabelFont)
                 .multilineTextAlignment(.center)
                 .lineLimit(1)
                 .frame(height: TabBarTypography.lineHeight, alignment: .center)
