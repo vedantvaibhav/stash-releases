@@ -969,6 +969,10 @@ private struct NotesListView: View {
                     }
                 }
             }
+            // Top inset INSIDE the scroll content: shows a small resting gap
+            // below the filter-bar divider, but scrolls up and clips at the
+            // divider when the list scrolls (so content still "cuts" cleanly).
+            .padding(.top, 10)
         }
     }
 }

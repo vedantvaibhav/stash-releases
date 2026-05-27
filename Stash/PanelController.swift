@@ -1193,7 +1193,7 @@ struct PanelContentView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.top, 16)
+            .padding(.top, 12)
             .padding(.horizontal, 20)
             .frame(maxWidth: 700, maxHeight: .infinity, alignment: .top)
             .frame(maxWidth: .infinity)

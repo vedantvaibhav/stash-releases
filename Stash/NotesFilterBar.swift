@@ -144,7 +144,7 @@ private struct FilterPill: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "slider.horizontal.3")
+            Image(systemName: "line.3.horizontal.decrease")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(foregroundColor)
 
@@ -170,8 +170,9 @@ private struct FilterPill: View {
     }
 
     private var backgroundFill: Color {
-        // Hover is handled by the enclosing Menu's native highlight; the pill
-        // itself only distinguishes active vs rest.
-        isActive ? DesignTokens.FilterPill.activeBackground : DesignTokens.Icon.backgroundRest
+        // Rest fill matches the pinned-card gray (PanelCardChromeStyle.bgDefault,
+        // #262626) so the pill reads as a solid chip. Hover is handled by the
+        // enclosing Menu's native highlight.
+        isActive ? DesignTokens.FilterPill.activeBackground : PanelCardChromeStyle.bgDefault
     }
 }
