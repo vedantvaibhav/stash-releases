@@ -1193,7 +1193,7 @@ struct PanelContentView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.top, 20)
+            .padding(.top, 16)
             .padding(.horizontal, 20)
             .frame(maxWidth: 700, maxHeight: .infinity, alignment: .top)
             .frame(maxWidth: .infinity)
@@ -1311,9 +1311,9 @@ struct RecordingBanner: View {
             if !isProcessing && errorMessage == nil {
                 Button(action: onStop) {
                     Image(systemName: "stop.fill")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.white)
-                        .frame(width: 20, height: 20)
+                        .frame(width: 16, height: 16)
                         .background(Circle().fill(Color.white.opacity(0.12)))
                         .overlay(Circle().stroke(Color.white.opacity(0.20), lineWidth: 1))
                 }
@@ -1321,8 +1321,11 @@ struct RecordingBanner: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity)
+        // Fixed 44pt pill height — matches a single pinned card and stays
+        // constant across recording / processing / error states (the stop
+        // button only shows while recording, so without a fixed height the
+        // pill would shrink when it disappears in the processing state).
+        .frame(maxWidth: .infinity, minHeight: 44)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(errorMessage != nil

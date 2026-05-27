@@ -594,8 +594,9 @@ struct SharedNotesColumn: View {
                     }
                 )
 
-                // List, empty-state, or filter-empty-state
-                // 14pt gap between filter-bar divider and first date-group header.
+                // List, empty-state, or filter-empty-state.
+                // No top gap: content butts directly against the filter-bar
+                // divider and clips at it as the list scrolls.
                 Group {
                     if notesStorage.notes.isEmpty {
                         PanelEmptyState(
@@ -618,7 +619,6 @@ struct SharedNotesColumn: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
-                .padding(.top, 14)
             }
             .task {
                 // .task is already MainActor-isolated; the inner MainActor.run
