@@ -1321,11 +1321,11 @@ struct RecordingBanner: View {
             }
         }
         .padding(.horizontal, 12)
-        // Fixed 44pt pill height — matches a single pinned card and stays
-        // constant across recording / processing / error states (the stop
-        // button only shows while recording, so without a fixed height the
-        // pill would shrink when it disappears in the processing state).
-        .frame(maxWidth: .infinity, minHeight: 44)
+        // Fixed 32pt pill height — kept constant across recording / processing
+        // / error states (the stop button only shows while recording, so
+        // without a fixed height the pill would shrink when it disappears in
+        // the processing state).
+        .frame(maxWidth: .infinity, minHeight: 32)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(errorMessage != nil
