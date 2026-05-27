@@ -1299,7 +1299,7 @@ struct RecordingBanner: View {
                     .onAppear { pulse = true }
 
                 Text(isProcessing ? "Creating notes..." : "Recording in progress")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.white.opacity(0.80))
             }
 
@@ -1310,7 +1310,7 @@ struct RecordingBanner: View {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.white)
-                        .frame(width: 28, height: 28)
+                        .frame(width: 20, height: 20)
                         .background(Circle().fill(Color.white.opacity(0.12)))
                         .overlay(Circle().stroke(Color.white.opacity(0.20), lineWidth: 1))
                 }
@@ -1318,7 +1318,7 @@ struct RecordingBanner: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.vertical, 4)
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
