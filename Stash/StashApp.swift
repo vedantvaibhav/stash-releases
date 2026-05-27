@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import Carbon.HIToolbox
-import Combine
 import Sparkle
 
 @main
@@ -22,14 +21,6 @@ struct QuickPanelApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var panelController: PanelController?
-    /// Bottom-center "transcription taking longer than usual" notification.
-    /// Driven by the upload pipeline's `isWaitingOnRetry` state.
-    private let statusPresenter = StatusNotificationPresenter()
-    private var statusCancellables = Set<AnyCancellable>()
-    /// Hard cap: auto-hide the notification 5 min after it first appears,
-    /// regardless of retry state. The session keeps retrying silently; the
-    /// inline "Waiting" shimmer in the filter bar remains the live indicator.
-    private var statusAutoHideTask: Task<Void, Never>?
     private var globalHotKey: GlobalHotKey?
     private var quickRecordHotKey: GlobalHotKey?
     private var hotkeyObserver: NSObjectProtocol?
@@ -168,96 +159,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         panelController?.setup()
-        wireStatusNotifications()
 
         Task {
             await AuthService.shared.checkSession()
         }
-    }
-
-    // MARK: - Long-running status notification
-
-    /// Observe the upload pipeline's waiting state and drive the bottom-center
-    /// status panel: show on stall, morph copy at retry attempt ≥ 3, hide when
-    /// the wait resolves, and auto-hide after 5 minutes regardless.
-    private func wireStatusNotifications() {
-        guard let svc = panelController?.transcriptionService else { return }
-
-        svc.$isWaitingOnRetry
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self, weak svc] waiting in
-                guard let self else { return }
-                if waiting {
-                    self.showStatusNotification(attempt: svc?.waitingRetryAttempt ?? 0)
-                } else {
-                    self.hideStatusNotification()
-                }
-            }
-            .store(in: &statusCancellables)
-
-        // Copy morph: when the retry attempt climbs to ≥ 3 while the panel is
-        // already up, re-render with the "Still trying" copy in place.
-        svc.$waitingRetryAttempt
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] attempt in
-                guard let self, self.statusPresenter.isVisible else { return }
-                self.showStatusNotification(attempt: attempt)
-            }
-            .store(in: &statusCancellables)
-    }
-
-    private func showStatusNotification(attempt: Int) {
-        let model: StatusNotificationModel
-        if attempt >= 3 {
-            model = StatusNotificationModel(
-                title: "Still trying",
-                message: "We'll keep retrying. Check your Notes panel anytime.",
-                primaryLabel: "Open Notes",
-                primaryAction: { [weak self] in self?.openNotesTranscriptions() },
-                secondaryLabel: "Hide",
-                secondaryAction: { [weak self] in self?.hideStatusNotification() },
-                onDismiss: { [weak self] in self?.hideStatusNotification() }
-            )
-        } else {
-            model = StatusNotificationModel(
-                title: "Taking longer than usual",
-                message: "Your transcript will appear in Notes when ready",
-                primaryLabel: "Open Notes",
-                primaryAction: { [weak self] in self?.openNotesTranscriptions() },
-                secondaryLabel: "Dismiss",
-                secondaryAction: { [weak self] in self?.hideStatusNotification() },
-                onDismiss: { [weak self] in self?.hideStatusNotification() }
-            )
-        }
-        let wasVisible = statusPresenter.isVisible
-        statusPresenter.show(model)
-        if !wasVisible { startStatusAutoHideTimer() }
-    }
-
-    private func startStatusAutoHideTimer() {
-        statusAutoHideTask?.cancel()
-        statusAutoHideTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
-            guard !Task.isCancelled else { return }
-            self?.hideStatusNotification()
-        }
-    }
-
-    private func hideStatusNotification() {
-        statusAutoHideTask?.cancel()
-        statusAutoHideTask = nil
-        statusPresenter.hide()
-    }
-
-    /// Primary-button action: open the panel on the Notes tab with the
-    /// Transcriptions filter applied, then dismiss the notification.
-    private func openNotesTranscriptions() {
-        AppSettings.shared.notesActiveFilter = .transcriptions
-        panelController?.panelInteractionState.requestedTab = .notes
-        panelController?.showPanel()
-        hideStatusNotification()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -577,19 +482,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func debugShowStatusNotification() {
-        if statusPresenter.isVisible {
-            statusPresenter.hide()
-            return
-        }
-        statusPresenter.show(StatusNotificationModel(
-            title: "Taking longer than usual",
-            message: "Your transcript will appear in Notes when ready",
-            primaryLabel: "Open Notes",
-            primaryAction: { [weak self] in self?.statusPresenter.hide() },
-            secondaryLabel: "Dismiss",
-            secondaryAction: { [weak self] in self?.statusPresenter.hide() },
-            onDismiss: { [weak self] in self?.statusPresenter.hide() }
-        ))
+        // Toggle the real isWaitingOnRetry state so the floating pill morphs
+        // into the notification card via its normal sync() path.
+        guard let svc = panelController?.transcriptionService else { return }
+        svc.isWaitingOnRetry.toggle()
     }
     #endif
 }

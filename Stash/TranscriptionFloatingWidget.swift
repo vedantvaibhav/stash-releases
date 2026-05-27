@@ -276,16 +276,44 @@ private final class PillPanel: NSPanel {
 
 // MARK: - Display state + root view
 
+/// Copy for the long-running notification card. Equatable (Strings only) so
+/// the controller can morph the copy in place; the button actions live on the
+/// controller as closures (not here) since closures aren't Equatable.
+struct NotificationContent: Equatable {
+    var title: String
+    var message: String
+    var primaryLabel: String
+    var secondaryLabel: String
+}
+
 final class PillDisplayState: ObservableObject {
     @Published var mode: PillMode = .processing
+    /// When non-nil, the widget renders the notification card instead of the
+    /// pill (the "toast morphs into the notification" state).
+    @Published var notification: NotificationContent? = nil
 }
 
 struct PillRootView: View {
     @ObservedObject var state: PillDisplayState
     let onStop: () -> Void
+    let onNotificationPrimary: () -> Void
+    let onNotificationSecondary: () -> Void
+    let onNotificationDismiss: () -> Void
 
     var body: some View {
-        TranscriptionPillView(mode: state.mode, onStop: onStop)
+        if let n = state.notification {
+            TranscriptionStatusNotification(
+                title: n.title,
+                message: n.message,
+                primaryLabel: n.primaryLabel,
+                primaryAction: onNotificationPrimary,
+                secondaryLabel: n.secondaryLabel,
+                secondaryAction: onNotificationSecondary,
+                onDismiss: onNotificationDismiss
+            )
+        } else {
+            TranscriptionPillView(mode: state.mode, onStop: onStop)
+        }
     }
 }
 
@@ -303,8 +331,15 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private var cancellables = Set<AnyCancellable>()
     private var panelOpenForWidget = false
 
-    private enum Phase { case none, recording, processing, completion }
+    private enum Phase { case none, recording, processing, completion, notification }
     private var phase: Phase = .none
+
+    /// True once the user dismisses the long-running notification (X / Hide)
+    /// or the 5-min auto-hide fires. Suppresses re-showing until the wait
+    /// resets (isWaitingOnRetry → false), at which point it clears.
+    private var notificationDismissed = false
+    /// 5-minute hard cap: auto-hide the notification regardless of state.
+    private var notificationAutoHideWork: DispatchWorkItem?
     private var completionWorkItem: DispatchWorkItem?
     /// The completion message currently being held by `completionWorkItem`.
     /// Used to avoid re-scheduling the hide timer on every sync() tick while
@@ -326,6 +361,10 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private var hideInFlight = false
 
     var onOpenTranscription: (() -> Void)?
+    /// "Open Notes" action for the long-running notification — set by
+    /// PanelController.setup to open the panel on the Notes tab with the
+    /// Transcriptions filter applied.
+    var onOpenNotes: (() -> Void)?
 
     func attach(transcription: TranscriptionService) {
         // One-time cleanup of the snap-zone key persisted by prior builds
@@ -432,11 +471,101 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
+        // Long-running stall: nothing else is showing and the upload is
+        // waiting on a retry. Morph the pill into the notification card.
+        // A user dismiss / 5-min auto-hide suppresses it until the wait
+        // resets (handled by `notificationDismissed`).
+        if ts.isWaitingOnRetry {
+            if notificationDismissed {
+                // Dismissed but still waiting — keep the pill hidden; the
+                // inline "Waiting" shimmer in the filter bar is the indicator.
+                if phase != .completion { hidePanel(); phase = .none }
+                return
+            }
+            enterNotificationPhase(attempt: ts.waitingRetryAttempt)
+            return
+        }
+
+        // Not waiting anymore — clear any notification state.
+        if phase == .notification || displayState.notification != nil {
+            clearNotification()
+        }
+
         if phase != .completion {
             hidePanel()
             phase = .none
             heldCompletionMessage = nil
         }
+    }
+
+    // MARK: - Long-running notification
+
+    private func enterNotificationPhase(attempt: Int) {
+        let oldPhase = phase
+        let content: NotificationContent
+        if attempt >= 3 {
+            content = NotificationContent(
+                title: "Still trying",
+                message: "We'll keep retrying. Check your Notes panel anytime.",
+                primaryLabel: "Open Notes",
+                secondaryLabel: "Hide"
+            )
+        } else {
+            content = NotificationContent(
+                title: "Taking longer than usual",
+                message: "Your transcript will appear in Notes when ready",
+                primaryLabel: "Open Notes",
+                secondaryLabel: "Dismiss"
+            )
+        }
+        let firstShow = (phase != .notification)
+        cancelAllPendingWork()   // notification is its own phase; drop any completion timer
+        phase = .notification
+        heldCompletionMessage = nil
+        // Set the card content; sizeForCurrentMode reads displayState.notification.
+        if displayState.notification != content { displayState.notification = content }
+        applyPhaseFrame(animated: oldPhase != .none)
+        showCollapsedPanelIfNeeded()
+        if firstShow { startNotificationAutoHide() }
+    }
+
+    private func startNotificationAutoHide() {
+        notificationAutoHideWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            // 5-min cap: hide but keep the session retrying silently.
+            self?.dismissNotification()
+        }
+        notificationAutoHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5 * 60, execute: work)
+    }
+
+    /// Hide the notification and suppress re-show until the wait resets.
+    /// Used by the X button, the "Dismiss"/"Hide" button, and the 5-min cap.
+    /// Sets `notificationDismissed` so `sync()` won't re-show while the
+    /// session is still waiting.
+    func dismissNotification() {
+        notificationDismissed = true
+        notificationAutoHideWork?.cancel()
+        notificationAutoHideWork = nil
+        if displayState.notification != nil { displayState.notification = nil }
+        hidePanel()
+        phase = .none
+    }
+
+    /// Tear down the card content + auto-hide timer and reset the dismissed
+    /// flag. Called when the wait resets (isWaitingOnRetry → false) so a
+    /// future stall shows the notification again.
+    private func clearNotification() {
+        notificationAutoHideWork?.cancel()
+        notificationAutoHideWork = nil
+        notificationDismissed = false
+        if displayState.notification != nil { displayState.notification = nil }
+    }
+
+    /// "Open Notes" action — deep-link, then dismiss the card.
+    func openNotesFromNotification() {
+        onOpenNotes?()
+        dismissNotification()
     }
 
     /// Fires when the completion's hold timer expires. Returns the pill to
@@ -499,6 +628,18 @@ final class TranscriptionFloatingWidgetController: NSObject {
     /// BEFORE calling applyPhaseFrame), so the size always reflects the
     /// content that's about to be displayed.
     private func sizeForCurrentMode() -> NSSize {
+        // Notification card supersedes the pill modes when active. Measure its
+        // intrinsic height via a throwaway hosting view (width is fixed at 340
+        // by the card's own .frame); actions are no-ops for measurement.
+        if let n = displayState.notification {
+            let probe = NSHostingView(rootView: TranscriptionStatusNotification(
+                title: n.title, message: n.message,
+                primaryLabel: n.primaryLabel, primaryAction: {},
+                secondaryLabel: n.secondaryLabel, secondaryAction: {},
+                onDismiss: {}
+            ))
+            return NSSize(width: 340, height: probe.fittingSize.height)
+        }
         let height = DesignTokens.Pill.height
         switch displayState.mode {
         case .processing:
@@ -684,7 +825,10 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
         let root = PillRootView(
             state: displayState,
-            onStop: { [weak self] in self?.transcription?.stopRecording() }
+            onStop: { [weak self] in self?.transcription?.stopRecording() },
+            onNotificationPrimary: { [weak self] in self?.openNotesFromNotification() },
+            onNotificationSecondary: { [weak self] in self?.dismissNotification() },
+            onNotificationDismiss: { [weak self] in self?.dismissNotification() }
         )
         let host = NSHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: w, height: h)

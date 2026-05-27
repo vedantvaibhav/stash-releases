@@ -442,6 +442,14 @@ final class PanelController: NSObject {
             guard let self else { return }
             self.showPanel()
         }
+        // "Open Notes" on the long-running notification: open the panel on the
+        // Notes tab with the Transcriptions filter applied.
+        transcriptionFloatingWidget.onOpenNotes = { [weak self] in
+            guard let self else { return }
+            AppSettings.shared.notesActiveFilter = .transcriptions
+            self.panelInteractionState.requestedTab = .notes
+            self.showPanel()
+        }
 
         // Auto-hide the panel when recording starts so the pill takes over.
         transcriptionService.$isRecording
