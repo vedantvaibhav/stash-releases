@@ -36,24 +36,23 @@ struct NotesFilterBar: View {
                         .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.55))
                         .lineLimit(1)
                         .layoutPriority(0)
+
+                    // Inline "Waiting" shimmer replaces the old separate
+                    // "N waiting" badge. Tap reruns userRequestedDrain.
+                    if pendingCount > 0 {
+                        Text("Waiting")
+                            .font(DesignTokens.Typography.tabLabelFont)
+                            .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.55))
+                            .lineLimit(1)
+                            .shimmer()
+                            .padding(.leading, 4)
+                            .contentShape(Rectangle())
+                            .onTapGesture { onRetryAllTap() }
+                            .help("Tap to retry pending uploads")
+                    }
                 }
                 .layoutPriority(1)
                 .animation(.easeInOut(duration: 0.08), value: activeFilter)
-
-                if pendingCount > 0 {
-                    Button(action: onRetryAllTap) {
-                        HStack(spacing: 3) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 11, weight: .medium))
-                            Text("\(pendingCount) waiting")
-                                .font(.system(size: 12, weight: .regular))
-                        }
-                        .foregroundStyle(DesignTokens.Icon.tintMuted.opacity(0.75))
-                        .padding(.leading, 6)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Tap to retry pending uploads")
-                }
 
                 Spacer(minLength: 8)
 
