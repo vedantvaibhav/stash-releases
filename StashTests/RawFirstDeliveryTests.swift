@@ -63,4 +63,37 @@ struct RawFirstDeliveryTests {
             )
         }
     }
+
+    /// uploadSession resets the "waiting on retry" published state at attempt
+    /// entry (before the audio load). We pre-set the flags, then call
+    /// uploadSession with a session whose audio file doesn't exist — it throws
+    /// at the Data(contentsOf:) load, but resetWaitingState() already ran at
+    /// the top, so the flags clear regardless of the throw.
+    ///
+    /// The complementary "flips true on URLError" path can't be unit-tested
+    /// here (callWhisper isn't injectable and a transport-layer URLError can't
+    /// be forced deterministically); the flip mechanism is covered by
+    /// TranscriptionRetryQueueTests.backoffStreamEmitsAttemptCountOnScheduledRetry
+    /// plus the manual verification in the PR.
+    @Test func uploadSessionEntryResetsWaitingState() async {
+        let svc = TranscriptionService()
+        svc.isWaitingOnRetry = true
+        svc.waitingRetryAttempt = 3
+
+        let meta = PendingSessionMetadata(
+            sessionUUID: UUID(),            // random → no audio file on disk
+            startedAt: Date(),
+            finishedAt: Date(),
+            durationSeconds: 5,
+            intent: .shortPaste,
+            frontmostAppBundleID: nil,
+            attemptCount: 0,
+            lastError: nil,
+            createdNoteID: nil
+        )
+        _ = try? await svc.uploadSession(metadata: meta)
+
+        #expect(svc.isWaitingOnRetry == false)
+        #expect(svc.waitingRetryAttempt == 0)
+    }
 }

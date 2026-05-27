@@ -36,6 +36,10 @@ actor TranscriptionRetryQueue {
     private var retryTimers: [UUID: Task<Void, Never>] = [:]
     /// Keyed by token so subscribers can unsubscribe on view teardown.
     private var observers: [UUID: ([PendingSessionMetadata]) -> Void] = [:]
+    /// Backoff-event subscribers (mirrors `observers`). Fired each time a
+    /// retry is scheduled with a non-zero delay, so the UI can show
+    /// "waiting on retry" with the current attempt count.
+    private var backoffObservers: [UUID: (BackoffEvent) -> Void] = [:]
 
     private let maxAttempts = 5
     private let backoffSchedule: [TimeInterval] = [2, 8, 30, 120, 600]   // 2s, 8s, 30s, 2m, 10m
@@ -77,6 +81,37 @@ actor TranscriptionRetryQueue {
 
     private func unregisterObserver(token: UUID) {
         observers.removeValue(forKey: token)
+    }
+
+    /// AsyncStream of backoff events — one per retry scheduled with delay > 0.
+    /// Mirrors `pendingStream`'s observer lifecycle. Subscribers (the
+    /// TranscriptionService) flip "waiting on retry" UI state on each event.
+    nonisolated func backoffStream() -> AsyncStream<BackoffEvent> {
+        AsyncStream { continuation in
+            let token = UUID()
+            Task {
+                await self.registerBackoffObserver(token: token) { event in
+                    continuation.yield(event)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                Task { await self.unregisterBackoffObserver(token: token) }
+            }
+        }
+    }
+
+    private func registerBackoffObserver(token: UUID, callback: @escaping (BackoffEvent) -> Void) {
+        backoffObservers[token] = callback
+    }
+
+    private func unregisterBackoffObserver(token: UUID) {
+        backoffObservers.removeValue(forKey: token)
+    }
+
+    private func notifyBackoffObservers(_ event: BackoffEvent) {
+        for callback in backoffObservers.values {
+            callback(event)
+        }
     }
 
     private func notifyObservers() {
@@ -193,6 +228,17 @@ actor TranscriptionRetryQueue {
 
     private func scheduleAttempt(sessionUUID: UUID, delay: TimeInterval) {
         retryTimers[sessionUUID]?.cancel()
+        // Emit a backoff event for delayed (real retry) scheduling only. The
+        // delay == 0 case is an immediate drain, not a wait, so it doesn't
+        // drive the "waiting on retry" UI.
+        if delay > 0 {
+            let attemptCount = pending[sessionUUID]?.attemptCount ?? 0
+            notifyBackoffObservers(BackoffEvent(
+                sessionUUID: sessionUUID,
+                attemptCount: attemptCount,
+                nextDelaySeconds: delay
+            ))
+        }
         // No [weak self] — Swift actors can't be weakly captured. The queue is
         // a singleton with the same lifetime as the app, so retaining it is
         // both required and harmless.
@@ -266,4 +312,13 @@ actor TranscriptionRetryQueue {
         scheduleAttempt(sessionUUID: sessionUUID, delay: delay)
     }
 
+}
+
+/// Emitted by `TranscriptionRetryQueue.backoffStream()` whenever a retry is
+/// scheduled with a non-zero delay. Sendable so it can cross the actor
+/// boundary into the AsyncStream consumer.
+struct BackoffEvent: Sendable {
+    let sessionUUID: UUID
+    let attemptCount: Int
+    let nextDelaySeconds: TimeInterval
 }

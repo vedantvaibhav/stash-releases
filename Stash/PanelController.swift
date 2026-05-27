@@ -434,6 +434,9 @@ final class PanelController: NSObject {
     func setup() {
         PanelController.shared = self
         transcriptionService.notesStorage = notesStorage
+        // Belt-and-suspenders "waiting on retry" tracking: subscribe to the
+        // queue's backoff stream so every scheduled retry flips the flag.
+        transcriptionService.startRetryObservation()
         transcriptionFloatingWidget.attach(transcription: transcriptionService)
         transcriptionFloatingWidget.onOpenTranscription = { [weak self] in
             guard let self else { return }

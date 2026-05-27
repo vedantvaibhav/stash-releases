@@ -51,6 +51,17 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// the list with the new quick-transcript pinned at the top (short).
     @Published var lastRecordingWasShort: Bool = false
 
+    /// True while an upload has failed transiently and the retry queue is
+    /// waiting to re-attempt. Drives the "waiting on retry" UI (commit 5).
+    /// Set in the URLError catch (and via the queue's backoffStream
+    /// subscription as belt-and-suspenders), reset on every fresh attempt,
+    /// new recording, and successful delivery.
+    @Published var isWaitingOnRetry: Bool = false
+
+    /// The attemptCount the queue is currently backing off on — read by the
+    /// auto-dismiss fallback (commit 6). 0 when not waiting.
+    @Published var waitingRetryAttempt: Int = 0
+
     /// Set from the notes column so saves use the same storage as the rest of the app.
     weak var notesStorage: NotesStorage?
     var onNoteCreated: ((String) -> Void)?
@@ -102,7 +113,27 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// processing phase, which feels jarring and hides system work.
     private static let minProcessingVisibility: TimeInterval = 0.4
 
+    /// Long-lived subscription to the retry queue's backoff events. Started
+    /// once via `startRetryObservation()` from PanelController.setup().
+    private var backoffObservationTask: Task<Void, Never>?
+
     // MARK: - Start
+
+    /// Subscribe to the retry queue's backoff stream so "waiting on retry"
+    /// state flips on EVERY scheduled retry, not just the first URLError the
+    /// pipeline observes directly. Belt-and-suspenders for stall paths the
+    /// uploadSession catch doesn't see (e.g., a retry scheduled by a drain
+    /// that later fails). Idempotent — re-calling cancels the prior task.
+    func startRetryObservation() {
+        backoffObservationTask?.cancel()
+        backoffObservationTask = Task { @MainActor [weak self] in
+            for await event in TranscriptionRetryQueue.shared.backoffStream() {
+                guard let self else { return }
+                self.isWaitingOnRetry = true
+                self.waitingRetryAttempt = event.attemptCount
+            }
+        }
+    }
 
     func startRecording() {
         // Clear transient post-recording state before starting a new
@@ -115,6 +146,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         completionMessage = nil
         didShowDurationWarning = false
         didShowSizeWarning = false
+        resetWaitingState()
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -631,6 +663,11 @@ final class TranscriptionService: NSObject, ObservableObject {
         // moved past the foreground attempt.
         let isFirstAttempt = (metadata.attemptCount == 0)
 
+        // Fresh attempt — clear any lingering "waiting on retry" state. If
+        // this attempt also fails transiently, the URLError catch (and the
+        // queue's backoffStream subscription) will set it true again.
+        resetWaitingState()
+
         let audioURL = AudioPersistence.shared.pendingAudioURL(sessionUUID: metadata.sessionUUID)
         let audioData: Data
         do {
@@ -665,6 +702,9 @@ final class TranscriptionService: NSObject, ObservableObject {
             #if DEBUG
             print("[Transcription] uploadSession transient URLError: \(urlError.code) — queueing retry")
             #endif
+            // Mark waiting BEFORE clearing the processing spinner so the
+            // "waiting on retry" UI takes over seamlessly as the spinner goes.
+            isWaitingOnRetry = true
             if isFirstAttempt { await clearProcessingHonoringFloor() }
             return false
         } catch {
@@ -691,6 +731,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             // no longer a content-based hallucination rejection.
             reportToSlack(error: "No audio captured (Whisper returned silence markers only, duration \(metadata.durationSeconds)s)",
                           durationSeconds: metadata.durationSeconds)
+            resetWaitingState()  // defensive — terminal state, never waiting
             if isFirstAttempt { await clearProcessingHonoringFloor() }
             showCompletion("No audio")
             return true
@@ -729,11 +770,22 @@ final class TranscriptionService: NSObject, ObservableObject {
         processingStartedAt = nil
     }
 
+    /// Clears the "waiting on retry" published state. Called on every fresh
+    /// upload attempt, on new recordings, on successful delivery, and on the
+    /// terminal no-audio path.
+    private func resetWaitingState() {
+        isWaitingOnRetry = false
+        waitingRetryAttempt = 0
+    }
+
     /// Main-actor delivery from a queued session. Calls the existing
     /// `deliverTranscriptShort` / `deliverTranscriptLong` helpers (introduced
     /// in Task 6), then correlates the returned noteID back into the queue's
     /// `meta.json` so the UI can surface "note X is from session Y".
     private func deliverTranscript(text: String, metadata: PendingSessionMetadata) async {
+        // Reached delivery — the upload succeeded, so we're definitively not
+        // waiting on a retry anymore (covers both short + long paths).
+        resetWaitingState()
         lastRecordingWasShort = (metadata.intent == .shortPaste)
         let noteId: String?
         switch metadata.intent {
