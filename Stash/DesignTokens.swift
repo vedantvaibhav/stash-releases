@@ -28,6 +28,23 @@ enum DesignTokens {
         static let activeForeground = Color(red: 0.88, green: 0.94, blue: 1.0)
     }
 
+    /// Bottom-center status notification (long-running transcription block).
+    enum Notification {
+        /// Near-black capsule background.
+        static let background  = Color(red: 0.10, green: 0.10, blue: 0.11)
+        /// Warning triangle tint (amber).
+        static let warningIcon = Color(red: 0.98, green: 0.74, blue: 0.18)
+        /// Primary button — light fill, dark label.
+        static let primaryButtonFill  = Color.white.opacity(0.92)
+        static let primaryButtonLabel = Color(red: 0.10, green: 0.10, blue: 0.11)
+        /// Secondary button — transparent fill, hairline outline, light label.
+        static let secondaryButtonOutline = Color.white.opacity(0.18)
+        static let secondaryButtonLabel   = Color.white.opacity(0.85)
+        /// Title / body text.
+        static let titleColor = Color.white
+        static let bodyColor  = Color.white.opacity(0.70)
+    }
+
     enum Spacing {
         static let panel: CGFloat = 20        // outer panel padding
         static let sectionGap: CGFloat = 20   // gap between sections

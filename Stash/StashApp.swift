@@ -21,6 +21,10 @@ struct QuickPanelApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var panelController: PanelController?
+    /// Bottom-center "transcription taking longer than usual" notification.
+    /// Driven by the upload pipeline's `isWaitingOnRetry` state (wired in a
+    /// later commit); exercised via the DEBUG menu now.
+    private let statusPresenter = StatusNotificationPresenter()
     private var globalHotKey: GlobalHotKey?
     private var quickRecordHotKey: GlobalHotKey?
     private var hotkeyObserver: NSObjectProtocol?
@@ -434,6 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Test: simulate network failure on next upload", #selector(debugSimulateNextUploadFailure)),
             ("Test: drain retry queue now",  #selector(debugDrainRetryQueue)),
             ("Test: list pending sessions",  #selector(debugListPendingSessions)),
+            ("Test: show status notification", #selector(debugShowStatusNotification)),
         ]
     }
 
@@ -478,6 +483,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("  - \(s.sessionUUID) | duration \(s.durationSeconds)s | attempts \(s.attemptCount) | error: \(s.lastError ?? "none") | note: \(s.createdNoteID ?? "nil")")
             }
         }
+    }
+
+    @objc private func debugShowStatusNotification() {
+        if statusPresenter.isVisible {
+            statusPresenter.hide()
+            return
+        }
+        statusPresenter.show(StatusNotificationModel(
+            title: "Taking longer than usual",
+            message: "Your transcript will appear in Notes when ready",
+            primaryLabel: "Open Notes",
+            primaryAction: { [weak self] in self?.statusPresenter.hide() },
+            secondaryLabel: "Dismiss",
+            secondaryAction: { [weak self] in self?.statusPresenter.hide() },
+            onDismiss: { [weak self] in self?.statusPresenter.hide() }
+        ))
     }
     #endif
 }
