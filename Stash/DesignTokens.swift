@@ -133,31 +133,15 @@ enum DesignTokens {
         static let recordingDotSize: CGFloat = 10
         static let stopTapTargetSize: CGFloat = 10
 
-        // Panel-frame animation — cubic-bezier(0.22, 1, 0.36, 1) over 400ms.
-        // Used by the drag-to-snap reposition. Tuned to read as a deliberate
-        // settle into the snap corner rather than a hard snap.
+        // Fallback duration for the AppKit panel-frame animation on the rare
+        // animated-while-hidden phase change (the common visible morph uses the
+        // PillMorphAnimator spring, which ignores this). Strong ease-out comes
+        // from DesignTokens.Motion.
         static let frameAnimationDuration: TimeInterval = 0.40
-        static let frameAnimationCurveCP1x: Double = 0.22
-        static let frameAnimationCurveCP1y: Double = 1.0
-        static let frameAnimationCurveCP2x: Double = 0.36
-        static let frameAnimationCurveCP2y: Double = 1.0
 
-        // Phase-change animation — recording → processing (shrink to circle)
-        // and back (expand). 0.27s easeInEaseOut. The pill content uses an
-        // asymmetric transition so the capsule's geometry (rounded corners)
-        // morphs first, then content fades in — see contentInsertionDelay /
-        // contentInsertionDuration below.
+        // Phase-change frame duration for the NSAnimationContext fallback path
+        // (visible morphs spring instead — see PillMorphAnimator).
         static let phaseAnimationDuration: TimeInterval = 0.27
-
-        // Asymmetric content-swap transition timings. When mode changes,
-        // the OLD content fades out fast (`contentRemovalDuration`) so the
-        // capsule reads as "empty" while the AppKit panel resizes, then
-        // the NEW content fades in (`contentInsertionDuration`) after a
-        // small delay (`contentInsertionDelay`) so the rounded corners
-        // reach their target shape before text appears.
-        static let contentRemovalDuration: TimeInterval = 0.08
-        static let contentInsertionDelay: TimeInterval = 0.16
-        static let contentInsertionDuration: TimeInterval = 0.16
 
         // Completion hold durations — how long the pill displays a completion
         // message before hiding (or returning to recording for mid-recording

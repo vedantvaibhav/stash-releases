@@ -540,48 +540,41 @@ final class TranscriptionFloatingWidgetController: NSObject {
     // MARK: - Long-running notification
 
     /// Long-running (threshold-crossed) card: promises a clipboard copy so the
-    /// user can walk away. Reuses the notification surface + 5-min auto-hide.
+    /// user can walk away.
     private func enterLongRunningCard() {
-        let content = NotificationContent(
+        presentCard(NotificationContent(
             title: "Taking longer than usual",
             message: "We'll copy your transcript to the clipboard when it's ready",
             primaryLabel: "Open Notes",
             secondaryLabel: "Hide"
-        )
-        let oldPhase = phase
-        let firstShow = (phase != .notification)
-        cancelAllPendingWork()
-        phase = .notification
-        heldCompletionMessage = nil
-        if displayState.notification != content { displayState.notification = content }
-        applyPhaseFrame(animated: oldPhase != .none)
-        showCollapsedPanelIfNeeded()
-        if firstShow { startNotificationAutoHide() }
+        ))
     }
 
+    /// Network-retry stall card. Copy escalates once we've retried a few times.
     private func enterNotificationPhase(attempt: Int) {
-        let oldPhase = phase
-        let content: NotificationContent
-        if attempt >= 3 {
-            content = NotificationContent(
+        let content: NotificationContent = attempt >= 3
+            ? NotificationContent(
                 title: "Still trying",
                 message: "We'll keep retrying. Check your Notes panel anytime.",
                 primaryLabel: "Open Notes",
-                secondaryLabel: "Hide"
-            )
-        } else {
-            content = NotificationContent(
+                secondaryLabel: "Hide")
+            : NotificationContent(
                 title: "Taking longer than usual",
                 message: "Your transcript will appear in Notes when ready",
                 primaryLabel: "Open Notes",
-                secondaryLabel: "Dismiss"
-            )
-        }
+                secondaryLabel: "Dismiss")
+        presentCard(content)
+    }
+
+    /// Shared card presentation: enter the notification phase, morph the card
+    /// content in place, show the panel, and arm the auto-hide on first show.
+    /// `sizeForCurrentMode` reads `displayState.notification` for sizing.
+    private func presentCard(_ content: NotificationContent) {
+        let oldPhase = phase
         let firstShow = (phase != .notification)
-        cancelAllPendingWork()   // notification is its own phase; drop any completion timer
+        cancelAllPendingWork() // notification is its own phase; drop any completion timer
         phase = .notification
         heldCompletionMessage = nil
-        // Set the card content; sizeForCurrentMode reads displayState.notification.
         if displayState.notification != content { displayState.notification = content }
         applyPhaseFrame(animated: oldPhase != .none)
         showCollapsedPanelIfNeeded()

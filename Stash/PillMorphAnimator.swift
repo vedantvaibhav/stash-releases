@@ -55,8 +55,9 @@ final class PillMorphAnimator {
     private func startTimer() {
         guard timer == nil else { return }
         let t = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self] _ in
-            // Timer fires on the main run loop; hop to the actor to satisfy isolation.
-            Task { @MainActor in self?.tick() }
+            // Scheduled on RunLoop.main, so it always fires on the main thread —
+            // assume the isolation rather than allocating a Task per tick (~120/s).
+            MainActor.assumeIsolated { self?.tick() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
