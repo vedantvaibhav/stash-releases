@@ -1206,11 +1206,11 @@ final class TranscriptionService: NSObject, ObservableObject {
             )
         }
 
-        // Re-read isLongRunning HERE (not at entry): the threshold timer fires
-        // at +6s, which can elapse DURING cleanup. Reading it now guarantees the
-        // "clipboard-only / no paste" contract matches what the card promised.
-        let clipboardOnly = isLongRunning
-        performShortDelivery(cleaned: cleaned, clipboardOnly: clipboardOnly, capturedFrontmostBundleID: capturedFrontmostBundleID)
+        // Deliver normally regardless of how long it took. A slow round-trip
+        // still pastes if a target exists (→ "Pasted ✓"); we no longer force a
+        // clipboard-only "Copied" just because it crossed the long-running
+        // threshold (isLongRunning only drove the "Taking longer" pill text).
+        performShortDelivery(cleaned: cleaned, capturedFrontmostBundleID: capturedFrontmostBundleID)
         return rawNoteId
     }
 
@@ -1219,11 +1219,11 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// The clipboard is written in exactly ONE place (only for `Copied`),
     /// bumping `changeCount` so Strategy 2's delayed restore skips.
     @MainActor
-    private func performShortDelivery(cleaned: String, clipboardOnly: Bool, capturedFrontmostBundleID: String?) {
+    private func performShortDelivery(cleaned: String, capturedFrontmostBundleID: String?) {
         let target = AutoPasteService.shared.classifyTarget(capturedFrontmostBundleID: capturedFrontmostBundleID)
         let decision: DeliveryDecision.Outcome
 
-        if DeliveryDecision.shouldAttemptPaste(target: target, clipboardOnly: clipboardOnly) {
+        if DeliveryDecision.shouldAttemptPaste(target: target) {
             let result = AutoPasteService.shared.attemptInsert(text: cleaned)
             let outcome: PasteOutcome
             switch result {
@@ -1234,7 +1234,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             }
             decision = DeliveryDecision.resolvePaste(outcome)
         } else {
-            decision = DeliveryDecision.resolveNoPaste(target: target, clipboardOnly: clipboardOnly)
+            decision = DeliveryDecision.resolveNoPaste(target: target)
         }
 
         // Single clipboard owner. `verifiedPasted`/`Saved` (clipboard == .none)

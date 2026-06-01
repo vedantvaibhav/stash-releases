@@ -167,10 +167,6 @@ enum DesignTokens {
         // Content crossfade starts slightly shrunk + transparent (never
         // scale(0) — emil): a barely-there settle as the new content melts in.
         static let entranceScale: CGFloat = 0.96
-        // Panel ENTRANCE scale — the whole pill springs up from this scale as it
-        // fades in, for a liquid "pop" (more pronounced than the content
-        // crossfade, but still never from 0).
-        static let entranceStartScale: CGFloat = 0.90
 
         // Text-only completion states (errors + warnings: "No audio", "Failed",
         // "5 min left", "Almost full") drop the icon disc and render just the
@@ -219,16 +215,23 @@ enum DesignTokens {
     }
 
     enum PanelAnimation {
-        /// Open: fade 0 → 1 with a 10 pt downward settle. Ease-in-out, ~20%
-        /// faster than the earlier 0.32s — the prior duration felt sluggish
-        /// per test feedback.
-        static let openDuration: CFTimeInterval = 0.26
-        /// Close: fade 1 → 0 with an 8 pt upward lift. Ease-in-out, slightly
-        /// faster than open so dismissal reads as quick.
-        static let closeDuration: CFTimeInterval = 0.21
-        /// Panel starts 10 pt above its final y on open.
+        /// Entrance: the pill descends FROM THE TOP — starts `entranceFromTopOffset`
+        /// above its resting frame and slides down into place while fading in, on
+        /// a strong ease-out so it settles very smoothly. Slightly longer than a
+        /// snappy UI tween because the brief sees a deliberate, calm arrival.
+        static let openDuration: CFTimeInterval = 0.34
+        /// Distance (pt) above the resting frame the pill starts from on entrance.
+        static let entranceFromTopOffset: CGFloat = 28
+
+        /// Exit: the pill MORPHS into the 32×32 circle (spring-collapse) while it
+        /// fades out, then orders out — a graceful gather-into-a-dot, not a cut.
+        /// The fade runs over this window so the collapse is visible before it
+        /// vanishes.
+        static let closeDuration: CFTimeInterval = 0.30
+
+        /// Slide offsets for the MAIN content panel's open/close (PanelController),
+        /// distinct from the pill's from-top entrance / circle exit above.
         static let openSlideOffset: CGFloat = 10
-        /// Panel ends 8 pt above its start y on close.
         static let closeSlideOffset: CGFloat = 8
     }
 

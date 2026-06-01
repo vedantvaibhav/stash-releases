@@ -16,9 +16,8 @@ enum DeliveryDecision {
     enum Clipboard: Equatable { case none, writeTranscript }
     struct Outcome: Equatable { let pill: String; let clipboard: Clipboard }
 
-    static func shouldAttemptPaste(target: PasteTarget, clipboardOnly: Bool) -> Bool {
-        guard !clipboardOnly else { return false }
-        return target == .editable
+    static func shouldAttemptPaste(target: PasteTarget) -> Bool {
+        target == .editable
     }
 
     static func resolvePaste(_ outcome: PasteOutcome) -> Outcome {
@@ -30,8 +29,7 @@ enum DeliveryDecision {
         }
     }
 
-    static func resolveNoPaste(target: PasteTarget, clipboardOnly: Bool) -> Outcome {
-        if clipboardOnly { return Outcome(pill: "Copied", clipboard: .writeTranscript) }
+    static func resolveNoPaste(target: PasteTarget) -> Outcome {
         switch target {
         case .noTarget, .secureField:
             return Outcome(pill: "Saved", clipboard: .none)

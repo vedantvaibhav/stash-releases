@@ -7,8 +7,15 @@ import SwiftUI
 enum PillMode: Equatable {
     case recording(durationSeconds: Int)
     case processing
+    /// Still working, but past the long-running threshold (or waiting on a
+    /// network retry). The pill morphs to a calm text-only "Taking longer than
+    /// usual" — no card, no actions. Resolves to a normal completion when done.
+    case longRunning
     case completion(message: String)
 }
+
+/// Copy for the long-running pill. Single source so view + sizing agree.
+let longRunningPillText = "Taking longer than usual"
 
 /// Error + warning completion states render as TEXT ONLY (no icon disc) — the
 /// message carries the meaning and an icon adds noise. Success states
@@ -27,12 +34,14 @@ private func pillMessageIsTextOnly(_ message: String) -> Bool {
 private enum PillPhaseKey: Hashable {
     case recording
     case processing
+    case longRunning
     case completion(String)
 
     init(_ mode: PillMode) {
         switch mode {
         case .recording:            self = .recording
         case .processing:           self = .processing
+        case .longRunning:          self = .longRunning
         case .completion(let msg):  self = .completion(msg)
         }
     }
@@ -146,10 +155,14 @@ struct TranscriptionPillView: View {
     }
 
     /// Recording + processing always show the icon disc; completion shows it
-    /// only for success states. Errors/warnings render text-only.
+    /// only for success states. Errors/warnings + the long-running state render
+    /// text-only.
     private var showsIconDisc: Bool {
-        if case .completion(let msg) = mode { return !pillMessageIsTextOnly(msg) }
-        return true
+        switch mode {
+        case .longRunning: return false
+        case .completion(let msg): return !pillMessageIsTextOnly(msg)
+        default: return true
+        }
     }
 
     // MARK: Icon disc (24×24 with 14pt inner glyph / spinner)
@@ -173,6 +186,10 @@ struct TranscriptionPillView: View {
                 .controlSize(.small)
                 .tint(DesignTokens.Icon.tintMuted)
                 .transition(.opacity)
+        case .longRunning:
+            // No icon — long-running renders text-only (showsIconDisc == false).
+            // Kept for switch exhaustiveness.
+            EmptyView()
         case .completion(let message):
             if isPastedCompletion(message) {
                 Image("PastedConfirm")
@@ -241,6 +258,8 @@ struct TranscriptionPillView: View {
             // for .processing, so this branch never builds. Kept exhaustive
             // for the compiler.
             EmptyView()
+        case .longRunning:
+            pillLabel(longRunningPillText)
         case .completion(let message):
             pillLabel(message)
         }
@@ -276,7 +295,7 @@ struct TranscriptionPillView: View {
         case .recording:
             StopRecordingButton(onStop: onStop)
                 .transition(.opacity.combined(with: .scale(scale: 0.85)))
-        case .processing, .completion:
+        case .processing, .longRunning, .completion:
             EmptyView()
         }
     }
@@ -521,10 +540,10 @@ final class TranscriptionFloatingWidgetController: NSObject {
         }
 
         // Still processing AND crossed the long-running threshold → the pill
-        // morphs into the "we'll copy to your clipboard" card so the user can
-        // walk away. On completion the completion branch above supersedes it.
+        // morphs to a calm text-only "Taking longer than usual" (no card). On
+        // completion the completion branch above supersedes it normally.
         if ts.isProcessing && ts.isLongRunning {
-            enterLongRunningCard()
+            showLongRunningPill()
             return
         }
 
@@ -539,24 +558,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        // Long-running stall: nothing else is showing and the upload is
-        // waiting on a retry. Morph the pill into the notification card.
-        // A user dismiss / 5-min auto-hide suppresses it until the wait
-        // resets (handled by `notificationDismissed`).
+        // Network retry pending → same calm "Taking longer than usual" pill
+        // (the inline "Waiting" shimmer in the filter bar is the richer
+        // indicator). No card.
         if ts.isWaitingOnRetry {
-            if notificationDismissed {
-                // Dismissed but still waiting — keep the pill hidden; the
-                // inline "Waiting" shimmer in the filter bar is the indicator.
-                if phase != .completion { hidePanel(); phase = .none }
-                return
-            }
-            enterNotificationPhase(attempt: ts.waitingRetryAttempt)
+            showLongRunningPill()
             return
-        }
-
-        // Not waiting anymore — clear any notification state.
-        if phase == .notification || displayState.notification != nil {
-            clearNotification()
         }
 
         if phase != .completion {
@@ -564,6 +571,20 @@ final class TranscriptionFloatingWidgetController: NSObject {
             phase = .none
             heldCompletionMessage = nil
         }
+    }
+
+    /// Long-running indicator: the pill morphs to a calm text-only
+    /// "Taking longer than usual" while work continues (threshold crossed or
+    /// network retry). No card, no actions — it resolves to a normal completion
+    /// when delivery lands. Reuses the `.processing` phase (still in progress).
+    private func showLongRunningPill() {
+        let oldPhase = phase
+        cancelAllPendingWork(except: .processing)
+        phase = .processing
+        heldCompletionMessage = nil
+        updateHosted(mode: .longRunning)
+        applyPhaseFrame(animated: oldPhase != .none)
+        showCollapsedPanelIfNeeded()
     }
 
     // MARK: - Long-running notification
@@ -725,6 +746,10 @@ final class TranscriptionFloatingWidgetController: NSObject {
         switch displayState.mode {
         case .processing:
             return NSSize(width: height, height: height)
+        case .longRunning:
+            // Text-only layout (no icon), same as a text-only completion.
+            let labelW = measureLabelWidth(longRunningPillText, font: Self.completionLabelFont)
+            return NSSize(width: Self.basePillTextOnlyWidth + labelW + Self.measurementSafetyMargin, height: height)
         case .recording(let seconds):
             let labelW = measureLabelWidth(formatPillDuration(seconds), font: Self.recordingLabelFont)
             let width = Self.basePillFixedWidth + labelW + DesignTokens.Pill.recordingDotSize + Self.measurementSafetyMargin
@@ -806,48 +831,38 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        // Either fully hidden, or mid-hide. Liquid entrance: the whole pill
-        // springs UP from a scaled-down start (subtle bounce, never from 0)
-        // while it fades in. The frame is driven by the spring (PillMorphAnimator);
-        // alpha by a short ease-out. They animate independent properties, so
-        // there's no frame-driver overlap. `panel.frame` is the canonical target
-        // because `sync()` calls `applyPhaseFrame` immediately before this.
+        // Either fully hidden, or mid-hide. Entrance: the pill descends FROM THE
+        // TOP — it starts `entranceFromTopOffset` above its resting frame and
+        // slides down into place while fading in, on a strong ease-out so it
+        // settles very smoothly. No spring/scale here (that's the morph + exit);
+        // a clean glide reads calmer for the first appearance. `panel.frame` is
+        // the canonical target because `sync()` set it via `applyPhaseFrame` just
+        // before this.
         morphAnimator?.stop()
         visibilityAnimationToken &+= 1
         hideInFlight = false
 
         let target = panel.frame
-        panel.setFrame(entranceStartFrame(for: target), display: false)
+        // Start above the resting frame (higher y == higher on screen) and glide down.
+        let startFrame = target.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.entranceFromTopOffset)
+        panel.setFrame(startFrame, display: false)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
 
         if DesignTokens.Motion.reduceMotion {
-            // Reduced motion: no spring/scale — just snap to size and fade in
+            // Reduced motion: no slide — just snap to size and fade in
             // (opacity aids comprehension; emil: reduced motion ≠ no motion).
             panel.setFrame(target, display: true)
             panel.animator().alphaValue = 1
             return
         }
 
-        morphAnimator?.animate(to: target)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = DesignTokens.PanelAnimation.openDuration
             ctx.timingFunction = DesignTokens.Motion.caEaseOut()
+            panel.animator().setFrame(target, display: true)
             panel.animator().alphaValue = 1
         }
-    }
-
-    /// Entrance start frame: the target shrunk to `entranceStartScale` around
-    /// its center plus a small downward offset, so the pill springs up + outward
-    /// as it fades in (liquid pop). Target unchanged under reduce-motion.
-    private func entranceStartFrame(for target: NSRect) -> NSRect {
-        guard !DesignTokens.Motion.reduceMotion else { return target }
-        let s = DesignTokens.Pill.entranceStartScale
-        let w = target.width * s
-        let h = target.height * s
-        let x = target.midX - w / 2
-        let y = target.midY - h / 2 - DesignTokens.PanelAnimation.openSlideOffset
-        return NSRect(x: x, y: y, width: w, height: h)
     }
 
     /// Position the panel at its fixed top-center anchor using the given size.
@@ -895,44 +910,49 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private func hidePanel() {
         guard let panel, panel.isVisible else { return }
 
-        // Stop any in-flight spring morph so it doesn't fight the exit
-        // animation's frame changes (emil: no driver overlap).
-        morphAnimator?.stop()
-
-        // Liquid exit (mirror of the entrance): the pill shrinks slightly + lifts
-        // as it fades to alpha=0, then orderOut. Faster than the entrance (emil:
-        // exits snappier than enters). `hideInFlight` lets a subsequent show
-        // distinguish "currently hiding" from "mid slide-in" and re-run the
-        // entrance only for the former.
+        // Exit: MORPH the pill into the 32×32 circle (spring-collapse, anchored
+        // at the same top-center so the width gathers inward to a dot) while it
+        // fades out, then orderOut — a graceful gather, not a plain cut. The
+        // frame is driven by the spring (retargeting any in-flight morph, so a
+        // recording→processing→hide burst stays continuous); alpha fades via
+        // NSAnimationContext. `hideInFlight` lets a subsequent show distinguish
+        // "currently hiding" from "mid entrance" and re-run the entrance only
+        // for the former.
         visibilityAnimationToken &+= 1
         hideInFlight = true
         let token = visibilityAnimationToken
 
         let cur = panel.frame
-        let endFrame: NSRect
-        if DesignTokens.Motion.reduceMotion {
-            endFrame = cur.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.closeSlideOffset)
-        } else {
-            let s = DesignTokens.Pill.entranceStartScale
-            let w = cur.width * s
-            let h = cur.height * s
-            endFrame = NSRect(x: cur.midX - w / 2,
-                              y: cur.midY - h / 2 + DesignTokens.PanelAnimation.closeSlideOffset,
-                              width: w, height: h)
-        }
+        let size = DesignTokens.Pill.height
+        // Collapse to a circle keeping the top edge fixed (top-center anchor).
+        let circleFrame = NSRect(x: cur.midX - size / 2, y: cur.maxY - size, width: size, height: size)
 
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = DesignTokens.PanelAnimation.closeDuration
-            ctx.timingFunction = DesignTokens.Motion.caEaseOut()
-            panel.animator().setFrame(endFrame, display: true)
-            panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self, weak panel] in
+        let finish: () -> Void = { [weak self, weak panel] in
             // Token guard: if a show superseded this hide, don't orderOut —
             // the show animation is bringing the panel back.
             guard let self, self.visibilityAnimationToken == token else { return }
+            self.morphAnimator?.stop()
             panel?.orderOut(nil)
             self.hideInFlight = false
-        })
+        }
+
+        if DesignTokens.Motion.reduceMotion {
+            // Reduced motion: no collapse — just fade out.
+            morphAnimator?.stop()
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = DesignTokens.PanelAnimation.closeDuration
+                ctx.timingFunction = DesignTokens.Motion.caEaseOut()
+                panel.animator().alphaValue = 0
+            }, completionHandler: finish)
+            return
+        }
+
+        morphAnimator?.animate(to: circleFrame)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = DesignTokens.PanelAnimation.closeDuration
+            ctx.timingFunction = DesignTokens.Motion.caEaseOut()
+            panel.animator().alphaValue = 0
+        }, completionHandler: finish)
     }
 
     private func buildPanel() {
