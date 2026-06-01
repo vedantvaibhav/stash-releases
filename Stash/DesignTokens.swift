@@ -16,6 +16,46 @@ enum DesignTokens {
         static let backgroundActive = Color(red: 0.102, green: 0.102, blue: 0.102) // #1A1A1A
     }
 
+    /// Animation curves, spring parameters, and the reduce-motion gate.
+    /// Curves follow Emil Kowalski's "strong custom easing" guidance — the
+    /// built-in SwiftUI/Core Animation easings are too weak. cubic-bezier
+    /// control points below are the strong ease-out (0.23, 1, 0.32, 1) and
+    /// strong ease-in-out (0.77, 0, 0.175, 1) from the design-engineering skill.
+    enum Motion {
+        // Strong ease-out — entrances/exits (starts fast, feels responsive).
+        static let strongEaseOutCP: (Double, Double, Double, Double) = (0.23, 1.0, 0.32, 1.0)
+        // Strong ease-in-out — on-screen movement that isn't a spring.
+        static let strongEaseInOutCP: (Double, Double, Double, Double) = (0.77, 0.0, 0.175, 1.0)
+
+        // Apple Dynamic-Island spring (Emil Kowalski's animations.dev recipe):
+        // ONE organic spring drives every pill frame change — appear (EXPAND
+        // from the dot), state morphs, and disappear (CONTRACT to the dot). The
+        // 32×32 dot is the collapsed form (same as the processing state), so the
+        // pill grows out of it and gathers back into it, just like the Island
+        // expanding from the notch. ~0.45s response with a clear ≈0.4 bounce
+        // (dampingRatio 0.6) for the lively, organic settle. Apple-style
+        // {duration, bounce} ≈ {0.45, 0.4}. Used by PillMorphAnimator + the
+        // content crossfade timing.
+        static let morphResponse: Double = 0.45
+        static let morphDampingRatio: Double = 0.60
+        // Hard cap on how long the spring driver runs before snapping to the
+        // target, so an under-damped (bouncy) tail can never leave it un-settled.
+        static let morphSettleCap: TimeInterval = 0.75
+
+        static func caEaseOut() -> CAMediaTimingFunction {
+            CAMediaTimingFunction(controlPoints:
+                Float(strongEaseOutCP.0), Float(strongEaseOutCP.1),
+                Float(strongEaseOutCP.2), Float(strongEaseOutCP.3))
+        }
+
+        /// True when the user has asked the system to minimise motion. Springs
+        /// and blur are dropped to plain opacity in that case (emil: reduced
+        /// motion = fewer/gentler, not zero).
+        static var reduceMotion: Bool {
+            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        }
+    }
+
     /// Active-state colors for the notes filter bar pill (icon + "F" letter).
     /// Bluish-white at bumped opacity reads "cool/glacial" without going full
     /// cyan — chromaticity collapses below ~0.25 opacity for near-white colors,
@@ -98,31 +138,15 @@ enum DesignTokens {
         static let recordingDotSize: CGFloat = 10
         static let stopTapTargetSize: CGFloat = 10
 
-        // Panel-frame animation — cubic-bezier(0.22, 1, 0.36, 1) over 400ms.
-        // Used by the drag-to-snap reposition. Tuned to read as a deliberate
-        // settle into the snap corner rather than a hard snap.
+        // Fallback duration for the AppKit panel-frame animation on the rare
+        // animated-while-hidden phase change (the common visible morph uses the
+        // PillMorphAnimator spring, which ignores this). Strong ease-out comes
+        // from DesignTokens.Motion.
         static let frameAnimationDuration: TimeInterval = 0.40
-        static let frameAnimationCurveCP1x: Double = 0.22
-        static let frameAnimationCurveCP1y: Double = 1.0
-        static let frameAnimationCurveCP2x: Double = 0.36
-        static let frameAnimationCurveCP2y: Double = 1.0
 
-        // Phase-change animation — recording → processing (shrink to circle)
-        // and back (expand). 0.27s easeInEaseOut. The pill content uses an
-        // asymmetric transition so the capsule's geometry (rounded corners)
-        // morphs first, then content fades in — see contentInsertionDelay /
-        // contentInsertionDuration below.
+        // Phase-change frame duration for the NSAnimationContext fallback path
+        // (visible morphs spring instead — see PillMorphAnimator).
         static let phaseAnimationDuration: TimeInterval = 0.27
-
-        // Asymmetric content-swap transition timings. When mode changes,
-        // the OLD content fades out fast (`contentRemovalDuration`) so the
-        // capsule reads as "empty" while the AppKit panel resizes, then
-        // the NEW content fades in (`contentInsertionDuration`) after a
-        // small delay (`contentInsertionDelay`) so the rounded corners
-        // reach their target shape before text appears.
-        static let contentRemovalDuration: TimeInterval = 0.08
-        static let contentInsertionDelay: TimeInterval = 0.16
-        static let contentInsertionDuration: TimeInterval = 0.16
 
         // Completion hold durations — how long the pill displays a completion
         // message before hiding (or returning to recording for mid-recording
@@ -133,6 +157,31 @@ enum DesignTokens {
         // read them while the recording continues.
         static let completionDefaultHold: TimeInterval = 1.6
         static let completionWarningHold: TimeInterval = 3.5
+
+        // Masked crossfade for state→state text/glyph swaps. Old content
+        // blurs+fades out fast; new content blurs in after a short delay so
+        // the swap reads as one layer "melting" into the next rather than two
+        // crisp layers crossing (emil: "use blur to mask imperfect
+        // transitions"). Heavier blur = more liquid smear. Total < 300ms.
+        static let crossfadeOutDuration: TimeInterval = 0.10
+        static let crossfadeInDelay: TimeInterval = 0.12
+        static let crossfadeInDuration: TimeInterval = 0.18
+        static let crossfadeBlurRadius: CGFloat = 10
+        // Content crossfade starts slightly shrunk + transparent (never
+        // scale(0) — emil): a barely-there settle as the new content melts in.
+        static let entranceScale: CGFloat = 0.96
+
+        // Text-only completion states (errors + warnings: "No audio", "Failed",
+        // "5 min left", "Almost full") drop the icon disc and render just the
+        // message. These label paddings sit INSIDE the outer leading(4)/
+        // trailing(8) so total inset is balanced at 14pt each side
+        // (4+10 == 8+6). sizeForCurrentMode mirrors these exact values.
+        static let textOnlyLabelLeadingPad: CGFloat = 10
+        static let textOnlyLabelTrailingPad: CGFloat = 6
+
+        // Processing/delivery longer than this flips the session into the
+        // long-running "walk away" path (clipboard-only delivery + card).
+        static let longRunningThresholdSeconds: TimeInterval = 6.0
     }
 
     enum Typography {
@@ -169,16 +218,24 @@ enum DesignTokens {
     }
 
     enum PanelAnimation {
-        /// Open: fade 0 → 1 with a 10 pt downward settle. Ease-in-out, ~20%
-        /// faster than the earlier 0.32s — the prior duration felt sluggish
-        /// per test feedback.
+        /// PILL entrance: Dynamic-Island EXPAND — the bouncy spring
+        /// (DesignTokens.Motion) grows the pill out of the 32×32 dot to full
+        /// width; alpha fades in over `entranceFadeDuration` so it's visible as
+        /// it springs open.
+        static let entranceFadeDuration: CFTimeInterval = 0.22
+
+        /// PILL exit: the spring collapses the frame into the 32×32 circle (both
+        /// edges gather to center, with a little squash-bounce). The fade waits
+        /// `exitFadeDelay` so the circle visibly FORMS first, then vanishes over
+        /// `exitFadeDuration`. This is the "gather into a dot," not a cut.
+        static let exitFadeDelay: CFTimeInterval = 0.20
+        static let exitFadeDuration: CFTimeInterval = 0.16
+
+        /// MAIN content panel open/close (PanelController) — distinct from the
+        /// pill above. Unchanged.
         static let openDuration: CFTimeInterval = 0.26
-        /// Close: fade 1 → 0 with an 8 pt upward lift. Ease-in-out, slightly
-        /// faster than open so dismissal reads as quick.
         static let closeDuration: CFTimeInterval = 0.21
-        /// Panel starts 10 pt above its final y on open.
         static let openSlideOffset: CGFloat = 10
-        /// Panel ends 8 pt above its start y on close.
         static let closeSlideOffset: CGFloat = 8
     }
 

@@ -49,6 +49,31 @@ struct RawFirstDeliveryTests {
         #expect(capturedModel == "test-model")
     }
 
+    @Test func shortCleanupReturnsModelOutputWhenFast() async {
+        let svc = TranscriptionService()
+        svc.chatFunction = { _, _, _, _ in "1. one\n2. two" } // returns immediately
+        let out = await svc.testCleanupShortWithTimeout("one two", timeout: 4.0)
+        #expect(out == "1. one\n2. two")
+    }
+
+    @Test func shortCleanupReturnsNilWhenModelThrows() async {
+        let svc = TranscriptionService()
+        struct Boom: Error {}
+        svc.chatFunction = { _, _, _, _ in throw Boom() }
+        let out = await svc.testCleanupShortWithTimeout("hello", timeout: 4.0)
+        #expect(out == nil)
+    }
+
+    @Test func shortCleanupReturnsNilWhenModelTooSlow() async {
+        let svc = TranscriptionService()
+        svc.chatFunction = { _, _, _, _ in
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+            return "too late"
+        }
+        let out = await svc.testCleanupShortWithTimeout("hi", timeout: 0.05) // 50ms — timeout wins
+        #expect(out == nil)
+    }
+
     @Test func chatFunctionPropagatesThrows() async {
         let svc = TranscriptionService()
         struct CleanupFailed: Error {}

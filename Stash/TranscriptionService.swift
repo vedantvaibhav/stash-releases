@@ -62,6 +62,12 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// auto-dismiss fallback (commit 6). 0 when not waiting.
     @Published var waitingRetryAttempt: Int = 0
 
+    /// True once a session crosses the long-running threshold (processing still
+    /// in flight after `Pill.longRunningThresholdSeconds`) OR a network retry is
+    /// pending. While true, short delivery is clipboard-only and the pill shows
+    /// the long-running card. Reset on every new recording and on delivery.
+    @Published var isLongRunning: Bool = false
+
     /// Set from the notes column so saves use the same storage as the rest of the app.
     weak var notesStorage: NotesStorage?
     var onNoteCreated: ((String) -> Void)?
@@ -94,6 +100,10 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// Periodic sampler (every 30s) that checks the on-disk audio file size
     /// and fires the 20 MB warning toast / the 24 MB hard-stop.
     private var sizeMonitorTimer: Timer?
+    /// One-shot: fires `Pill.longRunningThresholdSeconds` after processing
+    /// begins; if still processing, flips `isLongRunning` so delivery goes
+    /// clipboard-only and the pill shows the long-running card.
+    private var longRunningTimer: Timer?
     /// One-shot per recording session — prevents the duration warning toast
     /// from re-firing if Combine publishes during the warning's hold window.
     /// Reset to false in startRecording.
@@ -112,6 +122,12 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// without a floor, the user perceives "record → completion" with no
     /// processing phase, which feels jarring and hides system work.
     private static let minProcessingVisibility: TimeInterval = 0.4
+
+    /// Upper bound on the pre-paste cleanup pass for short dictation. If the
+    /// fast model hasn't returned within this window we paste the raw Whisper
+    /// text (still correct, just unformatted) and the saved note keeps raw.
+    /// Keeps the round-trip bounded.
+    private static let shortCleanupTimeoutSeconds: TimeInterval = 4.0
 
     /// Long-lived subscription to the retry queue's backoff events. Started
     /// once via `startRetryObservation()` from PanelController.setup().
@@ -147,6 +163,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         didShowDurationWarning = false
         didShowSizeWarning = false
         resetWaitingState()
+        resetLongRunning()
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -391,6 +408,18 @@ final class TranscriptionService: NSObject, ObservableObject {
         isProcessing = true
         audioLevel = 0
 
+        // Long-running threshold: if processing/delivery is still running after
+        // this, flip to clipboard-only delivery + the long-running card so the
+        // user can walk away.
+        longRunningTimer?.invalidate()
+        longRunningTimer = Timer(timeInterval: DesignTokens.Pill.longRunningThresholdSeconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isProcessing else { return }
+                self.isLongRunning = true
+            }
+        }
+        if let t = longRunningTimer { RunLoop.main.add(t, forMode: .common) }
+
         let recordedDuration = duration
 
         guard let uuid = sessionUUID else {
@@ -618,20 +647,6 @@ final class TranscriptionService: NSObject, ObservableObject {
     - Do not start with any label like "Overview:", "Summary:", "Key Points:", etc.
     """
 
-    /// Maps the AX-paste outcome to a pill confirmation message, or nil
-    /// when the pill should hide silently. Only the read-back-verified
-    /// Strategy 1 path earns "Pasted ✓"; the other outcomes return nil so
-    /// the pill goes from processing to invisible. The transcript is
-    /// recoverable in Notes regardless of paste outcome.
-    private func pillCopyFor(_ result: AutoPasteService.InsertResult) -> String? {
-        switch result {
-        case .verifiedPasted:
-            return "Pasted ✓"
-        case .attemptedPaste, .noPermission, .insertionFailed:
-            return nil
-        }
-    }
-
     // MARK: - Queue-driven upload pipeline
 
     /// Called by the retry queue. Reads `pending/<uuid>/audio.m4a` from disk,
@@ -704,7 +719,9 @@ final class TranscriptionService: NSObject, ObservableObject {
             #endif
             // Mark waiting BEFORE clearing the processing spinner so the
             // "waiting on retry" UI takes over seamlessly as the spinner goes.
+            // Network retry is a long-running path too — deliver via clipboard.
             isWaitingOnRetry = true
+            isLongRunning = true
             if isFirstAttempt { await clearProcessingHonoringFloor() }
             return false
         } catch {
@@ -737,13 +754,13 @@ final class TranscriptionService: NSObject, ObservableObject {
             return true
         }
 
-        // Clear processing BEFORE delivery so the pill transitions
-        // processing → completion in the user-visible order. The floor
-        // helper enforces a minimum visible spinner duration even if
-        // Whisper returned in <400ms; without it the spinner phase can
-        // be perceptually invisible on fast paths.
-        if isFirstAttempt { await clearProcessingHonoringFloor() }
-        // Raw-first delivery — same actor, just call through.
+        // Long path clears the spinner BEFORE its synchronous "Note saved"
+        // (unchanged behaviour). Short path keeps the spinner up through its
+        // bounded cleanup-before-paste and clears itself in
+        // deliverTranscriptShort, so the spinner covers Whisper + cleanup.
+        if isFirstAttempt && metadata.intent == .longNote {
+            await clearProcessingHonoringFloor()
+        }
         await deliverTranscript(text: text, metadata: metadata)
         return true
     }
@@ -770,12 +787,49 @@ final class TranscriptionService: NSObject, ObservableObject {
         processingStartedAt = nil
     }
 
+    /// Run the short-clip cleanup pass with a hard timeout. Returns cleaned
+    /// text (fillers + self-corrections + spoken-list formatting via
+    /// `promptShortClean`), or nil if the model threw or exceeded `timeout`.
+    /// `timeout` defaults to the constant; tests inject a tiny value.
+    @MainActor
+    private func cleanupShortWithTimeout(_ text: String, timeout: TimeInterval = shortCleanupTimeoutSeconds) async -> String? {
+        await withTaskGroup(of: String?.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { return nil }
+                return try? await self.runChat(
+                    systemPrompt: Self.promptShortClean,
+                    userMessage: text,
+                    maxTokens: 1024,
+                    model: APIConstants.chatModelForShortClean
+                )
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                return nil
+            }
+            // group.next() yields String?? (Optional of the child's String?);
+            // `?? nil` flattens the outer Optional. First task to finish wins;
+            // cancelAll() tears down the loser.
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
     /// Clears the "waiting on retry" published state. Called on every fresh
     /// upload attempt, on new recordings, on successful delivery, and on the
     /// terminal no-audio path.
     private func resetWaitingState() {
         isWaitingOnRetry = false
         waitingRetryAttempt = 0
+    }
+
+    /// Cancel the long-running threshold timer and clear `isLongRunning`. Called
+    /// on every new recording and after short delivery resolves.
+    private func resetLongRunning() {
+        longRunningTimer?.invalidate()
+        longRunningTimer = nil
+        isLongRunning = false
     }
 
     /// Main-actor delivery from a queued session. Calls the existing
@@ -790,7 +844,11 @@ final class TranscriptionService: NSObject, ObservableObject {
         let noteId: String?
         switch metadata.intent {
         case .shortPaste:
-            noteId = deliverTranscriptShort(text: text, durationSeconds: metadata.durationSeconds)
+            noteId = await deliverTranscriptShort(
+                text: text,
+                durationSeconds: metadata.durationSeconds,
+                capturedFrontmostBundleID: metadata.frontmostAppBundleID
+            )
         case .longNote:
             noteId = deliverTranscriptLong(text: text, durationSeconds: metadata.durationSeconds)
         }
@@ -1121,60 +1179,73 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - Raw-first delivery helpers
 
-    /// Phase 1: saves the raw Whisper transcript as a quick note immediately.
-    /// Phase 2: pastes (AutoPaste) + writes clipboard.
-    /// Phase 3: async cleanup — on success, updates the same note in place;
-    ///           on failure, the raw note stays and the error goes to Slack.
+    /// Short-clip delivery — cleanup-before-paste contract.
+    /// Phase 1: save the raw transcript immediately so a note always exists.
+    /// Phase 2: run a bounded fast cleanup pass (the spinner is still up); the
+    ///          cleaned text is what we paste AND save, raw is the fallback on
+    ///          timeout/failure. Then run the three-way delivery truth table.
     @MainActor
     @discardableResult
-    private func deliverTranscriptShort(text: String, durationSeconds: Int) -> String? {
-        // Phase 1 — save raw immediately so the user has a note even if cleanup fails.
-        let rawNoteId = notesStorage?.saveQuickNote(text: text, durationSeconds: durationSeconds)
+    private func deliverTranscriptShort(text rawText: String, durationSeconds: Int, capturedFrontmostBundleID: String?) async -> String? {
+        // Phase 1 — persist raw immediately.
+        let rawNoteId = notesStorage?.saveQuickNote(text: rawText, durationSeconds: durationSeconds)
 
-        // Phase 2 — pasteboard + AutoPaste (short-clip primary delivery).
-        // Use the RAW text for the immediate paste; cleanup only refines the
-        // saved note, never the paste content.
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        let pasteResult = AutoPasteService.shared.attemptInsert(text: text)
-        if let pillCopy = pillCopyFor(pasteResult) {
-            showCompletion(pillCopy)
+        // Phase 2 — cleanup-before-paste (bounded). uploadSession deferred the
+        // spinner clear for the short intent, so the spinner covers cleanup.
+        let cleaned = await cleanupShortWithTimeout(rawText) ?? rawText
+
+        // Spinner has covered Whisper + cleanup; transition to completion now.
+        await clearProcessingHonoringFloor()
+
+        // Update the saved note to the cleaned text (so note == pasted text).
+        // On cleanup timeout/failure cleaned == rawText, so the note keeps raw.
+        if let rawNoteId, cleaned != rawText {
+            notesStorage?.replaceTranscriptContent(
+                noteId: rawNoteId, transcript: cleaned, overview: nil,
+                durationSeconds: durationSeconds, type: "quick"
+            )
         }
 
-        // Phase 3 — async cleanup, update note in place on success.
-        // Capture [weak self] only — notesStorage is a `weak var` on the service,
-        // so capturing it directly would be racy. Reach through self?.notesStorage
-        // inside the main-actor hop where the reference is checked under isolation.
-        Task.detached { [weak self] in
-            guard let self else { return }
-            do {
-                let cleaned = try await self.runChat(
-                    systemPrompt: Self.promptShortClean,
-                    userMessage: text,
-                    maxTokens: 1024,
-                    model: APIConstants.chatModelForShortClean
-                )
-                if let rawNoteId {
-                    await MainActor.run { [weak self] in
-                        self?.notesStorage?.replaceTranscriptContent(
-                            noteId: rawNoteId,
-                            transcript: cleaned,
-                            overview: nil,
-                            durationSeconds: durationSeconds,
-                            type: "quick"
-                        )
-                    }
-                }
-            } catch {
-                await MainActor.run { [weak self] in
-                    self?.reportToSlack(
-                        error: "Short-path cleanup failed; raw note kept. \(self?.userFacingMessage(for: error) ?? "")",
-                        durationSeconds: durationSeconds
-                    )
-                }
-            }
-        }
+        // Deliver normally regardless of how long it took. A slow round-trip
+        // still pastes if a target exists (→ "Pasted ✓"); we no longer force a
+        // clipboard-only "Copied" just because it crossed the long-running
+        // threshold (isLongRunning only drove the "Taking longer" pill text).
+        performShortDelivery(cleaned: cleaned, capturedFrontmostBundleID: capturedFrontmostBundleID)
         return rawNoteId
+    }
+
+    /// Executes the short-path delivery truth table: classify target → paste or
+    /// not → resolve pill + clipboard. Pure decisions come from `DeliveryDecision`.
+    /// The clipboard is written in exactly ONE place (only for `Copied`),
+    /// bumping `changeCount` so Strategy 2's delayed restore skips.
+    @MainActor
+    private func performShortDelivery(cleaned: String, capturedFrontmostBundleID: String?) {
+        let target = AutoPasteService.shared.classifyTarget(capturedFrontmostBundleID: capturedFrontmostBundleID)
+        let decision: DeliveryDecision.Outcome
+
+        if DeliveryDecision.shouldAttemptPaste(target: target) {
+            let result = AutoPasteService.shared.attemptInsert(text: cleaned)
+            let outcome: PasteOutcome
+            switch result {
+            case .verifiedPasted:  outcome = .verifiedPasted
+            case .attemptedPaste:  outcome = .attemptedUnverified
+            case .noPermission:    outcome = .noPermission
+            case .insertionFailed: outcome = .failed
+            }
+            decision = DeliveryDecision.resolvePaste(outcome)
+        } else {
+            decision = DeliveryDecision.resolveNoPaste()
+        }
+
+        // Single clipboard owner. `verifiedPasted`/`Saved` (clipboard == .none)
+        // never touch it — satisfying spec Case 1 and Case 2.
+        if decision.clipboard == .writeTranscript {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(cleaned, forType: .string)
+        }
+
+        resetLongRunning()
+        showCompletion(decision.pill)
     }
 
     /// Phase 1: saves the raw Whisper transcript as a meeting note immediately.
@@ -1252,6 +1323,10 @@ final class TranscriptionService: NSObject, ObservableObject {
     #if DEBUG
     func testSanitiseWhisperOutput(_ raw: String, durationSeconds: Int = 0) -> String? {
         sanitiseWhisperOutput(raw, durationSeconds: durationSeconds)
+    }
+
+    func testCleanupShortWithTimeout(_ text: String, timeout: TimeInterval) async -> String? {
+        await cleanupShortWithTimeout(text, timeout: timeout)
     }
     #endif
 }
