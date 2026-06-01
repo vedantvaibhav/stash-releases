@@ -1,21 +1,22 @@
 import AppKit
 import ApplicationServices
 
-/// Pastes short voice-transcripts directly into the user's currently-focused
-/// text field. Two strategies in order:
-///   1. AXUIElement direct value write (clean, app-cooperative apps).
-///   2. CGEvent ⌘V with pasteboard preservation (universal fallback).
+/// Pastes short voice-transcripts into the user's focused text field. Two
+/// strategies in order:
+///   1. AXUIElement direct value write — read-back verified → `.verifiedPasted`.
+///   2. CGEvent ⌘V with pasteboard preservation — `.attemptedPaste` (landing
+///      unobservable from the source process).
 ///
-/// One of three delivery channels for short transcripts. The caller
-/// (`TranscriptionService.deliverTranscriptShort`) ALSO writes the transcript
-/// to the system pasteboard and saves a quick note to disk regardless
-/// of this service's return value. So any non-`.verifiedPasted` outcome is
-/// not user-data loss — the note is already saved before this is called.
-/// Only `.verifiedPasted` (Strategy 1 with read-back confirmation) earns
-/// the "Pasted ✓" pill.
+/// Clipboard ownership lives in the CALLER
+/// (`TranscriptionService.performShortDelivery`): it writes the transcript to
+/// the pasteboard ONLY for `Copied` outcomes, which bumps `changeCount` so
+/// Strategy 2's delayed restore skips and the transcript stays put.
+/// `.verifiedPasted` leaves the clipboard untouched; `Saved` (no-target /
+/// secure field — see `classifyTarget`) never reaches the paste path. The
+/// note is always saved before delivery, so no outcome is user-data loss.
 ///
-/// The service is intentionally synchronous — both strategies complete in a
-/// few ms or fail fast.
+/// The paste itself is synchronous — both strategies complete in a few ms or
+/// fail fast.
 @MainActor
 final class AutoPasteService {
 
@@ -32,19 +33,41 @@ final class AutoPasteService {
         /// the destination app actually consumed them is unobservable from
         /// the source process — Electron renderers, Finder, secure-mode
         /// fields all swallow synthetic events silently with no readable
-        /// signal. Caller should show "Saved" rather than claim success
-        /// dishonestly; clipboard + dictations history backstop.
+        /// signal. → Caller shows "Copied" and leaves the transcript on the
+        /// clipboard as the recoverable backstop.
         case attemptedPaste
-        /// User hasn't granted Accessibility permission. Caller can prompt
-        /// via `requestAccessibilityPermission()` from a user-initiated UI
-        /// action (e.g., the permissions onboarding screen).
+        /// User hasn't granted Accessibility permission. → "Copied" (clipboard
+        /// backstop). Caller can prompt via `requestAccessibilityPermission()`
+        /// from a user-initiated UI action (e.g., the permissions onboarding screen).
         case noPermission
-        /// Paste was skipped or both strategies aborted before posting:
-        /// Stash itself frontmost (we never paste into our own UI), focused
-        /// element is a secure field (privacy guard), Strategy 2 event-
-        /// creation failed outright, or the 5s deadline expired before
-        /// Strategy 2 could start. Caller should surface "Saved".
+        /// Paste was skipped or both strategies aborted before a confirmed
+        /// paste: Stash itself frontmost, Strategy 2 event-creation failed, or
+        /// the 5s deadline expired before Strategy 2 could start. → "Copied"
+        /// (clipboard backstop). (No-target / secure-field cases are screened
+        /// out earlier by `classifyTarget` and never reach the paste path.)
         case insertionFailed
+    }
+
+    /// Classify the paste destination for a session. Target existence is judged
+    /// from the STOP-TIME captured frontmost app (`capturedFrontmostBundleID`),
+    /// not the live frontmost (which drifts during the Whisper+cleanup
+    /// round-trip). Only the secure-field subrole is read live (best-effort AX).
+    /// Pure decision lives in `PasteTargetClassifier`; this only gathers inputs.
+    func classifyTarget(capturedFrontmostBundleID: String?) -> PasteTarget {
+        var subrole: String?
+        let front = NSWorkspace.shared.frontmostApplication
+        let liveIsStash = front?.bundleIdentifier == Bundle.main.bundleIdentifier
+        if let front, !liveIsStash, let element = focusedElement(in: front) {
+            var subroleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleRef) == .success {
+                subrole = subroleRef as? String
+            }
+        }
+        return PasteTargetClassifier.classify(
+            capturedFrontmostBundleID: capturedFrontmostBundleID,
+            stashBundleID: Bundle.main.bundleIdentifier,
+            liveAXSubrole: subrole
+        )
     }
 
     /// Hard deadline for the strategy chain. Apple's AX framework has no
