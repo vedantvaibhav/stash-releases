@@ -16,6 +16,41 @@ enum DesignTokens {
         static let backgroundActive = Color(red: 0.102, green: 0.102, blue: 0.102) // #1A1A1A
     }
 
+    /// Animation curves, spring parameters, and the reduce-motion gate.
+    /// Curves follow Emil Kowalski's "strong custom easing" guidance — the
+    /// built-in SwiftUI/Core Animation easings are too weak. cubic-bezier
+    /// control points below are the strong ease-out (0.23, 1, 0.32, 1) and
+    /// strong ease-in-out (0.77, 0, 0.175, 1) from the design-engineering skill.
+    enum Motion {
+        // Strong ease-out — entrances/exits (starts fast, feels responsive).
+        static let strongEaseOutCP: (Double, Double, Double, Double) = (0.23, 1.0, 0.32, 1.0)
+        // Strong ease-in-out — on-screen movement that isn't a spring.
+        static let strongEaseInOutCP: (Double, Double, Double, Double) = (0.77, 0.0, 0.175, 1.0)
+
+        // The morph spring (capsule width/height between visible states).
+        // Apple-style params: a 0.34s response with subtle bounce (≈ damping
+        // ratio 0.78). Bounce is intentionally < 0.3 — emil: "keep bounce
+        // subtle." Used both by the SwiftUI content and PillMorphAnimator.
+        static let morphResponse: Double = 0.34
+        static let morphDampingRatio: Double = 0.78
+        // Hard cap on how long the spring driver runs before snapping to the
+        // target, so an under-damped tail can never leave the panel un-settled.
+        static let morphSettleCap: TimeInterval = 0.5
+
+        static func caEaseOut() -> CAMediaTimingFunction {
+            CAMediaTimingFunction(controlPoints:
+                Float(strongEaseOutCP.0), Float(strongEaseOutCP.1),
+                Float(strongEaseOutCP.2), Float(strongEaseOutCP.3))
+        }
+
+        /// True when the user has asked the system to minimise motion. Springs
+        /// and blur are dropped to plain opacity in that case (emil: reduced
+        /// motion = fewer/gentler, not zero).
+        static var reduceMotion: Bool {
+            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        }
+    }
+
     /// Active-state colors for the notes filter bar pill (icon + "F" letter).
     /// Bluish-white at bumped opacity reads "cool/glacial" without going full
     /// cyan — chromaticity collapses below ~0.25 opacity for near-white colors,
@@ -133,6 +168,21 @@ enum DesignTokens {
         // read them while the recording continues.
         static let completionDefaultHold: TimeInterval = 1.6
         static let completionWarningHold: TimeInterval = 3.5
+
+        // Masked crossfade for state→state text/glyph swaps. Old content
+        // blurs+fades out fast; new content blurs in after a short delay so
+        // two crisp text layers never overlap (emil: "use blur to mask
+        // imperfect transitions"). Total < 300ms.
+        static let crossfadeOutDuration: TimeInterval = 0.10
+        static let crossfadeInDelay: TimeInterval = 0.12
+        static let crossfadeInDuration: TimeInterval = 0.16
+        static let crossfadeBlurRadius: CGFloat = 6
+        // Entrance starts at this scale (never scale(0) — emil) combined with opacity.
+        static let entranceScale: CGFloat = 0.96
+
+        // Processing/delivery longer than this flips the session into the
+        // long-running "walk away" path (clipboard-only delivery + card).
+        static let longRunningThresholdSeconds: TimeInterval = 6.0
     }
 
     enum Typography {
