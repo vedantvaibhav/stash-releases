@@ -27,17 +27,20 @@ enum DesignTokens {
         // Strong ease-in-out — on-screen movement that isn't a spring.
         static let strongEaseInOutCP: (Double, Double, Double, Double) = (0.77, 0.0, 0.175, 1.0)
 
-        // ONE spring drives every pill frame change — entrance (descend from
-        // top), state morphs (recording → dot → result), and exit (collapse to
-        // a circle). Bouncy on purpose (≈0.36 bounce, dampingRatio 0.64): the
-        // capsule overshoots and settles, so appearance/morph/disappearance all
-        // read as the same springy material. 0.42s response = lively but not
-        // frantic. Used by PillMorphAnimator + the content crossfade timing.
-        static let morphResponse: Double = 0.42
-        static let morphDampingRatio: Double = 0.64
+        // Apple Dynamic-Island spring (Emil Kowalski's animations.dev recipe):
+        // ONE organic spring drives every pill frame change — appear (EXPAND
+        // from the dot), state morphs, and disappear (CONTRACT to the dot). The
+        // 32×32 dot is the collapsed form (same as the processing state), so the
+        // pill grows out of it and gathers back into it, just like the Island
+        // expanding from the notch. ~0.45s response with a clear ≈0.4 bounce
+        // (dampingRatio 0.6) for the lively, organic settle. Apple-style
+        // {duration, bounce} ≈ {0.45, 0.4}. Used by PillMorphAnimator + the
+        // content crossfade timing.
+        static let morphResponse: Double = 0.45
+        static let morphDampingRatio: Double = 0.60
         // Hard cap on how long the spring driver runs before snapping to the
         // target, so an under-damped (bouncy) tail can never leave it un-settled.
-        static let morphSettleCap: TimeInterval = 0.7
+        static let morphSettleCap: TimeInterval = 0.75
 
         static func caEaseOut() -> CAMediaTimingFunction {
             CAMediaTimingFunction(controlPoints:
@@ -215,11 +218,10 @@ enum DesignTokens {
     }
 
     enum PanelAnimation {
-        /// PILL entrance: descends FROM THE TOP — starts `entranceFromTopOffset`
-        /// above its resting frame and the bouncy spring (DesignTokens.Motion)
-        /// pulls it down into place; alpha fades in over `entranceFadeDuration`
-        /// so it's visible as it springs.
-        static let entranceFromTopOffset: CGFloat = 30
+        /// PILL entrance: Dynamic-Island EXPAND — the bouncy spring
+        /// (DesignTokens.Motion) grows the pill out of the 32×32 dot to full
+        /// width; alpha fades in over `entranceFadeDuration` so it's visible as
+        /// it springs open.
         static let entranceFadeDuration: CFTimeInterval = 0.22
 
         /// PILL exit: the spring collapses the frame into the 32×32 circle (both

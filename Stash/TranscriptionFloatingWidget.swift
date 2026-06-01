@@ -763,36 +763,36 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        // Either fully hidden, or mid-hide. Entrance: the pill descends FROM THE
-        // TOP — it starts `entranceFromTopOffset` above its resting frame and the
-        // bouncy spring pulls it down into place (a soft overshoot as it lands)
-        // while alpha fades in. SAME spring as the morph + exit, so appearance,
-        // morph, and disappearance read as one springy material. `panel.frame`
-        // is the canonical resting target (applyPhaseFrame set it just before,
-        // building the panel first so first-show is correctly sized — not the
-        // default build size).
+        // Either fully hidden, or mid-hide. Entrance = Dynamic-Island EXPAND: the
+        // pill grows out of the 32×32 dot (the collapsed form, same as the exit's
+        // endpoint and the processing state) — both edges spring outward from the
+        // center to the full width, with the organic bounce — while alpha fades
+        // in. Exact mirror of the exit's contract-to-dot. `panel.frame` is the
+        // canonical resting target (applyPhaseFrame set it just before, building
+        // the panel first so first-show is correctly sized).
         morphAnimator?.stop()
         visibilityAnimationToken &+= 1
         hideInFlight = false
 
         let target = panel.frame
-        // Start above the resting frame (higher y == higher on screen); only Y
-        // differs, so the content never re-lays-out — it's a pure glide-down.
-        let startFrame = target.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.entranceFromTopOffset)
-        panel.setFrame(startFrame, display: false)
+        let size = DesignTokens.Pill.height
+        // Start as the dot at the same top-center anchor (top edge fixed), then
+        // spring out to the full pill.
+        let dotStart = NSRect(x: target.midX - size / 2, y: target.maxY - size, width: size, height: size)
+        panel.setFrame(dotStart, display: false)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
 
         if DesignTokens.Motion.reduceMotion {
-            // Reduced motion: no spring — snap to size and fade in (opacity aids
+            // Reduced motion: no expand — snap to size and fade in (opacity aids
             // comprehension; emil: reduced motion ≠ no motion).
             panel.setFrame(target, display: true)
             panel.animator().alphaValue = 1
             return
         }
 
-        // Bouncy spring drives the descent; a short ease-out fade rides along so
-        // the pill is visible as it springs into place.
+        // Bouncy spring expands dot → full pill; a quick ease-out fade rides along
+        // so the content is visible almost immediately as it springs open.
         morphAnimator?.animate(to: target)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = DesignTokens.PanelAnimation.entranceFadeDuration
