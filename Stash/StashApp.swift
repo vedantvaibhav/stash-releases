@@ -423,15 +423,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// against `self` rather than at file load.
     private func debugMenuItems() -> [(String, Selector)] {
         return [
+            // — Delivery outcomes (success: keep icon)
             ("Test pill: Pasted ✓",          #selector(debugTestPillPasted)),
             ("Test pill: Saved",             #selector(debugTestPillSaved)),
             ("Test pill: Copied",            #selector(debugTestPillCopied)),
+            ("Test pill: Note saved",        #selector(debugTestPillNoteSaved)),
+            // — Errors (text-only, no icon)
             ("Test pill: No audio",          #selector(debugTestPillNoAudio)),
             ("Test pill: Failed",            #selector(debugTestPillFailed)),
-            ("Test pill: 5 min warning",     #selector(debugTestPill5MinWarning)),
-            ("Test pill: 90-min warning",    #selector(debugTestPill90MinHardStop)),
-            ("Test pill: 20-MB warning",     #selector(debugTestPill20MBWarning)),
-            ("Test pill: 24-MB warning",     #selector(debugTestPill24MBHardStop)),
+            // — Warnings (text-only, flash then return to recording)
+            ("Test pill: 5 min left",        #selector(debugTestPill5MinWarning)),
+            ("Test pill: Almost full",       #selector(debugTestPillAlmostFull)),
+            // — Behaviors
             ("Test pill: state stacking",    #selector(debugTestPillStacking)),
             ("Test: simulate network failure on next upload", #selector(debugSimulateNextUploadFailure)),
             ("Test: drain retry queue now",  #selector(debugDrainRetryQueue)),
@@ -445,15 +448,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         svc.debugShowCompletion(text, hold: hold)
     }
 
-    @objc private func debugTestPillPasted()  { debugFirePill("Pasted ✓") }
-    @objc private func debugTestPillSaved()   { debugFirePill("Saved") }
-    @objc private func debugTestPillCopied()  { debugFirePill("Copied") }
-    @objc private func debugTestPillNoAudio() { debugFirePill("No audio") }
-    @objc private func debugTestPillFailed()  { debugFirePill("Failed") }
-    @objc private func debugTestPill5MinWarning()    { debugFirePill("5 min left",  hold: DesignTokens.Pill.completionWarningHold) }
-    @objc private func debugTestPill90MinHardStop()  { debugFirePill("1 min left",  hold: DesignTokens.Pill.completionWarningHold) }
-    @objc private func debugTestPill20MBWarning()    { debugFirePill("Almost full", hold: DesignTokens.Pill.completionWarningHold) }
-    @objc private func debugTestPill24MBHardStop()   { debugFirePill("Almost full", hold: DesignTokens.Pill.completionWarningHold) }
+    // Success states (keep the icon disc)
+    @objc private func debugTestPillPasted()    { debugFirePill("Pasted ✓") }
+    @objc private func debugTestPillSaved()     { debugFirePill("Saved") }
+    @objc private func debugTestPillCopied()    { debugFirePill("Copied") }
+    @objc private func debugTestPillNoteSaved() { debugFirePill("Note saved") }
+    // Errors (text-only)
+    @objc private func debugTestPillNoAudio()   { debugFirePill("No audio") }
+    @objc private func debugTestPillFailed()    { debugFirePill("Failed") }
+    // Warnings (text-only) — fire the exact production strings + warning hold
+    @objc private func debugTestPill5MinWarning() { debugFirePill("5 min left",  hold: DesignTokens.Pill.completionWarningHold) }
+    @objc private func debugTestPillAlmostFull()  { debugFirePill("Almost full", hold: DesignTokens.Pill.completionWarningHold) }
     @objc private func debugTestPillStacking() {
         // Fire three completions 300ms apart. Only one should be visible at a
         // time — the newer message replaces the older one without animating

@@ -10,6 +10,18 @@ enum PillMode: Equatable {
     case completion(message: String)
 }
 
+/// Error + warning completion states render as TEXT ONLY (no icon disc) — the
+/// message carries the meaning and an icon adds noise. Success states
+/// ("Pasted ✓", "Saved", "Copied", "Note saved") keep their icon. Single
+/// source of truth shared by the pill view and the controller's sizing.
+private let pillTextOnlyMessages: Set<String> = [
+    "No audio", "Failed", "5 min left", "1 min left", "Almost full",
+]
+
+private func pillMessageIsTextOnly(_ message: String) -> Bool {
+    pillTextOnlyMessages.contains(message)
+}
+
 /// Stable animation key: identical across timer ticks so the HStack doesn't
 /// cross-fade every second while recording.
 private enum PillPhaseKey: Hashable {
@@ -83,12 +95,22 @@ struct TranscriptionPillView: View {
                 // label text), so any state — recording, "No audio",
                 // "Failed", "Note saved" — gets just enough pillWidth to
                 // fit, with no leftover slack.
-                HStack(spacing: 0) {
-                    iconDisc
-                    label
-                        .padding(.leading, DesignTokens.Pill.iconToTimerSpacing)
-                        .padding(.trailing, DesignTokens.Pill.timerToDotSpacing)
-                    trailing
+                Group {
+                    if showsIconDisc {
+                        HStack(spacing: 0) {
+                            iconDisc
+                            label
+                                .padding(.leading, DesignTokens.Pill.iconToTimerSpacing)
+                                .padding(.trailing, DesignTokens.Pill.timerToDotSpacing)
+                            trailing
+                        }
+                    } else {
+                        // Text-only error/warning state: message only, balanced
+                        // inset, no icon disc (errors carry meaning in words).
+                        label
+                            .padding(.leading, DesignTokens.Pill.textOnlyLabelLeadingPad)
+                            .padding(.trailing, DesignTokens.Pill.textOnlyLabelTrailingPad)
+                    }
                 }
                 .padding(.leading, DesignTokens.Pill.leadingPadding)
                 .padding(.trailing, DesignTokens.Pill.trailingPadding)
@@ -121,6 +143,13 @@ struct TranscriptionPillView: View {
     private var alignmentForMode: Alignment {
         if case .processing = mode { return .center }
         return .leading
+    }
+
+    /// Recording + processing always show the icon disc; completion shows it
+    /// only for success states. Errors/warnings render text-only.
+    private var showsIconDisc: Bool {
+        if case .completion(let msg) = mode { return !pillMessageIsTextOnly(msg) }
+        return true
     }
 
     // MARK: Icon disc (24×24 with 14pt inner glyph / spinner)
@@ -702,7 +731,10 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return NSSize(width: width, height: height)
         case .completion(let message):
             let labelW = measureLabelWidth(message, font: Self.completionLabelFont)
-            let width = Self.basePillFixedWidth + labelW + Self.measurementSafetyMargin
+            // Text-only states (errors/warnings) drop the icon disc + its gap,
+            // so their fixed width is just the balanced label insets + paddings.
+            let base = pillMessageIsTextOnly(message) ? Self.basePillTextOnlyWidth : Self.basePillFixedWidth
+            let width = base + labelW + Self.measurementSafetyMargin
             return NSSize(width: width, height: height)
         }
     }
@@ -715,6 +747,16 @@ final class TranscriptionFloatingWidgetController: NSObject {
             + DesignTokens.Pill.iconDiscSize
             + DesignTokens.Pill.iconToTimerSpacing
             + DesignTokens.Pill.timerToDotSpacing
+            + DesignTokens.Pill.trailingPadding
+    }
+
+    /// Fixed width for a text-only completion: no icon disc, no icon→label gap.
+    /// Mirrors the SwiftUI text-only layout exactly (outer leading/trailing
+    /// paddings + the balanced label insets).
+    private static var basePillTextOnlyWidth: CGFloat {
+        DesignTokens.Pill.leadingPadding
+            + DesignTokens.Pill.textOnlyLabelLeadingPad
+            + DesignTokens.Pill.textOnlyLabelTrailingPad
             + DesignTokens.Pill.trailingPadding
     }
 
@@ -764,31 +806,48 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
-        // Either fully hidden, or mid-hide. Run slide+fade entrance from
-        // `openSlideOffset` above the canonical target. `panel.frame` reflects
-        // the just-set phase target because `sync()` calls `applyPhaseFrame`
-        // immediately before this. Stop any in-flight spring morph first so the
-        // two frame drivers never run at once (emil: no driver overlap).
+        // Either fully hidden, or mid-hide. Liquid entrance: the whole pill
+        // springs UP from a scaled-down start (subtle bounce, never from 0)
+        // while it fades in. The frame is driven by the spring (PillMorphAnimator);
+        // alpha by a short ease-out. They animate independent properties, so
+        // there's no frame-driver overlap. `panel.frame` is the canonical target
+        // because `sync()` calls `applyPhaseFrame` immediately before this.
         morphAnimator?.stop()
         visibilityAnimationToken &+= 1
         hideInFlight = false
-        let token = visibilityAnimationToken
 
         let target = panel.frame
-        let startFrame = target.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.openSlideOffset)
-        panel.setFrame(startFrame, display: false)
+        panel.setFrame(entranceStartFrame(for: target), display: false)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
 
-        NSAnimationContext.runAnimationGroup({ ctx in
+        if DesignTokens.Motion.reduceMotion {
+            // Reduced motion: no spring/scale — just snap to size and fade in
+            // (opacity aids comprehension; emil: reduced motion ≠ no motion).
+            panel.setFrame(target, display: true)
+            panel.animator().alphaValue = 1
+            return
+        }
+
+        morphAnimator?.animate(to: target)
+        NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = DesignTokens.PanelAnimation.openDuration
             ctx.timingFunction = DesignTokens.Motion.caEaseOut()
-            panel.animator().setFrame(target, display: true)
             panel.animator().alphaValue = 1
-        }, completionHandler: { [weak self] in
-            // Token guard: if a hide superseded this show, ignore.
-            guard let self, self.visibilityAnimationToken == token else { return }
-        })
+        }
+    }
+
+    /// Entrance start frame: the target shrunk to `entranceStartScale` around
+    /// its center plus a small downward offset, so the pill springs up + outward
+    /// as it fades in (liquid pop). Target unchanged under reduce-motion.
+    private func entranceStartFrame(for target: NSRect) -> NSRect {
+        guard !DesignTokens.Motion.reduceMotion else { return target }
+        let s = DesignTokens.Pill.entranceStartScale
+        let w = target.width * s
+        let h = target.height * s
+        let x = target.midX - w / 2
+        let y = target.midY - h / 2 - DesignTokens.PanelAnimation.openSlideOffset
+        return NSRect(x: x, y: y, width: w, height: h)
     }
 
     /// Position the panel at its fixed top-center anchor using the given size.
@@ -840,15 +899,27 @@ final class TranscriptionFloatingWidgetController: NSObject {
         // animation's frame changes (emil: no driver overlap).
         morphAnimator?.stop()
 
-        // Slide+fade exit: lift the panel `closeSlideOffset` upward as it
-        // fades to alpha=0, then orderOut. `hideInFlight` lets a subsequent
-        // show distinguish "panel currently hiding" from "panel mid slide-in"
-        // and re-run slide+fade entrance only for the former.
+        // Liquid exit (mirror of the entrance): the pill shrinks slightly + lifts
+        // as it fades to alpha=0, then orderOut. Faster than the entrance (emil:
+        // exits snappier than enters). `hideInFlight` lets a subsequent show
+        // distinguish "currently hiding" from "mid slide-in" and re-run the
+        // entrance only for the former.
         visibilityAnimationToken &+= 1
         hideInFlight = true
         let token = visibilityAnimationToken
 
-        let endFrame = panel.frame.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.closeSlideOffset)
+        let cur = panel.frame
+        let endFrame: NSRect
+        if DesignTokens.Motion.reduceMotion {
+            endFrame = cur.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.closeSlideOffset)
+        } else {
+            let s = DesignTokens.Pill.entranceStartScale
+            let w = cur.width * s
+            let h = cur.height * s
+            endFrame = NSRect(x: cur.midX - w / 2,
+                              y: cur.midY - h / 2 + DesignTokens.PanelAnimation.closeSlideOffset,
+                              width: w, height: h)
+        }
 
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = DesignTokens.PanelAnimation.closeDuration

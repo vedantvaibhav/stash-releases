@@ -27,15 +27,17 @@ enum DesignTokens {
         // Strong ease-in-out — on-screen movement that isn't a spring.
         static let strongEaseInOutCP: (Double, Double, Double, Double) = (0.77, 0.0, 0.175, 1.0)
 
-        // The morph spring (capsule width/height between visible states).
-        // Apple-style params: a 0.34s response with subtle bounce (≈ damping
-        // ratio 0.78). Bounce is intentionally < 0.3 — emil: "keep bounce
-        // subtle." Used both by the SwiftUI content and PillMorphAnimator.
-        static let morphResponse: Double = 0.34
-        static let morphDampingRatio: Double = 0.78
+        // The morph spring (capsule width/height between visible states) AND
+        // the entrance scale-up. Tuned for a "liquid" feel: a slightly longer
+        // 0.40s response that flows rather than snaps, with a gentle ≈0.26
+        // bounce (dampingRatio 0.74) so the capsule settles with a soft
+        // follow-through instead of a hard stop. Used by the SwiftUI content
+        // crossfade timing and by PillMorphAnimator (frame morph + entrance).
+        static let morphResponse: Double = 0.40
+        static let morphDampingRatio: Double = 0.74
         // Hard cap on how long the spring driver runs before snapping to the
         // target, so an under-damped tail can never leave the panel un-settled.
-        static let morphSettleCap: TimeInterval = 0.5
+        static let morphSettleCap: TimeInterval = 0.6
 
         static func caEaseOut() -> CAMediaTimingFunction {
             CAMediaTimingFunction(controlPoints:
@@ -155,14 +157,28 @@ enum DesignTokens {
 
         // Masked crossfade for state→state text/glyph swaps. Old content
         // blurs+fades out fast; new content blurs in after a short delay so
-        // two crisp text layers never overlap (emil: "use blur to mask
-        // imperfect transitions"). Total < 300ms.
+        // the swap reads as one layer "melting" into the next rather than two
+        // crisp layers crossing (emil: "use blur to mask imperfect
+        // transitions"). Heavier blur = more liquid smear. Total < 300ms.
         static let crossfadeOutDuration: TimeInterval = 0.10
         static let crossfadeInDelay: TimeInterval = 0.12
-        static let crossfadeInDuration: TimeInterval = 0.16
-        static let crossfadeBlurRadius: CGFloat = 6
-        // Entrance starts at this scale (never scale(0) — emil) combined with opacity.
+        static let crossfadeInDuration: TimeInterval = 0.18
+        static let crossfadeBlurRadius: CGFloat = 10
+        // Content crossfade starts slightly shrunk + transparent (never
+        // scale(0) — emil): a barely-there settle as the new content melts in.
         static let entranceScale: CGFloat = 0.96
+        // Panel ENTRANCE scale — the whole pill springs up from this scale as it
+        // fades in, for a liquid "pop" (more pronounced than the content
+        // crossfade, but still never from 0).
+        static let entranceStartScale: CGFloat = 0.90
+
+        // Text-only completion states (errors + warnings: "No audio", "Failed",
+        // "5 min left", "Almost full") drop the icon disc and render just the
+        // message. These label paddings sit INSIDE the outer leading(4)/
+        // trailing(8) so total inset is balanced at 14pt each side
+        // (4+10 == 8+6). sizeForCurrentMode mirrors these exact values.
+        static let textOnlyLabelLeadingPad: CGFloat = 10
+        static let textOnlyLabelTrailingPad: CGFloat = 6
 
         // Processing/delivery longer than this flips the session into the
         // long-running "walk away" path (clipboard-only delivery + card).
