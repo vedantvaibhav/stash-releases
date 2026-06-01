@@ -434,6 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Test: simulate network failure on next upload", #selector(debugSimulateNextUploadFailure)),
             ("Test: drain retry queue now",  #selector(debugDrainRetryQueue)),
             ("Test: list pending sessions",  #selector(debugListPendingSessions)),
+            ("Test: show status notification", #selector(debugShowStatusNotification)),
         ]
     }
 
@@ -478,6 +479,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 print("  - \(s.sessionUUID) | duration \(s.durationSeconds)s | attempts \(s.attemptCount) | error: \(s.lastError ?? "none") | note: \(s.createdNoteID ?? "nil")")
             }
         }
+    }
+
+    @objc private func debugShowStatusNotification() {
+        // Toggle the real isWaitingOnRetry state so the floating pill morphs
+        // into the notification card via its normal sync() path.
+        guard let svc = panelController?.transcriptionService else { return }
+        svc.isWaitingOnRetry.toggle()
     }
     #endif
 }

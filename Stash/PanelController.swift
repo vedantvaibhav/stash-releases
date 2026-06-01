@@ -434,9 +434,20 @@ final class PanelController: NSObject {
     func setup() {
         PanelController.shared = self
         transcriptionService.notesStorage = notesStorage
+        // Belt-and-suspenders "waiting on retry" tracking: subscribe to the
+        // queue's backoff stream so every scheduled retry flips the flag.
+        transcriptionService.startRetryObservation()
         transcriptionFloatingWidget.attach(transcription: transcriptionService)
         transcriptionFloatingWidget.onOpenTranscription = { [weak self] in
             guard let self else { return }
+            self.showPanel()
+        }
+        // "Open Notes" on the long-running notification: open the panel on the
+        // Notes tab with the Transcriptions filter applied.
+        transcriptionFloatingWidget.onOpenNotes = { [weak self] in
+            guard let self else { return }
+            AppSettings.shared.notesActiveFilter = .transcriptions
+            self.panelInteractionState.requestedTab = .notes
             self.showPanel()
         }
 
@@ -1190,7 +1201,7 @@ struct PanelContentView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.top, 20)
+            .padding(.top, 12)
             .padding(.horizontal, 20)
             .frame(maxWidth: 700, maxHeight: .infinity, alignment: .top)
             .frame(maxWidth: .infinity)
@@ -1299,7 +1310,7 @@ struct RecordingBanner: View {
                     .onAppear { pulse = true }
 
                 Text(isProcessing ? "Creating notes..." : "Recording in progress")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.white.opacity(0.80))
             }
 
@@ -1308,9 +1319,9 @@ struct RecordingBanner: View {
             if !isProcessing && errorMessage == nil {
                 Button(action: onStop) {
                     Image(systemName: "stop.fill")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.white)
-                        .frame(width: 28, height: 28)
+                        .frame(width: 16, height: 16)
                         .background(Circle().fill(Color.white.opacity(0.12)))
                         .overlay(Circle().stroke(Color.white.opacity(0.20), lineWidth: 1))
                 }
@@ -1318,8 +1329,11 @@ struct RecordingBanner: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity)
+        // Fixed 32pt pill height — kept constant across recording / processing
+        // / error states (the stop button only shows while recording, so
+        // without a fixed height the pill would shrink when it disappears in
+        // the processing state).
+        .frame(maxWidth: .infinity, minHeight: 32)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(errorMessage != nil

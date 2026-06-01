@@ -2,196 +2,98 @@ import Testing
 import Foundation
 @testable import Stash
 
-/// Unit tests for `TranscriptionService.sanitiseWhisperOutput(_:)`.
+/// Unit tests for `TranscriptionService.sanitiseWhisperOutput(_:durationSeconds:)`.
 ///
-/// **Wiring status:** The `StashTests/` directory already contains an
-/// orphan test file (`NotesEditorView+SelectionToolbarTests.swift`); both
-/// will run only once a unit-test target is added to `Stash.xcodeproj`.
-/// Until then, this file documents the expected behaviour and is ready
-/// to execute.
+/// As of the "trust Whisper" rewrite, this is a SILENCE-ONLY detector — it
+/// strips Whisper's special-token markers ([BLANK_AUDIO], [Music], etc.) and
+/// returns nil only when nothing real remains. There is no content-based
+/// rejection: real speech (even single words, even YouTube-outro-shaped
+/// phrases) passes through verbatim. The LLM cleanup pass refines fillers and
+/// grammar downstream on the saved note.
+///
+/// The struct name and filename are kept (vs. renaming to e.g.
+/// SilenceDetectionTests) to avoid pbxproj / file-system-synchronized-group
+/// churn; the doc above is the source of truth for intent.
 @MainActor
 struct HallucinationFilterTests {
 
     private func service() -> TranscriptionService { TranscriptionService() }
 
-    @Test func rejectsYouTubeOutroFamily() {
+    @Test func emptyInputReturnsNil() {
+        // Whisper returned nothing → no audio.
+        #expect(service().testSanitiseWhisperOutput("") == nil)
+    }
+
+    @Test func whitespaceOnlyInputReturnsNil() {
+        // Whitespace-only → no audio.
+        #expect(service().testSanitiseWhisperOutput("   \n\t  \n ") == nil)
+    }
+
+    @Test func bracketMarkerOnlyReturnsNil() {
+        // Whisper signalled silence/music/etc. with a bare marker line.
         let svc = service()
-        let inputs = [
-            "If you have any questions or comments, please post them in the comments.",
-            "Please post them in the comments.",
-            "Leave a comment below.",
-            "See you in the next one.",
-            "Thanks so much for watching!",
-            "Catch you in the next one."
-        ]
-        for input in inputs {
-            #expect(svc.testSanitiseWhisperOutput(input) == nil, "expected hallucination rejection for: \(input)")
+        #expect(svc.testSanitiseWhisperOutput("[BLANK_AUDIO]") == nil)
+        #expect(svc.testSanitiseWhisperOutput("[blank_audio]") == nil)
+        #expect(svc.testSanitiseWhisperOutput("[Music]") == nil)
+        #expect(svc.testSanitiseWhisperOutput("[Silence]") == nil)
+        #expect(svc.testSanitiseWhisperOutput("(no transcript)") == nil)
+        #expect(svc.testSanitiseWhisperOutput("(inaudible)") == nil)
+        // Surrounding whitespace on the marker line still counts as a marker.
+        #expect(svc.testSanitiseWhisperOutput("   [BLANK_AUDIO]   ") == nil)
+    }
+
+    @Test func realSpeechPassesVerbatim_singleWord() {
+        let svc = service()
+        #expect(svc.testSanitiseWhisperOutput("okay") == "okay")
+        #expect(svc.testSanitiseWhisperOutput("alright") == "alright")
+        #expect(svc.testSanitiseWhisperOutput("yes") == "yes")
+        #expect(svc.testSanitiseWhisperOutput("no") == "no")
+    }
+
+    @Test func realSpeechPassesVerbatim_shortPhrase() {
+        // We trust Whisper. Cleanup happens downstream — even phrases that
+        // look like YouTube outros are accepted now.
+        let svc = service()
+        #expect(svc.testSanitiseWhisperOutput("let's do it") == "let's do it")
+        #expect(svc.testSanitiseWhisperOutput("watch the next slide") == "watch the next slide")
+        #expect(svc.testSanitiseWhisperOutput("subscribe to my channel") == "subscribe to my channel")
+    }
+
+    @Test func realSpeechPassesVerbatim_withFillers() {
+        // Fillers pass through untouched here; the LLM cleanup pass removes
+        // them when it runs on the saved note.
+        let raw = "um okay so like let's do this"
+        #expect(service().testSanitiseWhisperOutput(raw) == raw)
+    }
+
+    @Test func mixedBracketsAndRealSpeechKeepsRealSpeech() {
+        // Bracket-marker lines are stripped; real lines are kept.
+        let svc = service()
+        #expect(svc.testSanitiseWhisperOutput("[Music]\nokay let's start") == "okay let's start")
+        #expect(svc.testSanitiseWhisperOutput("okay let's start\n[BLANK_AUDIO]") == "okay let's start")
+        #expect(svc.testSanitiseWhisperOutput("[Silence]\nhello\n[Music]") == "hello")
+    }
+
+    @Test func durationDoesNotAffectFiltering() {
+        // The old <8s gate is gone — same input yields the same output at
+        // every duration.
+        let svc = service()
+        let phrase = "subscribe to my channel"
+        for duration in [0, 1, 5, 30, 600] {
+            #expect(svc.testSanitiseWhisperOutput(phrase, durationSeconds: duration) == phrase)
+        }
+        // And a silence marker is nil at every duration too.
+        for duration in [0, 1, 5, 30, 600] {
+            #expect(svc.testSanitiseWhisperOutput("[BLANK_AUDIO]", durationSeconds: duration) == nil)
         }
     }
 
-    @Test func rejectsMultilingualOutros() {
-        let svc = service()
-        let inputs = [
-            "Merci",
-            "ご視聴ありがとうございました",
-            "Спасибо за просмотр",
-            "다음 영상에서 만나요",
-            "Gracias por ver"
-        ]
-        for input in inputs {
-            #expect(svc.testSanitiseWhisperOutput(input) == nil, "expected hallucination rejection for: \(input)")
-        }
-    }
-
-    @Test func rejectsMultilingualOutrosWithNativePunctuation() {
-        let svc = service()
-        let inputs = [
-            "ご視聴ありがとうございました。",
-            "ご視聴ありがとうございました!",
-            "Спасибо за просмотр.",
-            "다음 영상에서 만나요!",
-            "Merci d'avoir regardé.",
-            "Gracias por ver."
-        ]
-        for input in inputs {
-            #expect(svc.testSanitiseWhisperOutput(input) == nil, "expected rejection for native-punctuated: \(input)")
-        }
-    }
-
-    @Test func acceptsLegitimateSpeech() {
-        let svc = service()
-        let inputs = [
-            "Schedule the meeting for Tuesday at 3pm.",
-            "Action item: send the contract to legal.",
-            "The vendor confirmed delivery by Friday."
-        ]
-        for input in inputs {
-            #expect(svc.testSanitiseWhisperOutput(input) != nil, "expected acceptance for: \(input)")
-        }
-    }
-
-    @Test func rejectsBracketAndMusicalNoise() {
-        let svc = service()
-        let inputs = [
-            "[Music]",
-            "[BLANK_AUDIO]",
-            "♪",
-            "(music)",
-            "(no audio)"
-        ]
-        for input in inputs {
-            #expect(svc.testSanitiseWhisperOutput(input) == nil, "expected rejection for: \(input)")
-        }
-    }
-
-    @Test func rejectsDescriptionLinksAndWatchNextFamilies() {
-        let svc = service()
-        let inputs = [
-            "Be sure to check the description for links in the previous video description for more information.",
-            "Be sure to check the description for links",
-            "Link in the description below.",
-            "As I mentioned in the previous video, here's what we covered.",
-            "Watch the next episode for more.",
-            "All the links are below in the description.",
-            "Click the link in my bio."
-        ]
-        for input in inputs {
-            #expect(svc.testSanitiseWhisperOutput(input) == nil, "expected rejection for description/watch-next: \(input)")
-        }
-    }
-
-    @Test func rejectsShortRecordingWithMultipleOutroVocabHits() {
-        let svc = service()
-        // Short clip (10s) with ≥2 outro-vocab tokens — the real Whisper-
-        // hallucinated-outro fingerprint. Pass 5 catches these.
-        //
-        // Inputs deliberately avoid phrases that would trigger Pass 3c
-        // attributionPatterns (e.g., "previous video", "in the description",
-        // "more videos") — those would short-circuit before Pass 5 fires
-        // and the test would pass for the wrong reason.
-        let inputs = [
-            "Subscribe to the channel.",        // subscribe + channel = 2; no attribution substring
-            "Subscribe and watch the channel.", // subscribe + watch + channel = 3
-            "Watch the tutorial episode.",      // watch + tutorial + episode = 3
-            "Comment on the stream."            // comment + stream = 2
-        ]
-        for input in inputs {
-            #expect(svc.testSanitiseWhisperOutput(input, durationSeconds: 10) == nil,
-                    "expected Pass-5 rejection for: \(input)")
-        }
-    }
-
-    @Test func acceptsShortLegitimateDictationWithOneOutroToken() {
-        let svc = service()
-        // Single-vocab-hit short clips — the headline false-positive risk
-        // the ≥2-hit rule was designed to prevent. Each input has exactly
-        // ONE outro-vocab token in a legitimate context and MUST pass.
-        // These inputs are also crafted to NOT trigger any other pass
-        // (no attributionPatterns substring, no semanticHallucinations
-        // whole-line equality).
-        let inputs = [
-            "Send the link to John.",       // link (1) only
-            "Save the link for later.",     // link (1) only
-            "Bob sent me the link.",        // link (1) only
-            "I will watch tomorrow.",       // watch (1) only
-            "The video is ready."           // video (1) only
-        ]
-        for input in inputs {
-            #expect(svc.testSanitiseWhisperOutput(input, durationSeconds: 5) != nil,
-                    "≥2-hit rule should not reject single-vocab-hit: \(input)")
-        }
-    }
-
-    @Test func acceptsLongerRecordingEvenWithOutroVocab() {
-        let svc = service()
-        // Same outro-vocab tokens, but in recordings >= 20s — Pass 5 does not apply.
-        // (The longer recording is more likely to be legitimate; if it's still
-        // hallucinated, the line-match / full-output / attribution passes catch it.)
-        let longLegit = "I want to follow up on what we discussed last week regarding the marketing channel and the campaign performance numbers, particularly around the description copy on the landing page and the link tracking."
-        #expect(svc.testSanitiseWhisperOutput(longLegit, durationSeconds: 60) != nil,
-                "expected acceptance for legitimate long content with outro vocab")
-    }
-
-    @Test func longRecordingsBypassFilterEntirely() {
-        let svc = service()
-        // A long recording's raw output should pass through verbatim, even if
-        // it contains substrings that the short-clip path would reject.
-        // 93-second "chat with Sai" regression case + several substring-matchy
-        // sentences that today's filter would clobber.
-        let raw = """
-        I had a chat with Sai today about the new transcription pipeline. He said
-        thanks for watching, but he meant our weekly demo recap. Subscribe to our
-        weekly digest is something I should set up. The action items are clear.
-        """
-        let cleaned = svc.testSanitiseWhisperOutput(raw, durationSeconds: 93)
-        #expect(cleaned == raw.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    @Test func eightSecondBoundaryIsLongPath() {
-        let svc = service()
-        // Exactly 8 seconds is treated as "long" — filter bypassed.
-        // Use a phrase that would otherwise hit the semantic-hallucination list.
-        let raw = "thanks for watching"
-        let cleaned = svc.testSanitiseWhisperOutput(raw, durationSeconds: 8)
-        #expect(cleaned == "thanks for watching")
-    }
-
-    @Test func sevenSecondBoundaryIsShortPath() {
-        let svc = service()
-        // 7 seconds (just below 8) gets the short-path filter — same phrase
-        // is rejected as a semantic hallucination.
-        let raw = "thanks for watching"
-        let cleaned = svc.testSanitiseWhisperOutput(raw, durationSeconds: 7)
-        #expect(cleaned == nil)
-    }
-
-    @Test func zeroDurationRoutesThroughShortPath() {
-        let svc = service()
-        // durationSeconds == 0 (the legacy default value) must route through
-        // the < 8 short-path filter so callers that haven't populated
-        // duration yet still get hallucination protection.
-        let raw = "thanks for watching"
-        let cleaned = svc.testSanitiseWhisperOutput(raw, durationSeconds: 0)
-        #expect(cleaned == nil, "duration 0 must route through < 8 branch and reject the same hallucinations")
+    @Test func whisperHallucinationOnSilenceStillPasses_byDesign() {
+        // "Thanks for watching!" passes through. Accepted trade-off: false
+        // rejections of real short speech are worse than the rare
+        // hallucination slipping through. The LLM cleanup pass is the second
+        // line of defence.
+        let raw = "Thanks for watching!"
+        #expect(service().testSanitiseWhisperOutput(raw) == raw)
     }
 }

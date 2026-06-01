@@ -19,56 +19,61 @@ struct NotesFilterBar: View {
     let pendingCount: Int
     let onRetryAllTap: () -> Void
 
-    @State private var isPopoverShown = false
     @State private var keyMonitor: Any?
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 8) {
-                // Left: active filter title + count — 15pt section header, count in parens
+                // Left: active filter title + count — both in the shared 14pt
+                // tab-label font so the filter bar matches the tab row typography.
                 HStack(spacing: 4) {
                     Text(activeFilter.displayName)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(DesignTokens.Typography.tabLabelFont)
                         .foregroundStyle(DesignTokens.Typography.sectionColor)
                         .lineLimit(1)
                     Text("(\(counts[activeFilter, default: 0]))")
-                        .font(.system(size: 14, weight: .regular))
+                        .font(DesignTokens.Typography.tabLabelFont)
                         .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.55))
                         .lineLimit(1)
                         .layoutPriority(0)
+
+                    // Inline "Waiting" shimmer replaces the old separate
+                    // "N waiting" badge. Tap reruns userRequestedDrain.
+                    if pendingCount > 0 {
+                        Text("Waiting")
+                            .font(DesignTokens.Typography.tabLabelFont)
+                            .foregroundStyle(DesignTokens.Typography.itemColor.opacity(0.55))
+                            .lineLimit(1)
+                            .shimmer()
+                            .padding(.leading, 4)
+                            .contentShape(Rectangle())
+                            .onTapGesture { onRetryAllTap() }
+                            .help("Tap to retry pending uploads")
+                    }
                 }
                 .layoutPriority(1)
                 .animation(.easeInOut(duration: 0.08), value: activeFilter)
 
-                if pendingCount > 0 {
-                    Button(action: onRetryAllTap) {
-                        HStack(spacing: 3) {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 11, weight: .medium))
-                            Text("\(pendingCount) waiting")
-                                .font(.system(size: 12, weight: .regular))
-                        }
-                        .foregroundStyle(DesignTokens.Icon.tintMuted.opacity(0.75))
-                        .padding(.leading, 6)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Tap to retry pending uploads")
-                }
-
                 Spacer(minLength: 8)
 
-                FilterPill(isActive: activeFilter != .all)
-                    .onTapGesture { isPopoverShown.toggle() }
-                    .popover(isPresented: $isPopoverShown, arrowEdge: .top) {
-                        NotesFilterPopoverContent(
-                            activeFilter: $activeFilter,
-                            counts: counts,
-                            onPick: { picked in
-                                activeFilter = picked
-                                isPopoverShown = false
-                            }
-                        )
+                // Native macOS dropdown. An inline Picker inside a Menu
+                // renders the filter options as standard menu items with an
+                // automatic checkmark on the active one. Clicking the pill
+                // opens it; the F key (NSEvent monitor below) still cycles.
+                Menu {
+                    Picker("Filter", selection: $activeFilter) {
+                        ForEach(NotesFilter.allCases) { filter in
+                            Text("\(filter.displayName) (\(counts[filter, default: 0]))")
+                                .tag(filter)
+                        }
                     }
+                    .pickerStyle(.inline)
+                } label: {
+                    FilterPill(isActive: activeFilter != .all)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 9) // bar content height ≈ 40pt with 22pt content
@@ -80,6 +85,9 @@ struct NotesFilterBar: View {
                 .fill(DesignTokens.Icon.tintMuted.opacity(0.18))
                 .frame(maxWidth: .infinity)
                 .frame(height: 1)
+                // Bleed past the panel's 20pt outer padding so the divider
+                // spans the full panel width edge-to-edge.
+                .padding(.horizontal, -20)
         }
         .onAppear { installKeyMonitor() }
         .onDisappear { removeKeyMonitor() }
@@ -122,97 +130,20 @@ struct NotesFilterBar: View {
     }
 }
 
-// MARK: - Popover content
-
-private struct NotesFilterPopoverContent: View {
-    @Binding var activeFilter: NotesFilter
-    let counts: [NotesFilter: Int]
-    let onPick: (NotesFilter) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(NotesFilter.allCases) { filter in
-                row(for: filter)
-            }
-        }
-        .padding(.vertical, 6)
-        .frame(width: 220)
-    }
-
-    @ViewBuilder
-    private func row(for filter: NotesFilter) -> some View {
-        FilterRow(
-            filter: filter,
-            isActive: filter == activeFilter,
-            count: counts[filter, default: 0],
-            onTap: { onPick(filter) }
-        )
-    }
-}
-
-private struct FilterRow: View {
-    let filter: NotesFilter
-    let isActive: Bool
-    let count: Int
-    let onTap: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 8) {
-                ZStack {
-                    if isActive {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.primary)
-                    }
-                }
-                .frame(width: 14)
-
-                Text("\(filter.displayName) (\(count))")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(.primary)
-
-                Spacer(minLength: 8)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovering ? PanelListRowHoverStyle.hoverFill : Color.clear)
-                    .padding(.horizontal, 6)
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovering = $0 }
-        .animation(PanelListRowHoverStyle.animation, value: isHovering)
-    }
-}
-
 // MARK: - Combined filter pill (icon + "F" letter)
 
 /// Rounded-rect chip containing the filter icon and the "F" key letter, side
-/// by side. Click opens the popover (wired by the parent); pressing F cycles
-/// the filter (wired by the parent's NSEvent monitor). Background tints when
-/// `isActive` is true so the bar reads as "filter applied" at a glance.
-///
-/// The parent uses `.onTapGesture` to open the popover. We attach a separate
-/// `simultaneousGesture(TapGesture())` here purely to drive the scale press
-/// feedback — without a `simultaneousGesture` the parent's tap would steal the
-/// event before this view can observe it. The pill never owns the popover
-/// state; it only renders.
+/// by side. Used as the label of the parent's `Menu`, so the click-to-open
+/// behaviour is owned by SwiftUI's native menu — this view is pure visual.
+/// Pressing F cycles the filter (wired by the parent's NSEvent monitor).
+/// Background tints when `isActive` is true so the bar reads as "filter
+/// applied" at a glance.
 private struct FilterPill: View {
     let isActive: Bool
 
-    @State private var isHovering = false
-    @State private var isPressed = false
-
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "slider.horizontal.3")
+            Image(systemName: "line.3.horizontal.decrease")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(foregroundColor)
 
@@ -228,24 +159,7 @@ private struct FilterPill: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(backgroundFill)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(borderColor, lineWidth: 1)
-        )
         .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .scaleEffect(isPressed ? 0.96 : 1.0)
-        .onHover { isHovering = $0 }
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                // Tap feedback: scale down briefly then restore. Independent of
-                // the parent's tap handler that opens the popover.
-                withAnimation(.easeInOut(duration: 0.05)) { isPressed = true }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    withAnimation(.easeInOut(duration: 0.05)) { isPressed = false }
-                }
-            }
-        )
-        .animation(.easeInOut(duration: 0.12), value: isHovering)
         .animation(.easeInOut(duration: 0.12), value: isActive)
     }
 
@@ -255,13 +169,9 @@ private struct FilterPill: View {
     }
 
     private var backgroundFill: Color {
-        if isActive { return DesignTokens.FilterPill.activeBackground }
-        if isHovering { return Color.white.opacity(0.10) }
-        return Color.white.opacity(0.06)
-    }
-
-    private var borderColor: Color {
-        isActive ? DesignTokens.FilterPill.activeBorder
-                 : Color.white.opacity(0.10)
+        // Rest fill matches the pinned-card gray (PanelCardChromeStyle.bgDefault,
+        // #262626) so the pill reads as a solid chip. Hover is handled by the
+        // enclosing Menu's native highlight.
+        isActive ? DesignTokens.FilterPill.activeBackground : PanelCardChromeStyle.bgDefault
     }
 }

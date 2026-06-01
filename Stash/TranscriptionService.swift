@@ -51,6 +51,17 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// the list with the new quick-transcript pinned at the top (short).
     @Published var lastRecordingWasShort: Bool = false
 
+    /// True while an upload has failed transiently and the retry queue is
+    /// waiting to re-attempt. Drives the "waiting on retry" UI (commit 5).
+    /// Set in the URLError catch (and via the queue's backoffStream
+    /// subscription as belt-and-suspenders), reset on every fresh attempt,
+    /// new recording, and successful delivery.
+    @Published var isWaitingOnRetry: Bool = false
+
+    /// The attemptCount the queue is currently backing off on — read by the
+    /// auto-dismiss fallback (commit 6). 0 when not waiting.
+    @Published var waitingRetryAttempt: Int = 0
+
     /// Set from the notes column so saves use the same storage as the rest of the app.
     weak var notesStorage: NotesStorage?
     var onNoteCreated: ((String) -> Void)?
@@ -102,7 +113,27 @@ final class TranscriptionService: NSObject, ObservableObject {
     /// processing phase, which feels jarring and hides system work.
     private static let minProcessingVisibility: TimeInterval = 0.4
 
+    /// Long-lived subscription to the retry queue's backoff events. Started
+    /// once via `startRetryObservation()` from PanelController.setup().
+    private var backoffObservationTask: Task<Void, Never>?
+
     // MARK: - Start
+
+    /// Subscribe to the retry queue's backoff stream so "waiting on retry"
+    /// state flips on EVERY scheduled retry, not just the first URLError the
+    /// pipeline observes directly. Belt-and-suspenders for stall paths the
+    /// uploadSession catch doesn't see (e.g., a retry scheduled by a drain
+    /// that later fails). Idempotent — re-calling cancels the prior task.
+    func startRetryObservation() {
+        backoffObservationTask?.cancel()
+        backoffObservationTask = Task { @MainActor [weak self] in
+            for await event in TranscriptionRetryQueue.shared.backoffStream() {
+                guard let self else { return }
+                self.isWaitingOnRetry = true
+                self.waitingRetryAttempt = event.attemptCount
+            }
+        }
+    }
 
     func startRecording() {
         // Clear transient post-recording state before starting a new
@@ -115,6 +146,7 @@ final class TranscriptionService: NSObject, ObservableObject {
         completionMessage = nil
         didShowDurationWarning = false
         didShowSizeWarning = false
+        resetWaitingState()
 
         #if DEBUG
         print("[Transcription] Keys — whisperURL: \(whisperURL), model: \(whisperModel), authKey prefix: \(String(transcriptionAuthKey.prefix(8)))")
@@ -631,6 +663,11 @@ final class TranscriptionService: NSObject, ObservableObject {
         // moved past the foreground attempt.
         let isFirstAttempt = (metadata.attemptCount == 0)
 
+        // Fresh attempt — clear any lingering "waiting on retry" state. If
+        // this attempt also fails transiently, the URLError catch (and the
+        // queue's backoffStream subscription) will set it true again.
+        resetWaitingState()
+
         let audioURL = AudioPersistence.shared.pendingAudioURL(sessionUUID: metadata.sessionUUID)
         let audioData: Data
         do {
@@ -665,6 +702,9 @@ final class TranscriptionService: NSObject, ObservableObject {
             #if DEBUG
             print("[Transcription] uploadSession transient URLError: \(urlError.code) — queueing retry")
             #endif
+            // Mark waiting BEFORE clearing the processing spinner so the
+            // "waiting on retry" UI takes over seamlessly as the spinner goes.
+            isWaitingOnRetry = true
             if isFirstAttempt { await clearProcessingHonoringFloor() }
             return false
         } catch {
@@ -681,11 +721,17 @@ final class TranscriptionService: NSObject, ObservableObject {
 
         let rawTranscript = whisperResponse.text
 
-        // Sanitise (hallucination filter for <8s, passthrough for ≥8s).
+        // Silence-only detection. Whisper's special-token markers (blank
+        // audio / music / silence) are stripped; if nothing real remains we
+        // treat it as "no audio captured". Any actual speech passes verbatim;
+        // the LLM cleanup pass refines fillers + grammar on the saved note.
         let sanitised = sanitiseWhisperOutput(rawTranscript, durationSeconds: metadata.durationSeconds)
         guard let text = sanitised else {
-            // Filter rejected. Report and treat as success (don't keep audio).
-            reportToSlack(error: "Hallucination filter rejected (duration \(metadata.durationSeconds)s)", durationSeconds: metadata.durationSeconds)
+            // True silence — rare. Keep the Slack signal but reword: this is
+            // no longer a content-based hallucination rejection.
+            reportToSlack(error: "No audio captured (Whisper returned silence markers only, duration \(metadata.durationSeconds)s)",
+                          durationSeconds: metadata.durationSeconds)
+            resetWaitingState()  // defensive — terminal state, never waiting
             if isFirstAttempt { await clearProcessingHonoringFloor() }
             showCompletion("No audio")
             return true
@@ -724,11 +770,22 @@ final class TranscriptionService: NSObject, ObservableObject {
         processingStartedAt = nil
     }
 
+    /// Clears the "waiting on retry" published state. Called on every fresh
+    /// upload attempt, on new recordings, on successful delivery, and on the
+    /// terminal no-audio path.
+    private func resetWaitingState() {
+        isWaitingOnRetry = false
+        waitingRetryAttempt = 0
+    }
+
     /// Main-actor delivery from a queued session. Calls the existing
     /// `deliverTranscriptShort` / `deliverTranscriptLong` helpers (introduced
     /// in Task 6), then correlates the returned noteID back into the queue's
     /// `meta.json` so the UI can surface "note X is from session Y".
     private func deliverTranscript(text: String, metadata: PendingSessionMetadata) async {
+        // Reached delivery — the upload succeeded, so we're definitively not
+        // waiting on a retry anymore (covers both short + long paths).
+        resetWaitingState()
         lastRecordingWasShort = (metadata.intent == .shortPaste)
         let noteId: String?
         switch metadata.intent {
@@ -879,294 +936,46 @@ final class TranscriptionService: NSObject, ObservableObject {
 
     // MARK: - Whisper API
 
+    /// Detects "no audio captured" — Whisper's special-token markers for
+    /// silence/music/etc. Returns nil if the input is empty after stripping
+    /// those markers, otherwise returns the trimmed input verbatim.
+    ///
+    /// No content-based filtering. No word-list rejection. No outro-vocab
+    /// gates. If Whisper heard speech, we trust it; the LLM cleanup pass
+    /// handles fillers and grammar downstream.
     private func sanitiseWhisperOutput(_ raw: String, durationSeconds: Int) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        // Hallucinations are almost exclusive to short, near-silent clips.
-        // Long recordings get trusted verbatim — the filter's false-positive
-        // rate on real long-form speech is unacceptable (see chat-with-Sai
-        // 93s rejection on 2026-05-18).
-        guard durationSeconds < 8 else { return trimmed }
-
-        // PASS 1 — token hallucinations (bracket artefacts Whisper emits on silence)
-        let tokenHallucinations = [
-            "[BLANK_AUDIO]", "[blank_audio]", "[inaudible]", "[Inaudible]",
-            "[music]", "[Music]", "[silence]", "[Silence]", "[noise]", "[Noise]",
+        // Strip Whisper's special-token markers. These are NEVER real speech —
+        // they're Whisper's way of signalling "I heard silence / music / noise".
+        // Anything in brackets or parens at this layer is a marker, not content.
+        let bracketTokenMarkers: Set<String> = [
+            "[blank_audio]", "[BLANK_AUDIO]",
+            "[music]", "[Music]", "[MUSIC]",
+            "[silence]", "[Silence]", "[SILENCE]",
+            "[noise]", "[Noise]", "[NOISE]",
+            "[sound]", "[Sound]", "[SOUND]",
             "[laughter]", "[Laughter]", "[applause]", "[Applause]",
-            "(No transcript)", "(no transcript)", "(silence)", "(inaudible)",
-            // Added 2026-05-13
-            "(music)", "(Music)", "(applause)", "(Applause)",
-            "(laughter)", "(Laughter)", "(no audio)", "(No audio)",
-            "♪", "♫", "♬"
+            "(no transcript)", "(No transcript)",
+            "(silence)", "(Silence)", "(inaudible)", "(Inaudible)",
         ]
-        var text = raw
-        for token in tokenHallucinations {
-            text = text.replacingOccurrences(of: token, with: "")
-        }
 
-        // PASS 2 — semantic hallucinations Whisper generates on near-silent audio.
-        // Match case-insensitively line-by-line so a single hallucination phrase
-        // embedded in real speech is not over-stripped.
-        let semanticHallucinations: [String] = [
-            // Existing — kept verbatim
-            "thank you for watching",
-            "thanks for watching",
-            "please subscribe",
-            "don't forget to subscribe",
-            "like and subscribe",
-            "hit the like button",
-            "see you in the next video",
-            "see you next time",
-            "until next time",
-            "thanks for listening",
-            "thank you for listening",
-            "thanks for tuning in",
-            "thank you for tuning in",
-            "that's all for today",
-            "that's it for today",
-            "that's it for this episode",
-            "we'll see you next week",
-            "you",
-            "bye",
-            "bye bye",
-            "okay",
-            "alright",
-            "um",
-            "uh",
-            "hmm",
-            "hm",
-            "mm-hmm",
-            "mm hmm",
-            "...",
-            "…",
-            // Added 2026-05-13 — YouTube outro family (the gap that leaked through).
-            // Keep each phrase as the user-reported exact phrasing so future maintainers
-            // can grep for the source of a rule.
-            "if you have any questions or comments",
-            "if you have any questions or comments please post them in the comments",
-            "if you have any questions or comments, please post them in the comments",
-            "if you have any questions or comments please post them below",
-            "if you have any questions or comments, please post them below",
-            "please post them in the comments",
-            "post them in the comments",
-            "leave a comment below",
-            "leave a comment",
-            "let me know in the comments",
-            "let me know what you think in the comments",
-            "drop a comment",
-            "drop a comment below",
-            "comment below",
-            "see you in the next one",
-            "see you on the next one",
-            "catch you in the next one",
-            "catch you next time",
-            "thanks so much for watching",
-            "thank you so much for watching",
-            // Extended subscribe family.
-            "hit the bell",
-            "ring the bell",
-            "smash the like button",
-            "tap the subscribe button",
-            "tap that subscribe button",
-            "click subscribe",
-            "click the subscribe button",
-            "follow me on",
-            // Multilingual high-frequency outros Whisper emits on silence. Match the
-            // raw script — Whisper does not transliterate these. Pass-2 lowercase
-            // normalisation is a no-op for non-Latin scripts and that's fine; we
-            // compare the trimmed lowercased line against each entry below.
-            "merci",
-            "merci d'avoir regardé",
-            "merci d'avoir regardé cette vidéo",
-            "merci de votre attention",
-            "abonnez-vous",
-            "n'oubliez pas de vous abonner",
-            "спасибо за просмотр",
-            "подписывайтесь на канал",
-            "ご視聴ありがとうございました",
-            "チャンネル登録お願いします",
-            "다음 영상에서 만나요",
-            "구독과 좋아요 부탁드립니다",
-            "gracias por ver",
-            "gracias por su atención",
-            "danke fürs zuschauen",
-            "obrigado por assistir",
-            "grazie per la visione",
-            // Added 2026-05-13 (filter-gaps PR) — description/links family.
-            // User-reported leak: "Be sure to check the description for links in the
-            // previous video description for more information" slipped through after
-            // ~10s of silence. The attributionPatterns list (further down) didn't
-            // cover description/links/bio; this closes the gap at the line-match
-            // and full-output-match passes.
-            "check the description",
-            "in the description",
-            "description for links",
-            "links in the description",
-            "link in the description",
-            "links below",
-            "link below",
-            "in the description below",
-            "previous video description",
-            "more information in the description",
-            "click the link",
-            "link in bio",
-            "link in my bio",
-            // Watch-next family — Whisper hallucinates these when speaker pauses
-            // and the model fills with prior-video-recap phrasing.
-            "in the previous video",
-            "in my previous video",
-            "in the last video",
-            "previous episode",
-            "next episode",
-            "watch the next",
-            "as i mentioned in",
-            "as i said in the last",
-            // Generic creator outro family — extensions on top of what's already there.
-            "more information below",
-            "for more info",
-            "everything you need to know",
-            "all the links",
-            "check out the links",
-            "links are below",
-            "stay tuned"
-        ]
-        // Trim set covers Latin + East Asian (CJK) + full-width punctuation.
-        // Whisper emits its native locale's punctuation; without these,
-        // "ご視聴ありがとうございました。" never matches the entry
-        // "ご視聴ありがとうございました" stored in semanticHallucinations.
-        let punctuationTrim = CharacterSet(charactersIn:
-            "-.,!? "                              // Latin
-            + "。、！？「」『』〔〕（）〈〉《》【】"   // Japanese / Chinese
-            + "！？，．：；"                       // Full-width variants
-            + "\u{200B}\u{3000}"                  // Zero-width space, ideographic space
-        )
-
-        let lines = text.components(separatedBy: .newlines).filter { line in
-            let stripped = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: punctuationTrim)
-            guard !stripped.isEmpty else { return false }
-            let normalised = stripped.lowercased()
-            if semanticHallucinations.contains(where: { normalised == $0 }) { return false }
-            let nonNoise = stripped.trimmingCharacters(in: CharacterSet(charactersIn: "-. "))
-            return !nonNoise.isEmpty
-        }
-        let cleaned = lines.joined(separator: "\n")
+        // Line-by-line strip of bracket markers. Keep everything else as-is.
+        let cleaned = trimmed
+            .components(separatedBy: .newlines)
+            .map { line -> String in
+                let lineTrimmed = line.trimmingCharacters(in: .whitespaces)
+                return bracketTokenMarkers.contains(lineTrimmed) ? "" : line
+            }
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // PASS 3 — full-output semantic match (handles multi-word phrases that
-        // survived line filtering because they were the only line).
-        let fullNormalised = cleaned.lowercased()
-            .trimmingCharacters(in: punctuationTrim)
-        if semanticHallucinations.contains(where: { fullNormalised == $0 }) {
-            return nil
-        }
+        // If everything was bracket markers, we heard no real audio.
+        guard !cleaned.isEmpty else { return nil }
 
-        // Substantive word list — used by PASS 4 (word-count gate). Tokens
-        // shorter than 2 chars after stripping punctuation are dropped so
-        // single-letter noise doesn't inflate counts.
-        let words = cleaned.components(separatedBy: .whitespaces).filter { word in
-            let w = word.trimmingCharacters(in: .punctuationCharacters)
-            return w.count >= 2
-        }
-
-        // (Earlier revisions had a PASS 3b that rejected bare-URL outputs as
-        // Whisper hallucination from ambient audio. Removed: dictating a URL
-        // — "vedantvaibhav.com", "github.com/foo" — is legitimate user
-        // content. Token + semantic + attribution gates above still catch
-        // the actual Whisper hallucinations these were designed to filter.)
-
-        // PASS 3c — media attribution phrases not caught by exact-match above.
-        let attributionPatterns = [
-            "visit us at", "find us at", "follow us on",
-            "subscribe to our", "check out our", "more videos", "our website",
-            "our channel", "our podcast", "this video was", "this episode was",
-            "produced by", "sponsored by", "brought to you by",
-            // Added 2026-05-13 (filter-gaps PR) — description / links / bio
-            "check the description",
-            "in the description",
-            "description for",
-            "link in bio",
-            "link in my bio",
-            "link in the bio",
-            "links in the",
-            "previous video",
-            "next video",
-            "next episode",
-            "watch the next",
-            "link below",
-            "links below",
-            "in the comments below",
-            // Added 2026-05-13 (filter-gaps PR) — bell / subscribe-button family.
-            // These exist as whole-line entries in semanticHallucinations,
-            // but Whisper sometimes embeds them in longer hallucinated
-            // sentences ("And of course, hit that bell so you don't miss
-            // the next one"). Substring form catches the embedded case.
-            "hit the bell",
-            "ring the bell",
-            "smash the like",
-            "tap subscribe",
-            "tap that subscribe",
-            "click subscribe",
-            "follow me on"
-        ]
-        if attributionPatterns.contains(where: { fullNormalised.contains($0) }) {
-            #if DEBUG
-            print("[Transcription] sanitise: rejected (attribution pattern) — \"\(cleaned)\"")
-            #endif
-            return nil
-        }
-
-        // PASS 5 — short-recording outro-vocab gate (added 2026-05-13).
-        // Whisper hallucinates YouTube-creator outro vocabulary on short,
-        // near-silent clips. For recordings < 20s AND < 25 substantive
-        // words, reject if ≥2 tokens from the outro vocab set appear.
-        //
-        // ≥2-hit (not ≥1) so legitimate one-liners with a single incidental
-        // match ("send the link to John") pass through. Real outro
-        // hallucinations stack tokens: subscribe+channel, link+description,
-        // watch+previous+video. Two-hit threshold catches the real cases
-        // while letting single-token incidentals through to Pass 4.
-        //
-        // Known edge case: "watch the next train" (2 hits: watch+next) is
-        // falsely rejected. Acceptable < 0.1% rate; user re-records.
-        let shortRecordingThresholdSeconds = 20
-        let shortRecordingMaxWords = 25
-        let outroVocab: Set<String> = [
-            "description", "subscribe", "channel", "video", "videos",
-            "link", "links", "bio", "watch", "previous", "next",
-            "comment", "comments", "tutorial", "episode", "stream",
-            "viewers"
-        ]
-        if durationSeconds > 0,
-           durationSeconds < shortRecordingThresholdSeconds,
-           words.count < shortRecordingMaxWords {
-            let lowercasedWords = Set(words.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) })
-            let hits = lowercasedWords.intersection(outroVocab)
-            if hits.count >= 2 {
-                #if DEBUG
-                print("[Transcription] sanitise: rejected (short-recording outro vocab — \(durationSeconds)s, hits: \(hits.sorted())) — \"\(cleaned)\"")
-                #endif
-                return nil
-            }
-        }
-
-        // PASS 4 — word-count gate. Reject only when there are zero
-        // substantive words (the real Whisper-on-silence outcome). Single-
-        // word legitimate dictations — "yes", "okay", a name, a URL — must
-        // pass; the >= 3 threshold previously blocked them. Token / semantic
-        // gates above still catch hallucinated single-word outputs like
-        // "[BLANK_AUDIO]" or "thanks".
-        guard words.count >= 1 else {
-            #if DEBUG
-            print("[Transcription] sanitise: rejected (0 substantive words) — \"\(cleaned)\"")
-            #endif
-            return nil
-        }
-
-        #if DEBUG
-        print("[Transcription] sanitise: accepted \(words.count) words")
-        #endif
+        // Trust Whisper. Return verbatim.
         return cleaned
     }
 
