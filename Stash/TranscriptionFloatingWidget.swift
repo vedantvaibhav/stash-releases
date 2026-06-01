@@ -17,17 +17,6 @@ enum PillMode: Equatable {
 /// Copy for the long-running pill. Single source so view + sizing agree.
 let longRunningPillText = "Taking longer than usual"
 
-/// Error + warning completion states render as TEXT ONLY (no icon disc) — the
-/// message carries the meaning and an icon adds noise. Success states
-/// ("Pasted ✓", "Saved", "Copied", "Note saved") keep their icon. Single
-/// source of truth shared by the pill view and the controller's sizing.
-private let pillTextOnlyMessages: Set<String> = [
-    "No audio", "Failed", "5 min left", "1 min left", "Almost full",
-]
-
-private func pillMessageIsTextOnly(_ message: String) -> Bool {
-    pillTextOnlyMessages.contains(message)
-}
 
 /// Stable animation key: identical across timer ticks so the HStack doesn't
 /// cross-fade every second while recording.
@@ -154,15 +143,12 @@ struct TranscriptionPillView: View {
         return .leading
     }
 
-    /// Recording + processing always show the icon disc; completion shows it
-    /// only for success states. Errors/warnings + the long-running state render
-    /// text-only.
+    /// Only recording shows an icon disc (waveform + timer + stop dot). Every
+    /// other text state — long-running and ALL completion results — is text-only
+    /// (no icon). Processing renders its bare dot via the compact-circle branch.
     private var showsIconDisc: Bool {
-        switch mode {
-        case .longRunning: return false
-        case .completion(let msg): return !pillMessageIsTextOnly(msg)
-        default: return true
-        }
+        if case .recording = mode { return true }
+        return false
     }
 
     // MARK: Icon disc (24×24 with 14pt inner glyph / spinner)
@@ -175,50 +161,16 @@ struct TranscriptionPillView: View {
         .frame(width: DesignTokens.Pill.iconDiscSize, height: DesignTokens.Pill.iconDiscSize)
     }
 
+    /// Only recording draws a glyph (the waveform). Processing is a BARE dot
+    /// (no spinner/loader — removed per design); every other state is text-only,
+    /// so the disc is never shown for them.
     @ViewBuilder
     private var iconGlyph: some View {
-        switch mode {
-        case .recording:
+        if case .recording = mode {
             glyph("waveform")
-        case .processing:
-            ProgressView()
-                .progressViewStyle(.circular)
-                .controlSize(.small)
-                .tint(DesignTokens.Icon.tintMuted)
-                .transition(.opacity)
-        case .longRunning:
-            // No icon — long-running renders text-only (showsIconDisc == false).
-            // Kept for switch exhaustiveness.
+        } else {
             EmptyView()
-        case .completion(let message):
-            if isPastedCompletion(message) {
-                Image("PastedConfirm")
-                    .renderingMode(.template)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(
-                        width: DesignTokens.Pill.iconGlyphSize,
-                        height: DesignTokens.Pill.iconGlyphSize
-                    )
-                    // .foregroundColor (not .foregroundStyle) — the latter
-                    // doesn't always propagate through .renderingMode(.template)
-                    // for custom-asset Images on macOS 13/14, leaving the
-                    // glyph at full opacity. .foregroundColor + .tint together
-                    // covers both old and new SwiftUI tint paths.
-                    .foregroundColor(DesignTokens.Icon.tintMuted)
-                    .tint(DesignTokens.Icon.tintMuted)
-                    .transition(.opacity)
-            } else {
-                glyph(completionSymbol(for: message))
-            }
         }
-    }
-
-    /// True iff the message represents a paste-success state. Paste states use
-    /// a custom asset (`PastedConfirm`) instead of an SF Symbol so the glyph
-    /// matches the design language.
-    private func isPastedCompletion(_ message: String) -> Bool {
-        message == "Pasted ✓"
     }
 
     private func glyph(_ systemName: String) -> some View {
@@ -226,24 +178,6 @@ struct TranscriptionPillView: View {
             .font(.system(size: DesignTokens.Pill.iconGlyphSize, weight: .regular))
             .foregroundStyle(DesignTokens.Icon.tintMuted)
             .transition(.opacity)
-    }
-
-    /// Mirrors the strings emitted by `TranscriptionService.showCompletion(_:)`.
-    /// `"Pasted ✓"` uses the custom `PastedConfirm` asset (handled above).
-    /// Non-verified paste outcomes do not show a pill at all (the dictation
-    /// is recoverable in Notes → Recent dictations) so there's no "Saved"
-    /// case here.
-    private func completionSymbol(for message: String) -> String {
-        switch message {
-        case "Saved":                    return "checkmark"
-        case "Copied":                   return "doc.on.clipboard"
-        case "Note saved":               return "note.text"
-        case "Failed":                   return "xmark"
-        case "No audio":                 return "mic.slash"
-        case "5 min left", "1 min left": return "clock"
-        case "Almost full":              return "exclamationmark.triangle"
-        default:                         return "checkmark"
-        }
     }
 
     // MARK: Label (SF Pro 14 regular #A3A3A3)
@@ -755,12 +689,10 @@ final class TranscriptionFloatingWidgetController: NSObject {
             let width = Self.basePillFixedWidth + labelW + DesignTokens.Pill.recordingDotSize + Self.measurementSafetyMargin
             return NSSize(width: width, height: height)
         case .completion(let message):
+            // All completion results are text-only now (no icon disc): width is
+            // the balanced label insets + paddings + the measured text.
             let labelW = measureLabelWidth(message, font: Self.completionLabelFont)
-            // Text-only states (errors/warnings) drop the icon disc + its gap,
-            // so their fixed width is just the balanced label insets + paddings.
-            let base = pillMessageIsTextOnly(message) ? Self.basePillTextOnlyWidth : Self.basePillFixedWidth
-            let width = base + labelW + Self.measurementSafetyMargin
-            return NSSize(width: width, height: height)
+            return NSSize(width: Self.basePillTextOnlyWidth + labelW + Self.measurementSafetyMargin, height: height)
         }
     }
 
@@ -832,35 +764,39 @@ final class TranscriptionFloatingWidgetController: NSObject {
         }
 
         // Either fully hidden, or mid-hide. Entrance: the pill descends FROM THE
-        // TOP — it starts `entranceFromTopOffset` above its resting frame and
-        // slides down into place while fading in, on a strong ease-out so it
-        // settles very smoothly. No spring/scale here (that's the morph + exit);
-        // a clean glide reads calmer for the first appearance. `panel.frame` is
-        // the canonical target because `sync()` set it via `applyPhaseFrame` just
-        // before this.
+        // TOP — it starts `entranceFromTopOffset` above its resting frame and the
+        // bouncy spring pulls it down into place (a soft overshoot as it lands)
+        // while alpha fades in. SAME spring as the morph + exit, so appearance,
+        // morph, and disappearance read as one springy material. `panel.frame`
+        // is the canonical resting target (applyPhaseFrame set it just before,
+        // building the panel first so first-show is correctly sized — not the
+        // default build size).
         morphAnimator?.stop()
         visibilityAnimationToken &+= 1
         hideInFlight = false
 
         let target = panel.frame
-        // Start above the resting frame (higher y == higher on screen) and glide down.
+        // Start above the resting frame (higher y == higher on screen); only Y
+        // differs, so the content never re-lays-out — it's a pure glide-down.
         let startFrame = target.offsetBy(dx: 0, dy: DesignTokens.PanelAnimation.entranceFromTopOffset)
         panel.setFrame(startFrame, display: false)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
 
         if DesignTokens.Motion.reduceMotion {
-            // Reduced motion: no slide — just snap to size and fade in
-            // (opacity aids comprehension; emil: reduced motion ≠ no motion).
+            // Reduced motion: no spring — snap to size and fade in (opacity aids
+            // comprehension; emil: reduced motion ≠ no motion).
             panel.setFrame(target, display: true)
             panel.animator().alphaValue = 1
             return
         }
 
+        // Bouncy spring drives the descent; a short ease-out fade rides along so
+        // the pill is visible as it springs into place.
+        morphAnimator?.animate(to: target)
         NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = DesignTokens.PanelAnimation.openDuration
+            ctx.duration = DesignTokens.PanelAnimation.entranceFadeDuration
             ctx.timingFunction = DesignTokens.Motion.caEaseOut()
-            panel.animator().setFrame(target, display: true)
             panel.animator().alphaValue = 1
         }
     }
@@ -887,6 +823,11 @@ final class TranscriptionFloatingWidgetController: NSObject {
         duration: TimeInterval = DesignTokens.Pill.frameAnimationDuration,
         timingFunction: CAMediaTimingFunction? = nil
     ) {
+        // Build the panel here if needed so the FIRST applyPhaseFrame (called
+        // before showCollapsedPanelIfNeeded) sizes it correctly — otherwise the
+        // entrance would read the default build size and glide in at the wrong
+        // width, then snap (the first-show glitch).
+        if panel == nil { buildPanel() }
         guard let panel else { return }
         if animated {
             // A true phase→phase morph (panel already visible and not mid-hide)
@@ -947,12 +888,19 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
+        // Phase 1 — bouncy spring collapses the frame into the circle, alpha
+        // held at 1 so both edges visibly gather to a dot (with a little squash).
         morphAnimator?.animate(to: circleFrame)
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = DesignTokens.PanelAnimation.closeDuration
-            ctx.timingFunction = DesignTokens.Motion.caEaseOut()
-            panel.animator().alphaValue = 0
-        }, completionHandler: finish)
+        // Phase 2 — once the circle has formed (exitFadeDelay), fade it out fast,
+        // then orderOut. The delay is why you SEE the circle instead of a cut.
+        DispatchQueue.main.asyncAfter(deadline: .now() + DesignTokens.PanelAnimation.exitFadeDelay) { [weak self, weak panel] in
+            guard let self, let panel, self.visibilityAnimationToken == token else { return }
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = DesignTokens.PanelAnimation.exitFadeDuration
+                ctx.timingFunction = DesignTokens.Motion.caEaseOut()
+                panel.animator().alphaValue = 0
+            }, completionHandler: finish)
+        }
     }
 
     private func buildPanel() {

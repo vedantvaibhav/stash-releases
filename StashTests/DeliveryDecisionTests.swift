@@ -17,20 +17,9 @@ struct DeliveryDecisionTests {
         }
     }
 
-    @Test func noTargetSaves() {
-        let d = DeliveryDecision.resolveNoPaste(target: .noTarget)
-        #expect(d.pill == "Saved")
-        #expect(d.clipboard == .none)
-    }
-
-    @Test func secureFieldSaves() {
-        let d = DeliveryDecision.resolveNoPaste(target: .secureField)
-        #expect(d.pill == "Saved")
-        #expect(d.clipboard == .none)
-    }
-
-    @Test func editableNoPasteFallsBackToCopy() {
-        let d = DeliveryDecision.resolveNoPaste(target: .editable)
+    @Test func noPasteAlwaysCopies() {
+        // No target / secure field / chose not to paste → copy + "Copied".
+        let d = DeliveryDecision.resolveNoPaste()
         #expect(d.pill == "Copied")
         #expect(d.clipboard == .writeTranscript)
     }

@@ -27,17 +27,17 @@ enum DesignTokens {
         // Strong ease-in-out — on-screen movement that isn't a spring.
         static let strongEaseInOutCP: (Double, Double, Double, Double) = (0.77, 0.0, 0.175, 1.0)
 
-        // The morph spring (capsule width/height between visible states) AND
-        // the entrance scale-up. Tuned for a "liquid" feel: a slightly longer
-        // 0.40s response that flows rather than snaps, with a gentle ≈0.26
-        // bounce (dampingRatio 0.74) so the capsule settles with a soft
-        // follow-through instead of a hard stop. Used by the SwiftUI content
-        // crossfade timing and by PillMorphAnimator (frame morph + entrance).
-        static let morphResponse: Double = 0.40
-        static let morphDampingRatio: Double = 0.74
+        // ONE spring drives every pill frame change — entrance (descend from
+        // top), state morphs (recording → dot → result), and exit (collapse to
+        // a circle). Bouncy on purpose (≈0.36 bounce, dampingRatio 0.64): the
+        // capsule overshoots and settles, so appearance/morph/disappearance all
+        // read as the same springy material. 0.42s response = lively but not
+        // frantic. Used by PillMorphAnimator + the content crossfade timing.
+        static let morphResponse: Double = 0.42
+        static let morphDampingRatio: Double = 0.64
         // Hard cap on how long the spring driver runs before snapping to the
-        // target, so an under-damped tail can never leave the panel un-settled.
-        static let morphSettleCap: TimeInterval = 0.6
+        // target, so an under-damped (bouncy) tail can never leave it un-settled.
+        static let morphSettleCap: TimeInterval = 0.7
 
         static func caEaseOut() -> CAMediaTimingFunction {
             CAMediaTimingFunction(controlPoints:
@@ -215,22 +215,24 @@ enum DesignTokens {
     }
 
     enum PanelAnimation {
-        /// Entrance: the pill descends FROM THE TOP — starts `entranceFromTopOffset`
-        /// above its resting frame and slides down into place while fading in, on
-        /// a strong ease-out so it settles very smoothly. Slightly longer than a
-        /// snappy UI tween because the brief sees a deliberate, calm arrival.
-        static let openDuration: CFTimeInterval = 0.34
-        /// Distance (pt) above the resting frame the pill starts from on entrance.
-        static let entranceFromTopOffset: CGFloat = 28
+        /// PILL entrance: descends FROM THE TOP — starts `entranceFromTopOffset`
+        /// above its resting frame and the bouncy spring (DesignTokens.Motion)
+        /// pulls it down into place; alpha fades in over `entranceFadeDuration`
+        /// so it's visible as it springs.
+        static let entranceFromTopOffset: CGFloat = 30
+        static let entranceFadeDuration: CFTimeInterval = 0.22
 
-        /// Exit: the pill MORPHS into the 32×32 circle (spring-collapse) while it
-        /// fades out, then orders out — a graceful gather-into-a-dot, not a cut.
-        /// The fade runs over this window so the collapse is visible before it
-        /// vanishes.
-        static let closeDuration: CFTimeInterval = 0.30
+        /// PILL exit: the spring collapses the frame into the 32×32 circle (both
+        /// edges gather to center, with a little squash-bounce). The fade waits
+        /// `exitFadeDelay` so the circle visibly FORMS first, then vanishes over
+        /// `exitFadeDuration`. This is the "gather into a dot," not a cut.
+        static let exitFadeDelay: CFTimeInterval = 0.20
+        static let exitFadeDuration: CFTimeInterval = 0.16
 
-        /// Slide offsets for the MAIN content panel's open/close (PanelController),
-        /// distinct from the pill's from-top entrance / circle exit above.
+        /// MAIN content panel open/close (PanelController) — distinct from the
+        /// pill above. Unchanged.
+        static let openDuration: CFTimeInterval = 0.26
+        static let closeDuration: CFTimeInterval = 0.21
         static let openSlideOffset: CGFloat = 10
         static let closeSlideOffset: CGFloat = 8
     }

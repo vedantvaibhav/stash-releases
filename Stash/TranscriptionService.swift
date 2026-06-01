@@ -1234,7 +1234,7 @@ final class TranscriptionService: NSObject, ObservableObject {
             }
             decision = DeliveryDecision.resolvePaste(outcome)
         } else {
-            decision = DeliveryDecision.resolveNoPaste(target: target)
+            decision = DeliveryDecision.resolveNoPaste()
         }
 
         // Single clipboard owner. `verifiedPasted`/`Saved` (clipboard == .none)

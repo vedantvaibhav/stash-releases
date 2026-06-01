@@ -423,12 +423,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// against `self` rather than at file load.
     private func debugMenuItems() -> [(String, Selector)] {
         return [
-            // — Delivery outcomes (success: keep icon)
+            // — Delivery outcomes (text-only, no icon)
             ("Test pill: Pasted ✓",          #selector(debugTestPillPasted)),
-            ("Test pill: Saved",             #selector(debugTestPillSaved)),
             ("Test pill: Copied",            #selector(debugTestPillCopied)),
             ("Test pill: Note saved",        #selector(debugTestPillNoteSaved)),
-            // — Errors (text-only, no icon)
+            // — Errors (text-only)
             ("Test pill: No audio",          #selector(debugTestPillNoAudio)),
             ("Test pill: Failed",            #selector(debugTestPillFailed)),
             // — Warnings (text-only, flash then return to recording)
@@ -439,7 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("Test: simulate network failure on next upload", #selector(debugSimulateNextUploadFailure)),
             ("Test: drain retry queue now",  #selector(debugDrainRetryQueue)),
             ("Test: list pending sessions",  #selector(debugListPendingSessions)),
-            ("Test: show long-running card", #selector(debugShowStatusNotification)),
+            ("Test: toggle 'Taking longer' pill", #selector(debugShowStatusNotification)),
         ]
     }
 
@@ -448,9 +447,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         svc.debugShowCompletion(text, hold: hold)
     }
 
-    // Success states (keep the icon disc)
+    // Delivery results (all text-only now)
     @objc private func debugTestPillPasted()    { debugFirePill("Pasted ✓") }
-    @objc private func debugTestPillSaved()     { debugFirePill("Saved") }
     @objc private func debugTestPillCopied()    { debugFirePill("Copied") }
     @objc private func debugTestPillNoteSaved() { debugFirePill("Note saved") }
     // Errors (text-only)

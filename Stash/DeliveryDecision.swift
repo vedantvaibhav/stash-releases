@@ -29,13 +29,10 @@ enum DeliveryDecision {
         }
     }
 
-    static func resolveNoPaste(target: PasteTarget) -> Outcome {
-        switch target {
-        case .noTarget, .secureField:
-            return Outcome(pill: "Saved", clipboard: .none)
-        case .editable:
-            // Editable but we chose not to paste — treat as copy backstop.
-            return Outcome(pill: "Copied", clipboard: .writeTranscript)
-        }
+    static func resolveNoPaste() -> Outcome {
+        // Nothing was pasted (no target / secure field / chose not to) → copy the
+        // transcript to the clipboard so it's there to paste manually, and say
+        // "Copied". (The note is also always saved to disk by the caller.)
+        Outcome(pill: "Copied", clipboard: .writeTranscript)
     }
 }

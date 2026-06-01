@@ -89,11 +89,15 @@ final class PillMorphAnimator {
         }
     }
 
-    /// Stop the driver without clearing target state. Call before an
-    /// entrance/exit alpha animation so two frame drivers never run at once.
+    /// Stop the driver. Clears `inFlight` so the NEXT `animate(to:)` starts from
+    /// rest (zero velocity) rather than carrying a stale velocity from a halted
+    /// morph — entrance/exit call `stop()` first so they begin clean. A genuine
+    /// mid-flight retarget (applyPanelFrame's morph path) does NOT call stop(),
+    /// so it still preserves momentum.
     func stop() {
         timer?.invalidate()
         timer = nil
+        inFlight = false
     }
 
     deinit { timer?.invalidate() }
