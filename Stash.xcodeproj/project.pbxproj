@@ -37,6 +37,7 @@
 		A10000000000000000000F01 /* Spring.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000F01 /* Spring.swift */; };
 		A10000000000000000000F02 /* PasteTargetClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000F02 /* PasteTargetClassifier.swift */; };
 		A10000000000000000000F03 /* DeliveryDecision.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000F03 /* DeliveryDecision.swift */; };
+		A10000000000000000000F04 /* PillMorphAnimator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000F04 /* PillMorphAnimator.swift */; };
 		A10000000000000000000028 /* NotesInlineCodeLayoutManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */; };
 		A1000000000000000000002A /* NetworkReachability.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002A /* NetworkReachability.swift */; };
 		A1000000000000000000002B /* AudioPersistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000002B /* AudioPersistence.swift */; };
@@ -102,6 +103,7 @@
 		A20000000000000000000F01 /* Spring.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Spring.swift; sourceTree = "<group>"; };
 		A20000000000000000000F02 /* PasteTargetClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasteTargetClassifier.swift; sourceTree = "<group>"; };
 		A20000000000000000000F03 /* DeliveryDecision.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliveryDecision.swift; sourceTree = "<group>"; };
+		A20000000000000000000F04 /* PillMorphAnimator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PillMorphAnimator.swift; sourceTree = "<group>"; };
 		A20000000000000000000028 /* NotesInlineCodeLayoutManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesInlineCodeLayoutManager.swift; sourceTree = "<group>"; };
 		A2000000000000000000002A /* NetworkReachability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkReachability.swift; sourceTree = "<group>"; };
 		A2000000000000000000002B /* AudioPersistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPersistence.swift; sourceTree = "<group>"; };
@@ -172,6 +174,7 @@
 				A20000000000000000000F01 /* Spring.swift */,
 				A20000000000000000000F02 /* PasteTargetClassifier.swift */,
 				A20000000000000000000F03 /* DeliveryDecision.swift */,
+				A20000000000000000000F04 /* PillMorphAnimator.swift */,
 				628946742CC3746292082980 /* NotesFilter.swift */,
 				4EDAEB448226A5DC81061FE7 /* NotesFilterBar.swift */,
 				FB000000000000000000FB01 /* TranscriptionStatusNotification.swift */,
@@ -351,6 +354,7 @@
 				A10000000000000000000F01 /* Spring.swift in Sources */,
 				A10000000000000000000F02 /* PasteTargetClassifier.swift in Sources */,
 				A10000000000000000000F03 /* DeliveryDecision.swift in Sources */,
+				A10000000000000000000F04 /* PillMorphAnimator.swift in Sources */,
 				52BCD083BA268C730D542244 /* NotesFilter.swift in Sources */,
 				EFC1EB609E099686AECE847E /* NotesFilterBar.swift in Sources */,
 				FA000000000000000000FA01 /* TranscriptionStatusNotification.swift in Sources */,

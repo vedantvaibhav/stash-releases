@@ -5,8 +5,8 @@ import SwiftUI
 /// icon, title + body, an X close affordance, and two action buttons.
 ///
 /// Fully parameterized — the view hardcodes no copy. The owning controller
-/// (`StatusPanelController`) supplies title/body/labels/actions and morphs
-/// them in place as the retry state evolves.
+/// (`TranscriptionFloatingWidgetController`) supplies title/body/labels/actions
+/// and morphs them in place as the retry / long-running state evolves.
 struct TranscriptionStatusNotification: View {
     let title: String
     /// Body copy. Named `message` (not `body`) to avoid colliding with the

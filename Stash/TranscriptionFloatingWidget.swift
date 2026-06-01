@@ -12,7 +12,7 @@ enum PillMode: Equatable {
 
 /// Stable animation key: identical across timer ticks so the HStack doesn't
 /// cross-fade every second while recording.
-private enum PillPhaseKey: Equatable {
+private enum PillPhaseKey: Hashable {
     case recording
     case processing
     case completion(String)
@@ -23,6 +23,35 @@ private enum PillPhaseKey: Equatable {
         case .processing:           self = .processing
         case .completion(let msg):  self = .completion(msg)
         }
+    }
+}
+
+// MARK: - Masked crossfade
+//
+// Blurs both layers during a state→state swap so two crisp text layers never
+// overlap while the capsule width morphs (emil: "use blur to mask imperfect
+// transitions"). Falls back to plain opacity under reduce-motion.
+
+private struct BlurFadeModifier: ViewModifier {
+    let active: Bool // true = mid-transition (blurred + transparent + slightly scaled)
+    func body(content: Content) -> some View {
+        content
+            .opacity(active ? 0 : 1)
+            .blur(radius: active ? DesignTokens.Pill.crossfadeBlurRadius : 0)
+            .scaleEffect(active ? DesignTokens.Pill.entranceScale : 1)
+    }
+}
+
+private extension AnyTransition {
+    static var maskedCrossfade: AnyTransition {
+        if DesignTokens.Motion.reduceMotion { return .opacity }
+        return .asymmetric(
+            insertion: .modifier(active: BlurFadeModifier(active: true), identity: BlurFadeModifier(active: false))
+                .animation(.easeOut(duration: DesignTokens.Pill.crossfadeInDuration)
+                    .delay(DesignTokens.Pill.crossfadeInDelay)),
+            removal: .modifier(active: BlurFadeModifier(active: true), identity: BlurFadeModifier(active: false))
+                .animation(.easeOut(duration: DesignTokens.Pill.crossfadeOutDuration))
+        )
     }
 }
 
@@ -42,7 +71,7 @@ struct TranscriptionPillView: View {
                         width: DesignTokens.Pill.height,
                         height: DesignTokens.Pill.height
                     )
-                    .transition(asymmetricContentTransition)
+                    .transition(.maskedCrossfade)
             } else {
                 // Full pill with asymmetric spacing: icon→timer is tighter
                 // than timer→dot. HStack uses spacing: 0 and the gaps come
@@ -64,7 +93,12 @@ struct TranscriptionPillView: View {
                 .padding(.leading, DesignTokens.Pill.leadingPadding)
                 .padding(.trailing, DesignTokens.Pill.trailingPadding)
                 .padding(.vertical, DesignTokens.Pill.verticalPadding)
-                .transition(asymmetricContentTransition)
+                // Distinct identity per message → SwiftUI runs maskedCrossfade
+                // on EVERY swap, incl. same-branch ones (Saved→Copied, the
+                // First→Second→Third supersession stack). PillPhaseKey collapses
+                // recording ticks to one case, so the timer doesn't churn identity.
+                .id(PillPhaseKey(mode))
+                .transition(.maskedCrossfade)
             }
         }
         // Mode-aware alignment: processing centers the icon in its 32×32
@@ -75,25 +109,10 @@ struct TranscriptionPillView: View {
         // Clip to the capsule so content can't overflow the rounded ends
         // while the AppKit panel is mid-resize.
         .clipShape(Capsule())
-        // Triggers the asymmetric .transition modifiers. The actual
-        // durations come from the per-transition .animation chains; this
-        // just opens the animation transaction.
-        .animation(.default, value: PillPhaseKey(mode))
-    }
-
-    /// Old content fades out fast; new content fades in after a delay so the
-    /// AppKit panel-frame animation has time to morph the capsule's rounded
-    /// corners to their target before text appears inside.
-    private var asymmetricContentTransition: AnyTransition {
-        .asymmetric(
-            insertion: .opacity.animation(
-                .easeInOut(duration: DesignTokens.Pill.contentInsertionDuration)
-                    .delay(DesignTokens.Pill.contentInsertionDelay)
-            ),
-            removal: .opacity.animation(
-                .easeInOut(duration: DesignTokens.Pill.contentRemovalDuration)
-            )
-        )
+        // Opens the animation transaction for the .id-driven maskedCrossfade.
+        // Strong ease-out (emil) rather than the weak .default; the actual
+        // blur/opacity timings come from maskedCrossfade's per-edge chains.
+        .animation(.easeOut(duration: DesignTokens.Pill.crossfadeInDuration), value: PillPhaseKey(mode))
     }
 
     /// Processing mode centers (the iconDisc sits in the middle of the
@@ -170,11 +189,14 @@ struct TranscriptionPillView: View {
     /// case here.
     private func completionSymbol(for message: String) -> String {
         switch message {
-        case "Copied":      return "checkmark"
-        case "Note saved":  return "note.text"
-        case "Failed":      return "xmark"
-        case "No audio":    return "mic.slash"
-        default:            return "checkmark"
+        case "Saved":                    return "checkmark"
+        case "Copied":                   return "doc.on.clipboard"
+        case "Note saved":               return "note.text"
+        case "Failed":                   return "xmark"
+        case "No audio":                 return "mic.slash"
+        case "5 min left", "1 min left": return "clock"
+        case "Almost full":              return "exclamationmark.triangle"
+        default:                         return "checkmark"
         }
     }
 
@@ -330,6 +352,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
     private let displayState = PillDisplayState()
     private var cancellables = Set<AnyCancellable>()
     private var panelOpenForWidget = false
+    /// Spring-driven frame morpher for phase→phase transitions (interruptible,
+    /// retargetable). Created with the panel in `buildPanel`.
+    private var morphAnimator: PillMorphAnimator?
 
     private enum Phase { case none, recording, processing, completion, notification }
     private var phase: Phase = .none
@@ -411,6 +436,12 @@ final class TranscriptionFloatingWidgetController: NSObject {
         // a stale-completion flash when a new recording begins.
         if let msg = ts.completionMessage {
             let oldPhase = phase
+            // If a long-running card is showing, morph it into the completion
+            // pill (card → "Copied" → hide) and tear down its 5-min auto-hide
+            // so a stale timer can't fire dismissNotification() mid-pill.
+            if displayState.notification != nil || notificationAutoHideWork != nil {
+                clearNotification()
+            }
             cancelAllPendingWork(except: .completion)
             phase = .completion
             updateHosted(mode: .completion(message: msg))
@@ -460,6 +491,14 @@ final class TranscriptionFloatingWidgetController: NSObject {
             return
         }
 
+        // Still processing AND crossed the long-running threshold → the pill
+        // morphs into the "we'll copy to your clipboard" card so the user can
+        // walk away. On completion the completion branch above supersedes it.
+        if ts.isProcessing && ts.isLongRunning {
+            enterLongRunningCard()
+            return
+        }
+
         if ts.isProcessing {
             let oldPhase = phase
             cancelAllPendingWork(except: .processing)
@@ -499,6 +538,26 @@ final class TranscriptionFloatingWidgetController: NSObject {
     }
 
     // MARK: - Long-running notification
+
+    /// Long-running (threshold-crossed) card: promises a clipboard copy so the
+    /// user can walk away. Reuses the notification surface + 5-min auto-hide.
+    private func enterLongRunningCard() {
+        let content = NotificationContent(
+            title: "Taking longer than usual",
+            message: "We'll copy your transcript to the clipboard when it's ready",
+            primaryLabel: "Open Notes",
+            secondaryLabel: "Hide"
+        )
+        let oldPhase = phase
+        let firstShow = (phase != .notification)
+        cancelAllPendingWork()
+        phase = .notification
+        heldCompletionMessage = nil
+        if displayState.notification != content { displayState.notification = content }
+        applyPhaseFrame(animated: oldPhase != .none)
+        showCollapsedPanelIfNeeded()
+        if firstShow { startNotificationAutoHide() }
+    }
 
     private func enterNotificationPhase(attempt: Int) {
         let oldPhase = phase
@@ -715,7 +774,9 @@ final class TranscriptionFloatingWidgetController: NSObject {
         // Either fully hidden, or mid-hide. Run slide+fade entrance from
         // `openSlideOffset` above the canonical target. `panel.frame` reflects
         // the just-set phase target because `sync()` calls `applyPhaseFrame`
-        // immediately before this.
+        // immediately before this. Stop any in-flight spring morph first so the
+        // two frame drivers never run at once (emil: no driver overlap).
+        morphAnimator?.stop()
         visibilityAnimationToken &+= 1
         hideInFlight = false
         let token = visibilityAnimationToken
@@ -728,7 +789,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = DesignTokens.PanelAnimation.openDuration
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.timingFunction = DesignTokens.Motion.caEaseOut()
             panel.animator().setFrame(target, display: true)
             panel.animator().alphaValue = 1
         }, completionHandler: { [weak self] in
@@ -761,14 +822,17 @@ final class TranscriptionFloatingWidgetController: NSObject {
     ) {
         guard let panel else { return }
         if animated {
+            // A true phase→phase morph (panel already visible and not mid-hide)
+            // springs with subtle bounce, interruptible/retargetable. Entrance/
+            // exit and first-show keep the NSAnimationContext path so the spring
+            // never fights the alpha+slide animation (two frame drivers).
+            if panel.isVisible && !hideInFlight, let morphAnimator {
+                morphAnimator.animate(to: frame)
+                return
+            }
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = duration
-                ctx.timingFunction = timingFunction ?? CAMediaTimingFunction(controlPoints:
-                    Float(DesignTokens.Pill.frameAnimationCurveCP1x),
-                    Float(DesignTokens.Pill.frameAnimationCurveCP1y),
-                    Float(DesignTokens.Pill.frameAnimationCurveCP2x),
-                    Float(DesignTokens.Pill.frameAnimationCurveCP2y)
-                )
+                ctx.timingFunction = timingFunction ?? DesignTokens.Motion.caEaseOut()
                 panel.animator().setFrame(frame, display: true)
             }
         } else {
@@ -778,6 +842,10 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
     private func hidePanel() {
         guard let panel, panel.isVisible else { return }
+
+        // Stop any in-flight spring morph so it doesn't fight the exit
+        // animation's frame changes (emil: no driver overlap).
+        morphAnimator?.stop()
 
         // Slide+fade exit: lift the panel `closeSlideOffset` upward as it
         // fades to alpha=0, then orderOut. `hideInFlight` lets a subsequent
@@ -791,7 +859,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
 
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = DesignTokens.PanelAnimation.closeDuration
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            ctx.timingFunction = DesignTokens.Motion.caEaseOut()
             panel.animator().setFrame(endFrame, display: true)
             panel.animator().alphaValue = 0
         }, completionHandler: { [weak self, weak panel] in
@@ -837,6 +905,7 @@ final class TranscriptionFloatingWidgetController: NSObject {
         p.contentView = host
         hosting = host
         panel = p
+        morphAnimator = PillMorphAnimator(panel: p)
 
         restorePosition()
     }
